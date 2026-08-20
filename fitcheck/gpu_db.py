@@ -1,0 +1,1 @@
+# GPU name → GpuSpec(name, vram_mib, usable_mib)

@@ -1,0 +1,1 @@
+# HuggingFace config.json → ModelConfig dataclass

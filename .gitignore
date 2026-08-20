@@ -1,0 +1,35 @@
+# Byte-compiled Python
+fitcheck/__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+
+# Virtual environments (if you create one later)
+.venv/
+venv/
+
+# Testing / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# Environment secrets (if you ever add API keys, etc.)
+.env
+
+# OS junk
+.DS_Store
+
+# Editor
+.vscode/
+
+docs/
+
+CLAUDE.md 
+TASKS.md
+
+docs/

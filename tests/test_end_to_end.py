@@ -1,0 +1,1 @@
+# full pipeline: config → report → verdict

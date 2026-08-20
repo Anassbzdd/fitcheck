@@ -1,0 +1,1 @@
+# Phase 2: parameter sweep (stub in MVP)

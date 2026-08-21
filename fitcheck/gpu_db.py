@@ -34,15 +34,23 @@ GPU_DB: dict[str, GpuSpec] = {
     # Datacenter GPUs
     "a100-40": GpuSpec("A100 40GB", 40_960, 39_500),
     "a100-80": GpuSpec("A100 80GB", 81_920, 79_000),
+    "h100": GpuSpec("H100 80GB", 81_920, 79_000),
     "h100-80": GpuSpec("H100 80GB", 81_920, 79_000),
     "h200": GpuSpec("H200 141GB", 144_384, 140_000),
     "b200": GpuSpec("B200 192GB", 196_608, 190_000),
 }
 
 
-def get_gpu(name: str) -> GpuSpec:
-    if not isinstance(name, str):
-        raise ValueError("GPU name must be a string")
+def get_gpu(name: str | None = None, vram_mib: int | None = None) -> GpuSpec:
+    if vram_mib is not None:
+        if isinstance(vram_mib, bool) or not isinstance(vram_mib, int) or vram_mib <= 0:
+            raise ValueError("vram_mib must be a positive integer")
+
+        custom_name = name.strip() if isinstance(name, str) and name.strip() else "Custom GPU"
+        return GpuSpec(custom_name, vram_mib, vram_mib * 95 // 100)
+
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Provide a GPU name or a positive vram_mib override")
 
     normalized_name = name.strip().casefold()
     try:

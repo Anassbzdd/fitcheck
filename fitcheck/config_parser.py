@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from huggingface_hub import hf_hub_download
+from huggingface_hub.errors import GatedRepoError
 
 
 @dataclass(frozen=True)
@@ -84,9 +85,15 @@ def _count_params(raw: Mapping[str, Any]) -> int:
 def fetch_model_config(model_id: str) -> ModelConfig:
     if not model_id or not model_id.strip():
         raise ValueError("model_id must be a non-empty Hugging Face repository ID")
-
+    
     normalized_model_id = model_id.strip()
-    config_path = hf_hub_download(repo_id=normalized_model_id, filename="config.json")
+    try:
+        config_path = hf_hub_download(repo_id=normalized_model_id, filename="config.json")
+    except GatedRepoError as error:
+        raise RuntimeError(
+            "This model is gated on Hugging Face.\n"
+            "Accept its license on the model page, then run: hf auth login"
+        ) from error
     with Path(config_path).open(encoding="utf-8") as config_file:
         raw: Mapping[str, Any] = json.load(config_file)
 

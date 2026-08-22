@@ -51,3 +51,6 @@ packages = ["fitcheck"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=fitcheck"
+markers = [
+    "network: tests that make real network calls to Hugging Face Hub",
+]

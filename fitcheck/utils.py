@@ -7,7 +7,9 @@ _PRECISION_BYTES: dict[str, float] = {
     "fp16": 2.0,
     "bf16": 2.0,
     "int8": 1.0,
+    "fp8": 1.0,
     "int4": 0.5,
+    "nf4": 0.5,
 }
 _OPTIMIZER_BYTES_PER_PARAM: dict[str, int] = {
     "adamw-fp32": 8,

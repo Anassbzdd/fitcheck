@@ -48,12 +48,22 @@ def _num_kv_heads(raw: Mapping[str, Any], num_attention_heads: int) -> int:
     return _required_int(raw, "num_key_value_heads")
 
 
+def _intermediate_size(raw: Mapping[str, Any], hidden_size: int) -> int:
+    if raw.get("intermediate_size") is None:
+        print(
+            "Warning: 'intermediate_size' not in config.json — "
+            "assuming 4 x hidden_size (can be 10-30% off the model's actual FFN size)."
+        )
+        return 4 * hidden_size
+    return _required_int(raw, "intermediate_size")
+
+
 def _parse_fields(raw: Mapping[str, Any]) -> _ParsedFields:
     hidden_size = _required_int(raw, "hidden_size")
     num_layers = _required_int(raw, "num_hidden_layers")
     num_attention_heads = _required_int(raw, "num_attention_heads")
     num_kv_heads = _num_kv_heads(raw, num_attention_heads)
-    intermediate_size = _required_int(raw, "intermediate_size")
+    intermediate_size = _intermediate_size(raw, hidden_size)
     vocab_size = _required_int(raw, "vocab_size")
 
     if hidden_size % num_attention_heads != 0:

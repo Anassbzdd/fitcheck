@@ -23,7 +23,6 @@ def test_get_gpu_returns_known_gpu_spec(
     vram_mib: int,
     usable_mib: int,
 ) -> None:
-    """Known aliases resolve to their documented memory specifications."""
     gpu = get_gpu(gpu_name)
 
     assert gpu.name == display_name
@@ -33,14 +32,12 @@ def test_get_gpu_returns_known_gpu_spec(
 
 @pytest.mark.parametrize("gpu_name", ["T4", " t4 ", "T4  ", "  T4"])
 def test_get_gpu_name_lookup_is_case_and_whitespace_insensitive(gpu_name: str) -> None:
-    """GPU names normalize via strip + casefold before dict lookup."""
     gpu = get_gpu(gpu_name)
 
     assert gpu.name == "Tesla T4"
 
 
 def test_get_gpu_unknown_name_has_actionable_error() -> None:
-    """Unknown aliases explain the issue and list valid choices."""
     with pytest.raises(ValueError, match="Unknown GPU 'not-a-gpu'") as error:
         get_gpu("not-a-gpu")
 
@@ -48,7 +45,6 @@ def test_get_gpu_unknown_name_has_actionable_error() -> None:
 
 
 def test_get_gpu_vram_override_returns_custom_spec() -> None:
-    """SPEC.md's --vram-mib escape hatch for unlisted GPUs."""
     gpu = get_gpu(vram_mib=24_000)
 
     assert gpu.name == "Custom GPU"
@@ -65,16 +61,14 @@ def test_get_gpu_vram_override_with_custom_name() -> None:
 
 
 def test_get_gpu_vram_override_ignores_blank_name() -> None:
-    """A blank/whitespace-only name falls back to the default custom label."""
     gpu = get_gpu(name="   ", vram_mib=10_000)
-
     assert gpu.name == "Custom GPU"
 
 
 @pytest.mark.parametrize("bad_vram", [0, -1, True, 12.5, "24000"])
 def test_get_gpu_rejects_invalid_vram_override(bad_vram: object) -> None:
     with pytest.raises(ValueError, match="vram_mib must be a positive integer"):
-        get_gpu(vram_mib=bad_vram)  # type: ignore[arg-type]
+        get_gpu(vram_mib=bad_vram)
 
 
 def test_get_gpu_requires_name_or_vram_override() -> None:

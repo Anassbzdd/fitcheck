@@ -91,20 +91,35 @@ def test_fetch_model_config_handles_tied_embeddings(
     assert untied.num_params - tied.num_params == embedding_params
 
 
-@pytest.mark.parametrize("missing_field", ["hidden_size", "intermediate_size", "vocab_size", "num_hidden_layers"])
+@pytest.mark.parametrize("missing_field", ["hidden_size", "vocab_size", "num_hidden_layers"])
 def test_fetch_model_config_missing_required_field_raises(
     fake_config_download: Callable[[dict[str, Any]], None],
     llama_31_8b_config: dict[str, Any],
     missing_field: str,
 ) -> None:
-    """A config.json missing a required field (e.g. intermediate_size, so no
-    silent 4h fallback) raises a clear, field-naming ValueError."""
     broken_config = dict(llama_31_8b_config)
     del broken_config[missing_field]
     fake_config_download(broken_config)
 
     with pytest.raises(ValueError, match=missing_field):
         fetch_model_config("fake-org/broken-model")
+
+
+def test_fetch_model_config_missing_intermediate_size_falls_back_to_4h(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    llama_31_8b_config: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_without_ffn_size = dict(llama_31_8b_config)
+    del config_without_ffn_size["intermediate_size"]
+    fake_config_download(config_without_ffn_size)
+
+    config = fetch_model_config("fake-org/tied-model")
+
+    assert config.intermediate_size == 4 * config.hidden_size
+    printed = capsys.readouterr().out
+    assert "'intermediate_size' not in config.json" in printed
+    assert "4 x hidden_size" in printed
 
 
 def test_fetch_model_config_hidden_size_not_divisible_by_heads_raises(
@@ -138,9 +153,6 @@ def test_fetch_model_config_empty_model_id_raises(model_id: str) -> None:
 def test_fetch_model_config_gated_repo_raises_actionable_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A gated Hugging Face repo should surface a clear, actionable error instead
-    of leaking the raw huggingface_hub exception."""
-
     def _raise_gated(*, repo_id: str, filename: str) -> str:
         fake_response = httpx.Response(
             403, request=httpx.Request("GET", f"https://huggingface.co/{repo_id}")

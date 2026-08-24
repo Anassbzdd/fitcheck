@@ -120,7 +120,7 @@
 - [x] **3.4** Implement `memory/gradients.py`
   - `estimate_gradient_memory(trainable_params, precision) -> float` (MiB)
   - BF16/FP16: 2 bytes/param. FP32: 4 bytes/param.
-- [ ] **3.5** Implement `memory/activations.py`
+- [x] **3.5** Implement `memory/activations.py`
   - `estimate_activation_memory(config, batch_size, seq_len, grad_checkpoint, flash_attn, precision) -> float` (MiB)
   - $A_{layer} = \gamma bs\left[6h + 2h\frac{n_{kv}}{n_h} + 3d_{ff}\right] + \gamma bn_hs^2 \cdot \mathbb{1}[\text{no FA}]$
   - $\gamma$ = `precision_to_bytes(precision)` — **never hardcode 2**; FP32 doubles every term

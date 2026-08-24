@@ -41,6 +41,10 @@ GPU_DB: dict[str, GpuSpec] = {
 }
 
 
+def list_gpus() -> list[tuple[str, GpuSpec]]:
+    return list(GPU_DB.items())
+
+
 def get_gpu(name: str | None = None, vram_mib: int | None = None) -> GpuSpec:
     if vram_mib is not None:
         if isinstance(vram_mib, bool) or not isinstance(vram_mib, int) or vram_mib <= 0:

@@ -1,0 +1,596 @@
+# `fitcheck` — Specification
+
+> **PRD + Technical Design + Definition of Done — One Document**
+>
+> Version: 0.1.0 (MVP) · Author: Anas · Date: August 2026
+
+---
+
+## Section 1: Problem & Users
+
+### The Pain Point
+
+Every ML practitioner who fine-tunes LLMs has hit the same wall:
+
+1. Pick a model, set training config (batch size, LoRA rank, sequence length, precision).
+2. Launch training. Wait 2–5 minutes for the model to load.
+3. **`CUDA OutOfMemoryError`.**
+4. Guess a smaller config. Relaunch. Wait again. Repeat.
+
+This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero insight** into *why* it doesn't fit or *how close* you are. The information needed to answer "will it fit?" exists — it's pure math from the model's `config.json` — but nobody has packaged it into a tool that gives a precise, component-level breakdown with actionable advice.
+
+### Target Users
+
+| Persona | What they need | How they use `fitcheck` |
+|:---|:---|:---|
+| **Solo GPU owner** (RTX 3090/4090) | Know if a QLoRA job fits before launching | `fitcheck <model> --gpu 4090 --lora-r 64 ...` |
+| **Cloud ML engineer** (A100/H100) | Pick the cheapest instance that fits | `fitcheck <model> --gpu a100-40 ...` vs `--gpu a100-80` |
+| **ML student / beginner** | Understand *where* GPU memory goes during training | Interactive REPL → `explain` command |
+| **Framework developer** (Axolotl, Unsloth) | Pre-validate user configs before launching jobs | JSON output mode for CI/CD integration |
+| **Inference deployer** (Ollama, vLLM) | Know if a model fits for serving | `fitcheck infer <model> --gpu 4090` |
+
+### Why Existing Tools Don't Solve This
+
+| Tool | Gap |
+|:---|:---|
+| `accelerate estimate-memory` | No LoRA/QLoRA. No activations, optimizer, gradients. Weights only. |
+| HF Model Memory Calculator | Inference only. No training components. |
+| LLM-Calc | Napkin math. No component breakdown. No LoRA. |
+| vram.asmirnov.xyz | No GQA-aware formulas. No CLI. Limited architectures. |
+
+**`fitcheck` fills every gap simultaneously:** component-level breakdown, LoRA/QLoRA-native, GQA-aware, architecture-specific (reads `config.json`), actionable advice, CLI-first, and two interaction modes (one-liner + interactive REPL).
+
+---
+
+## Section 2: Feature Scope
+
+### MVP (v0.1 — Days 1–5)
+
+| Feature | Priority | Notes |
+|:---|:---:|:---|
+| CLI with `click`: `fitcheck <model> [flags]` | P0 | Power-user one-liner mode |
+| Interactive REPL: `fitcheck` (no args) | P0 | Commands: `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `help`, `exit` |
+| Fetch HuggingFace `config.json` via `huggingface_hub` | P0 | No weight download — config only |
+| Compute all 6 memory components | P0 | Weights, LoRA, optimizer, gradients, activations, overhead |
+| GPU database (hard-coded) | P0 | 3090, 4090, A100-40, A100-80, H100, T4, L4 |
+| Rich terminal output | P0 | Colored table, pass/fail verdict, headroom %, max batch suggestion |
+| Precision support: FP32, FP16, BF16, INT8, INT4 | P0 | |
+| Optimizer support: AdamW, SGD, Adam8bit | P0 | |
+| LoRA + QLoRA support | P0 | GQA-aware LoRA param counting |
+| Read `intermediate_size` from config | P0 | Never assume `4h` |
+| `--json` output for CI/CD | P0 | Machine-readable `MemoryReport` |
+| `--explain` + savings hints | P0 | The "where did my VRAM go" teaching path |
+| `pip install fitcheck-llm` | P0 | PyPI published on day 5 |
+| Unit tests with `pytest` | P0 | ≥80% coverage on `memory/` modules |
+| GitHub Actions CI | P0 | pytest on 3.10/3.11/3.12, coverage badge |
+
+### Stretch — v0.2+ (Post-MVP)
+
+| Feature | Phase | Notes |
+|:---|:---:|:---|
+| `fitcheck infer <model>` — inference mode | 1.5 | KV cache math, concurrent request estimation |
+| `fitcheck advise` — config advisor | 2 | Pareto sweep of (batch_size, lora_r, seq_len) |
+| Calibration mode | 3 | 1 real forward pass → correction factor |
+| HuggingFace Gradio Space | 3 | Web UI for non-CLI users |
+| Cost estimator (RunPod/Lambda pricing) | 3 | |
+| ZeRO / FSDP sharding | 4 | Multi-GPU memory modeling |
+| Axolotl/Unsloth YAML integration | 4 | Read their config, output estimate |
+
+---
+
+## Section 3: Technical Design
+
+### 3.1 — The 6 Memory Components and Their Formulas
+
+All formulas are derived from first principles. The master equation:
+
+$$\boxed{\text{Peak VRAM} = W_{base} + W_{lora} + S_{optim} + G_{grad} + A_{act} + C_{overhead}}$$
+
+---
+
+#### Component 1: Base Model Weights ($W_{base}$)
+
+$$W_{base} = P \times \text{bytes\_per\_param} + Q_{overhead}$$
+
+Where:
+- $P$ = total parameter count (computed from `config.json`, not loaded)
+- `bytes_per_param`: FP32→4, FP16/BF16→2, INT8→1, INT4→0.5
+- For QLoRA (NF4 4-bit): bytes_per_param=0.5 bytes (4 bits = 0.5 bytes).
+- $Q_{overhead}$ = quantization scale overhead (QLoRA only)
+
+**QLoRA quantization overhead:**
+
+$$Q_{overhead} = P \times \frac{2}{B_q} \text{ bytes}$$
+
+Where $B_q$ = quantization block size (default 64). One FP16 scale per block → 2 bytes per 64 weights = 0.03125 bytes/param.
+
+Double Quantization **quantizes the quantization constants themselves**:
+
+1. The first-level scales $c_1$ (one per block of 64 weights) are quantized from **FP16 (16 bits)** down to
+   **8-bit integers**. Note: 8-bit *quantized ints*, not FP8 — the format is an int8 codebook, not a float type.
+2. A second-level scale $c_2$ in **FP32 (32 bits)** is added once every **256 blocks**.
+
+$$ 	ext{Overhead}^{DQ} = rac{8	ext{ bits}}{64} + rac{32	ext{ bits}}{64 	imes 256} = 0.125 + 0.00195 pprox \mathbf{0.127}	ext{ bits/param} pprox \mathbf{0.0158}	ext{ bytes/param} $$
+
+Against the single-quantization $0.03125$ bytes/param that is a factor of $0.5078$, so the implementation
+applies the simpler **$Q_{overhead} 	imes 0.5$**. The 0.8% difference is far inside the ±20% accuracy target.
+
+**Parameter counting from config** (no weight download):
+
+$$P = V \times h + L \times \left[P_{attn} + 3h \cdot d_{ff} + \text{norms}\right] + V \times h \times \mathbb{1}[\text{untied}]$$
+
+Where $V$ = vocab size, $h$ = hidden size, $L$ = layers, $d_k = h / n_h$.
+
+#### **Attention parameters ($P_{attn}$) depend on the attention type:**
+
+| Attention Type                    | When               | $P_{attn}$                         |
+| :-------------------------------- | :----------------- | :--------------------------------- |
+| **MHA** (Multi-Head Attention)    | $n_{kv} = n_h$     | $4h^2$                             |
+| **GQA** (Grouped Query Attention) | $1 < n_{kv} < n_h$ | $2h^2 + 2h \cdot n_{kv} \cdot d_k$ |
+| **MQA** (Multi-Query Attention)   | $n_{kv} = 1$       | $2h^2 + 2h \cdot d_k$              |
+
+General formula (works for all 3): $P_{attn} = 2h^2 + 2h \cdot n_{kv} \cdot d_k$
+
+> For MHA: $n_{kv} = n_h$ → $n_{kv} \cdot d_k = h$ → $2h^2 + 2h^2 = 4h^2$ ✓
+
+**Implementation:** `memory/weights.py` — single function `estimate_weight_memory(num_params, precision, quantization_config)`. It takes the scalar param count, not the whole `ModelConfig`: counting parameters is `config_parser`'s job, and keeping the boundary there makes the function trivially testable with a bare integer.
+
+---
+
+#### Component 2: LoRA Adapter Weights ($W_{lora}$)
+$$W_{lora} = L \times r \times \text{bytes} \times \sum_{t \in \text{targets}} \left(d_{in}^{(t)} + d_{out}^{(t)}\right)$$
+**Implementation:** `memory/lora.py` — function `estimate_lora_memory(config, rank, targets, precision)`.
+
+---
+
+#### Component 3: Optimizer States ($S_{optim}$)
+
+$$S_{optim} = P_{trainable} \times \beta_{optim}$$
+
+| Optimizer           | $\beta_{optim}$ (bytes/param) |
+| :------------------ | :---------------------------: |
+| AdamW (FP32 states) |               8               |
+| AdamW (BF16 states) |               4               |
+| AdamW 8-bit         |               2               |
+| SGD + momentum      |               4               |
+| SGD (no momentum)   |               0               |
+
+**Subtlety — full fine-tuning:** Add $P_{trainable} \times 4$ bytes for FP32 master weight copy when not using LoRA.
+
+**Implementation:** `memory/optimizer.py` — function `estimate_optimizer_memory(trainable_params, optimizer_type, is_lora)`.
+
+---
+
+#### Component 4: Gradients ($G_{grad}$)
+
+$$G_{grad} = P_{trainable} \times 2 \text{ bytes (BF16)}$$
+| Precision   | Bytes per param |
+| :---------- | :-------------: |
+| FP32        |        4        |
+| FP16 / BF16 |        2        |
+
+Gradient accumulation does **not** increase this — gradients are accumulated in-place.
+
+**Implementation:** `memory/gradients.py` — function `estimate_gradient_memory(trainable_params, precision)`.
+
+---
+
+#### Component 5: Activations ($A_{act}$) — The Hard One
+
+**The saved-tensor table is the derivation.** Every term in the formula below traces to exactly one row here.
+Let $\gamma$ = `bytes_per_activation` (2 for BF16/FP16, 4 for FP32).
+
+| # | Saved tensor | Shape | Size | Why autograd keeps it |
+|:--|:---|:---|:---|:---|
+| 1 | Layer input (pre-attn-norm input) | $(b,s,h)$ | $\gamma bsh$ | RMSNorm backward needs its input |
+| 2 | Attn-norm output | $(b,s,h)$ | $\gamma bsh$ | Input to `q/k/v_proj` — one tensor, three Linears |
+| 3 | Q (post-RoPE) | $(b,n_h,s,d_k)$ | $\gamma bsh$ | Saved by attention backward |
+| 4 | Attention output | $(b,s,h)$ | $\gamma bsh$ | Attention's `out` **and** `o_proj`'s input (same storage) |
+| 5 | Post-attn residual sum | $(b,s,h)$ | $\gamma bsh$ | MLP-norm backward needs its input |
+| 6 | MLP-norm output | $(b,s,h)$ | $\gamma bsh$ | Input to `gate_proj` and `up_proj` |
+| | **subtotal** | | $\mathbf{\gamma bs \cdot 6h}$ | |
+| 7 | K (post-RoPE) | $(b,n_{kv},s,d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA** |
+| 8 | V | $(b,n_{kv},s,d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA** |
+| 9 | Attention weights (softmax) | $(b,n_h,s,s)$ | $\gamma bn_hs^2$ | **Removed by Flash Attention** |
+| 10 | Gate proj output | $(b,s,d_{ff})$ | $\gamma bs \cdot d_{ff}$ | SiLU backward |
+| 11 | Up proj output | $(b,s,d_{ff})$ | $\gamma bs \cdot d_{ff}$ | Element-wise multiply backward |
+| 12 | Down proj input | $(b,s,d_{ff})$ | $\gamma bs \cdot d_{ff}$ | `down_proj` backward |
+
+**Not saved** — and this is the instructive part: pre-RoPE Q/K (RoPE backward needs only `cos`/`sin`, so the
+pre-rotation tensors are freed), `o_proj`'s *output* (a Linear's backward needs its input, not its output),
+and the residual additions themselves (addition's backward is the identity — it stores nothing). Flash
+Attention's `logsumexp` is $(b,n_h,s)$ in FP32 — real, but negligible next to the rest.
+
+**Per-layer activation memory:**
+
+$$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + \gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}]$$
+
+**Total activation memory:**
+
+$$A_{act} = \begin{cases} L \times A_{layer} & \text{no gradient checkpointing} \\ L \times \gamma bsh + A_{layer} & \text{gradient checkpointing (every layer)} \end{cases}$$
+
+| Flash Attn | Grad Checkpoint | $A_{act}$                                          |
+| ---------- | --------------- | -------------------------------------------------- |
+| off        | off             | `L × A_layer` (with the s² term active)            |
+| off        | on              | `L × γbsh + A_layer` (with the s² term active)     |
+| on         | off             | `L × A_layer` (s² term zeroed by the indicator)    |
+| on         | on              | `L × γbsh + A_layer` (s² term zeroed)              |
+
+**Critical implementation details:**
+
+1. **Flash Attention** removes the $O(s^2)$ -> $\gamma bn_hs²$ attention matrix term — two code paths required.
+2. **$d_{ff}$** must be read from `intermediate_size` in `config.json`. Never assume `4h`. Error range: 10–30%.
+3. **$b$** is the micro-batch size, not effective batch. Gradient accumulation doesn't increase memory.
+4. **Gradient checkpointing** uses the practical default (checkpoint every layer), storing $L$ layer inputs + 1 layer's full activations.
+5. **$\gamma$ is derived from the compute precision**, never hardcoded to 2. Under `--precision fp32` every row in the table doubles.
+
+**Implementation:** `memory/activations.py` — function `estimate_activation_memory(config, batch_size, seq_len, grad_checkpoint, flash_attn, precision)`.
+
+---
+
+#### Component 6: CUDA Overhead ($C_{overhead}$)
+
+$$C_{overhead} \approx 500\text{ MiB} + 0.05 \times (W_{base} + A_{act})$$
+
+Covers: CUDA context (~300-800 MiB), cuDNN/cuBLAS workspace, PyTorch caching allocator fragmentation.
+
+> **On the deliberate overlap with `usable_mib`.** `GpuSpec.usable_mib` already discounts what the driver and
+> display reserve before your process starts (4090: 24,576 → 23,500), while $C_{overhead}$ covers what
+> PyTorch's own runtime adds on top — CUDA context, allocator fragmentation, cuBLAS workspace. The two
+> allowances overlap by a few hundred MiB, so `fitcheck` biases its estimate high **on purpose**: for a tool
+> whose entire job is avoiding OOM, a false "fits" is far more costly to the user than a false "doesn't fit".
+> Do not "fix" this by removing one of them.
+
+**Implementation:** `memory/overhead.py` — function `estimate_overhead(weight_memory, activation_memory)`.
+
+---
+
+### 3.2 — Module / File Structure and Data Flow
+
+```
+fitcheck/
+├── __init__.py              # version, public API
+├── __main__.py              # python -m fitcheck entry point
+├── cli.py                   # click commands & option groups
+├── repl.py                  # Interactive REPL (Mode B)
+├── config_parser.py         # HuggingFace config.json → ModelConfig dataclass
+├── estimator.py             # Orchestrator: calls all 6 components, returns MemoryReport
+├── memory/
+│   ├── __init__.py          # re-exports all estimate_* functions
+│   ├── weights.py           # Component 1
+│   ├── lora.py              # Component 2
+│   ├── optimizer.py         # Component 3
+│   ├── gradients.py         # Component 4
+│   ├── activations.py       # Component 5
+│   └── overhead.py          # Component 6
+├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
+├── display.py               # rich tables, panels, verdicts, explain text
+├── advisor.py               # Phase 2: parameter sweep (stub in MVP)
+├── calibrate.py             # Phase 3: real measurement (stub in MVP)
+└── utils.py                 # bytes↔MiB, precision→bytes lookup
+tests/
+├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
+├── test_weights.py
+├── test_lora.py
+├── test_optimizer.py
+├── test_gradients.py
+├── test_activations.py
+├── test_overhead.py
+└── test_end_to_end.py       # full pipeline: config → report → verdict
+```
+
+**Data flow:**
+
+```mermaid
+graph LR
+    A["CLI / REPL<br/>(user input)"] --> B["config_parser<br/>fetch config.json"]
+    B --> C["estimator.py<br/>orchestrator"]
+    C --> D["memory/*.py<br/>6 components"]
+    C --> E["gpu_db.py<br/>GPU specs"]
+    D --> F["MemoryReport<br/>dataclass"]
+    E --> F
+    F --> G["display.py<br/>rich output"]
+    F --> H["repl.py<br/>explain / optimize / compare"]
+```
+
+**Key dataclasses:**
+
+```python
+@dataclass
+class ModelConfig:
+    name: str
+    num_params: int
+    hidden_size: int
+    num_layers: int
+    num_attention_heads: int
+    num_kv_heads: int
+    intermediate_size: int
+    vocab_size: int
+    head_dim: int
+    tie_word_embeddings: bool
+
+@dataclass
+class TrainingConfig:
+    precision: str          # COMPUTE dtype: "fp32" | "fp16" | "bf16"
+                            #   drives LoRA weights, gradients, and activations (γ)
+    quantization: str       # BASE MODEL storage: "none" | "nf4" | "int8"
+    double_quant: bool      # NF4 double quantization
+    optimizer: str          # "adamw" | "adam8bit" | "sgd" | "sgd-momentum"
+    optimizer_dtype: str    # AdamW state dtype: "fp32" | "bf16"
+    batch_size: int         # MICRO-batch
+    seq_len: int
+    lora_rank: int | None   # None => full fine-tuning
+    lora_targets: list[str]
+    grad_checkpoint: bool
+    flash_attn: bool
+    grad_accum_steps: int
+
+@dataclass
+class MemoryReport:
+    weight_mib: float
+    lora_mib: float
+    optimizer_mib: float
+    gradient_mib: float
+    activation_mib: float
+    overhead_mib: float
+    total_mib: float
+    gpu_capacity_mib: float
+    headroom_mib: float
+    fits: bool
+    max_batch_size: int
+    effective_batch_size: int    # batch_size × grad_accum_steps — DISPLAY ONLY, costs no memory
+    savings_hints: list[str]     # see §3.5 --explain
+```
+
+> **`precision` is the compute dtype only.** Base-model storage precision is a separate axis
+> (`quantization`), because they genuinely vary independently: QLoRA is a 4-bit base with BF16 compute.
+> Collapsing them into one flag leaves the activation and gradient dtype undefined whenever the base is
+> quantized, and silently under-counts activations by 2× under FP32.
+
+---
+
+### 3.3 — How Config Fetching Works (No Weight Download)
+
+```python
+from huggingface_hub import hf_hub_download
+import json
+
+def fetch_model_config(model_id: str) -> ModelConfig:
+    path = hf_hub_download(repo_id=model_id, filename="config.json")
+    with open(path) as f:
+        raw = json.load(f)
+
+    return ModelConfig(
+        name=model_id.split("/")[-1],
+        num_params=_count_params(raw),   # computed, not from a field
+        hidden_size=raw["hidden_size"],
+        num_layers=raw["num_hidden_layers"],
+        num_attention_heads=raw["num_attention_heads"],
+        num_kv_heads=raw.get("num_key_value_heads", raw["num_attention_heads"]),
+        intermediate_size=raw["intermediate_size"],
+        vocab_size=raw["vocab_size"],
+        head_dim=raw["hidden_size"] // raw["num_attention_heads"],
+        tie_word_embeddings=raw.get("tie_word_embeddings", False),
+    )
+```
+
+This downloads only `config.json` (~2KB), never the model weights (~4–140GB).
+
+---
+
+### 3.4 — GPU Database Design
+
+Hard-coded in v0.1. User-extensible in v0.3+.
+
+The database ships 22 entries. `gpu_db.py` is the authority; this is the current roster:
+
+| Class | Keys |
+|:---|:---|
+| Consumer | `3060-12`, `4070ti`, `5070`, `5070ti`, `5080`, `3090`, `4090`, `5090` |
+| Older / cloud | `t4`, `v100-16`, `l4`, `a10` |
+| Workstation | `a6000`, `rtx6000-ada`, `l40`, `l40s` |
+| Datacenter | `a100-40`, `a100-80`, `h100`, `h100-80`, `h200`, `b200` |
+
+`h100` and `h100-80` are intentional aliases for the same card — users reach for both spellings.
+`--list-gpus` prints this table at runtime, and `--vram-mib N` synthesizes a `GpuSpec` for anything unlisted
+(usable defaults to 95% of the value given).
+
+**Usable vs. advertised:** Usable ≈ advertised × 0.91–0.97 (CUDA context, driver overhead, display if desktop
+GPU). This is a rough per-card allowance, not a fixed formula — older/consumer cards (T4, V100, L4, RTX
+30/40/50-series) sit lower in the range (as low as ~0.91–0.94), while newer datacenter cards without a display
+attached sit at the top (~0.96–0.97, e.g. A100, H100, H200, B200). `GPU_DB` values are current estimates, not
+measured constants — treat any entry as approximate until benchmarked.
+
+---
+
+### 3.5 — CLI Interface Design
+
+#### Mode A: One-Liner (Power User)
+
+```
+fitcheck <model_id> [OPTIONS]
+
+Arguments:
+  MODEL_ID               HuggingFace model ID (e.g., meta-llama/Llama-3.1-8B)
+
+Model / quantization:
+  --quant TEXT           none|nf4|int8 — BASE MODEL storage (default: none)
+  --double-quant         NF4 double quantization (halves scale overhead)
+  --qlora                Shorthand: --quant nf4 --precision bf16 --grad-checkpoint
+
+Training Options:
+  --precision TEXT       fp32|fp16|bf16 — COMPUTE dtype: LoRA weights,
+                         gradients, activations (default: bf16)
+  --lora-r INT           LoRA rank (default: 16)
+  --no-lora              Full fine-tuning (all params trainable)
+  --lora-targets TEXT    Comma-separated modules, or a preset:
+                         minimal (q,v) | standard (q,k,v,o) | full (+gate,up,down)
+                         (default: standard)
+  --batch-size INT       MICRO-batch size (default: 1)
+  --grad-accum INT       Accumulation steps — display only, costs no memory (default: 1)
+  --seq-len INT          Sequence length (default: 2048)
+  --optimizer TEXT       adamw|adam8bit|sgd|sgd-momentum (default: adamw)
+  --optimizer-dtype TEXT fp32|bf16 — AdamW state dtype (default: fp32)
+  --grad-checkpoint      Enable gradient checkpointing
+  --flash-attn           Enable Flash Attention
+
+GPU Options:
+  --gpu TEXT             GPU name from database (default: 4090)
+  --vram-mib INT         VRAM override for a GPU not in the database
+  --list-gpus            Print the GPU database and exit
+
+Output Options:
+  --json                 Output as JSON (for CI/CD)
+  --no-color             Disable colored output
+  --verbose              Show per-layer breakdown
+  --explain              Plain-English breakdown + savings hints
+```
+
+**Validation:** reject `--quant nf4 --no-lora` — you cannot backprop into a frozen 4-bit base. Reject
+`--optimizer-dtype` with a non-AdamW optimizer. `--qlora` sets defaults, so an explicit later flag wins.
+
+#### `--explain` output contract
+
+`--explain` must name the largest component and say *why*, then price each toggle by re-running the estimator
+with that one flag flipped — no new math, just a second call:
+
+```
+Largest component: activations (3,136 MiB, 36%) — dominated by 32 stored layer
+inputs under gradient checkpointing.
+
+  adamw -> adam8bit ......... saves    312 MiB
+  --flash-attn OFF .......... costs +1,075 MiB   (currently ON)
+  --grad-checkpoint OFF ..... costs +33,264 MiB  (currently ON)
+  --grad-accum 8 ............ costs      0 MiB   (accumulation is free)
+```
+
+Each figure is a **total-memory delta**, not a single-component delta — flipping Flash Attention off adds
+1,024 MiB of attention matrices *plus* the 5% of that which $C_{overhead}$ picks up, hence 1,075 and not
+1,024. Compute every hint as the difference of two full `estimate()` calls; never by summing component
+deltas by hand.
+
+The last line is load-bearing: "gradient accumulation costs memory" is the single most common misconception
+this tool can correct, and showing a hard `0 MiB` corrects it faster than a paragraph.
+
+#### Mode B: Interactive REPL
+
+```
+fitcheck              # no args → enters REPL
+
+Commands:
+  model <model_id>    Load a model config from HuggingFace
+  gpu <gpu_name>      Set target GPU
+  memory [OPTIONS]    Compute memory breakdown (same flags as CLI mode)
+  explain             Explain the last memory result in plain English
+  optimize            Suggest best config for current model + GPU
+  compare --gpu <X>   Compare current result against a different GPU
+  help                Show available commands
+  exit / quit         Exit the REPL
+```
+
+**REPL state:** The REPL maintains a session object holding the current `ModelConfig`, `GpuSpec`, and last `MemoryReport`. Commands like `explain`, `optimize`, and `compare` read from the last computed report.
+
+---
+
+### 3.6 — Key Architecture Decisions
+
+| Decision | Rationale |
+|:---|:---|
+| **Static estimation (no GPU required)** | The whole point — predict before you spend money/time. Pure math from `config.json`. |
+| **One formula per file** | Each `memory/*.py` module has one formula. Testable, debuggable, swappable independently. |
+| **Read `config.json` not weights** | Downloads ~2KB vs. ~4–140GB. Works offline after first fetch. No GPU needed. |
+| **Practical grad checkpointing** (every layer) | This is what HuggingFace `transformers` actually does. Academic $\sqrt{L}$ formula would under-estimate memory. |
+| **GQA-aware by default** | Most modern models use GQA. Ignoring it gives 20–25% error on LoRA and activation estimates. |
+| **`click` not `argparse`** | Better UX: auto-generated help, option groups, composable commands. Standard for Python CLIs. |
+| **`rich` for display** | Screenshot-worthy terminal output drives organic sharing. Tables, colors, panels, emojis. |
+| **Separate REPL module** | Mode B has its own state machine. Cleaner than cramming it into `cli.py`. |
+
+---
+
+### 3.7 — Edge Cases and Known Limitations
+
+| Edge Case | How `fitcheck` Handles It | Status |
+|:---|:---|:---:|
+| **MoE models** (Mixtral, DeepSeek) | Not supported in MVP. Active experts × per-expert FFN changes the activation formula. | ❌ v0.3 |
+| **Models with tied embeddings** | Detected via `tie_word_embeddings` in config. Count embedding params once. | ✅ MVP |
+| **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Blueprint.md's note on `intermediate_size`). | ✅ MVP |
+| **Custom attention patterns** (sliding window, local) | Not modeled. Treated as standard attention. | ❌ v0.3 |
+| **FSDP / DeepSpeed ZeRO** | Not supported. Memory is split across GPUs — requires sharding-aware formulas. | ❌ v0.4 |
+| **`torch.compile`** | Changes which tensors are saved (kernel fusion). Not modeled. | ❌ v0.4 |
+| **Multi-GPU (tensor parallel)** | Not supported. Single-GPU estimation only. | ❌ v0.4 |
+| **Very long sequences** ($s > 8192$) | Flash Attention path is correct. Non-flash path may over-estimate (tiling in practice). | ⚠️ Known |
+| **Gated linear units** (GLU variants: SiLU, GELU) | Treated uniformly — all save same intermediate shapes. | ✅ MVP |
+| **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
+| **Offline mode** | If `config.json` is cached locally, works without internet. | ✅ MVP |
+| **Unknown GPU** | Error message listing available GPUs. Flag to pass custom VRAM: `--vram-mib 24000`. | ✅ MVP |
+
+---
+
+## Section 4: Definition of Done
+
+The MVP is **done** when all 5 bullets are true:
+
+1. **`pip install fitcheck-llm` works** — published to PyPI, installs cleanly on Python 3.10+, `fitcheck --help` runs.
+
+2. **Both interaction modes functional** — Mode A (CLI one-liner) and Mode B (interactive REPL with `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `exit`) produce correct output.
+
+3. **Estimates within ±20% of measured ground truth** for ≥3 validated configurations in the README validation matrix (Llama 3.1-8B on 4090, Mistral-7B on T4, one other).
+
+4. **`pytest` passes with ≥80% line coverage** on all `memory/` modules, including at least one end-to-end test (known config → expected MiB ± tolerance).
+
+5. **README is complete** — includes: what it does (with screenshot of terminal output), comparison table vs. existing tools, installation instructions, usage examples (both modes), validation matrix, and "how it works" section linking to this spec.
+
+---
+
+## Appendix: Worked Example (Reference Implementation Check)
+
+**Config:** Llama-3.1-8B, QLoRA r=64, targets=[q,k,v,o], bs=4, seq=2048, BF16 compute, NF4 base (no double
+quant), AdamW FP32 states, grad ckpt ON, Flash Attn ON, RTX 4090.
+
+**This is the single golden number set for the whole project.** Every doc, and every test, cites these values
+and no others.
+
+Derived inputs: $P = 8{,}030{,}261{,}248$, $h=4096$, $L=32$, $n_h=32$, $n_{kv}=8$, $d_{ff}=14336$, $\gamma=2$.
+
+```
+bracket = 6h + 2h·(n_kv/n_h) + 3·d_ff
+        = 24,576 + 2,048 + 43,008          = 69,632
+A_layer = γ·b·s·bracket = 2·4·2048·69,632  = 1,140,850,688 B = 1,088 MiB
+L·γbsh  = 32 · 2·4·2048·4096               = 2,147,483,648 B = 2,048 MiB
+```
+
+| Component      | Formula                                                  | Bytes            | Result (MiB) |
+| :------------- | :------------------------------------------------------- | ---------------: | -----------: |
+| $W_{base}$     | $P 	imes 0.5 + P 	imes rac{2}{64}$                   |    4,266,076,288 |     4,068.45 |
+| $W_{lora}$     | $32 	imes 1{,}703{,}936 	imes 2$ bytes                 |      109,051,904 |       104.00 |
+| $S_{optim}$    | $54{,}525{,}952 	imes 8$ bytes                          |      436,207,616 |       416.00 |
+| $G_{grad}$     | $54{,}525{,}952 	imes 2$ bytes                          |      109,051,904 |       104.00 |
+| $A_{act}$      | $L \cdot \gamma bsh + A_{layer} = 2{,}048 + 1{,}088$     |    3,288,334,336 |     3,136.00 |
+| $C_{overhead}$ | $500 + 0.05 	imes (4{,}068.45 + 3{,}136)$               |                — |       860.22 |
+| **Total**      |                                                          |                  | **8,688.67** |
+
+RTX 4090 usable: 23,500 MiB → **✅ FITS** — headroom 14,811 MiB (63%) — max micro-batch **21**.
+
+Displayed rounded as **8,689 MiB**. Tests assert the unrounded total within a tolerance, never the display
+string.
+
+**Units discipline:** all values are MiB ($1024^2$), never MB ($10^6$). $W_{base}$ is 4,266 **MB** but 4,068
+**MiB**; quoting the former as the latter is a 4.9% error, which is enough on its own to flip a fits/doesn't-fit
+verdict near the boundary. GPU vendors advertise in GB, PyTorch reports in MiB — convert once, at the edge.
+
+**`max_batch_size` is defined by search, not extrapolation:** the largest integer $b$ with
+$\text{total\_mib}(b) \le \text{usable\_mib}$, found by re-running the estimator (bisection). Extrapolating
+from a single point is wrong because $C_{overhead}$ is itself a function of $A_{act}(b)$, so the true slope is
+$784 \times 1.05 = 823.2$ MiB per batch unit, not 784. Here:
+
+$$\text{total}(b) = 5{,}395.9 + 823.2\,b \le 23{,}500 \;\Rightarrow\; b \le 21.99 \;\Rightarrow\; b_{max} = \mathbf{21}$$
+
+Note $21.99$ — this lands close enough to the boundary that rounding the wrong way silently hands the user a
+config that OOMs. **Always floor, never round.**
+
+**Cross-check (Flash Attention OFF):** the softmax term adds
+$\gamma bn_hs^2 = 2 \cdot 4 \cdot 32 \cdot 2048^2 = 1{,}024$ MiB per layer, so $A_{layer} = 2{,}112$ MiB and
+$A_{act} = 4{,}160$ MiB.
+
+Every `memory/*.py` module must reproduce its row in this table for the corresponding inputs, and
+`test_end_to_end.py` must assert the **Total**.

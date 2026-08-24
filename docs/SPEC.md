@@ -187,13 +187,18 @@ mixed-precision SGD too. Do not overload `optimizer_dtype`, which is the state d
 
 #### Component 4: Gradients ($G_{grad}$)
 
-$$G_{grad} = P_{trainable} \times 2 \text{ bytes (BF16)}$$
+$$G_{grad} = P_{trainable} \times \gamma \qquad \gamma = \texttt{precision\_to\_bytes(precision)}$$
+
 | Precision   | Bytes per param |
 | :---------- | :-------------: |
 | FP32        |        4        |
 | FP16 / BF16 |        2        |
 
-Gradient accumulation does **not** increase this — gradients are accumulated in-place.
+A `.grad` tensor matches its parameter in shape and dtype, so gradients scale with the **compute**
+precision — 2 bytes is the BF16 case, not a constant. Under `--precision fp32` this term doubles.
+
+Gradient accumulation does **not** increase this — gradients are accumulated in-place into the same
+tensor. `grad_accum_steps` must not appear in this formula.
 
 **Implementation:** `memory/gradients.py` — function `estimate_gradient_memory(trainable_params, precision)`.
 

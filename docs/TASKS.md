@@ -117,7 +117,7 @@
   - Full FT **in mixed precision only**: add master weight copy (+4 bytes/param).
     Under `precision="fp32"` there is no master copy — $W_{base}$ already holds FP32 params.
     See SPEC Component 3 for the indicator and the 16 bytes/param invariant.
-- [ ] **3.4** Implement `memory/gradients.py`
+- [x] **3.4** Implement `memory/gradients.py`
   - `estimate_gradient_memory(trainable_params, precision) -> float` (MiB)
   - BF16/FP16: 2 bytes/param. FP32: 4 bytes/param.
 - [ ] **3.5** Implement `memory/activations.py`

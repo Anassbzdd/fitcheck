@@ -3,13 +3,13 @@ import pytest
 from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.activations import estimate_activation_memory
 
-# Golden set: Llama-3.1-8B, bs=4, seq=2048, bf16 (SPEC Appendix).
+# Golden set: Llama-3.1-8B, bs=4, seq=2048, bf16 .
 _GOLDEN_BATCH = 4
 _GOLDEN_SEQ = 2048
-_A_ACT_CKPT_FLASH = 3_136.0  # L*g*b*s*h (2,048) + A_layer (1,088)
-_A_ACT_CKPT_NO_FLASH = 4_160.0  # A_layer gains 1,024 MiB of softmax matrix
-_A_ACT_NO_CKPT_FLASH = 34_816.0  # 32 * 1,088
-_A_ACT_NO_CKPT_NO_FLASH = 67_584.0  # 32 * 2,112
+_A_ACT_CKPT_FLASH = 3_136.0  
+_A_ACT_CKPT_NO_FLASH = 4_160.0  
+_A_ACT_NO_CKPT_FLASH = 34_816.0
+_A_ACT_NO_CKPT_NO_FLASH = 67_584.0
 
 
 def _model_config(
@@ -75,7 +75,6 @@ def test_four_paths(
 
 
 def test_flash_attn_off_adds_exactly_the_softmax_term(llama: ModelConfig) -> None:
-    # g*b*n_h*s^2 per layer = 1,024 MiB; with checkpointing only one layer is live.
     delta = _estimate(llama, flash_attn=False) - _estimate(llama)
 
     assert delta == pytest.approx(1_024.0, rel=1e-9)

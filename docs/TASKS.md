@@ -83,13 +83,15 @@
   - Computes `head_dim` = `hidden_size // num_attention_heads`
 - [x] **2.2** Implement `gpu_db.py`
   - Dict mapping short names to `GpuSpec(name, vram_mib, usable_mib)`
-  - GPUs: t4, 3060-12, 3090, 4070ti, 4090, a100-40, a100-80, h100, l4
+  - GPUs: 22 entries — consumer, older/cloud, workstation, datacenter. `gpu_db.py` is the
+    authority; the roster is documented in SPEC §3.4
   - `get_gpu(name: str) -> GpuSpec` with friendly error on unknown GPU
   - Support `--vram-mib` override for unlisted GPUs
 - [x] **2.3** Implement `utils.py`
   - `bytes_to_mib(b: int) -> float`
   - `precision_to_bytes(precision: str) -> float`
-  - `optimizer_bytes_per_param(optimizer: str) -> int`
+  - `optimizer_bytes_per_param(optimizer: str, optimizer_dtype: str = "fp32") -> int`
+    (`optimizer_dtype` selects the AdamW row: fp32 → 8, bf16 → 4)
 - [x] **2.4** Write `tests/test_config_parser.py`
   - Test with a mock `config.json` for Llama-3.1-8B
   - Verify param count ≈ 8.03B
@@ -109,10 +111,12 @@
   - `estimate_lora_memory(config, rank, targets, precision) -> float` (MiB)
   - GQA-aware: k_proj and v_proj use `num_kv_heads × head_dim` as d_out
   - Support target lists: minimal (q,v), standard (q,k,v,o), full (q,k,v,o,gate,up,down)
-- [ ] **3.3** Implement `memory/optimizer.py`
-  - `estimate_optimizer_memory(trainable_params, optimizer, is_lora) -> float` (MiB)
-  - AdamW: 8 bytes/param. Adam8bit: 2. SGD+momentum: 4. SGD: 0.
-  - Full FT: add master weight copy (+4 bytes/param)
+- [x] **3.3** Implement `memory/optimizer.py`
+  - `estimate_optimizer_memory(trainable_params, optimizer, is_lora, optimizer_dtype, precision) -> float` (MiB)
+  - AdamW: 8 bytes/param (`optimizer_dtype="bf16"` → 4). Adam8bit: 2. SGD+momentum: 4. SGD: 0.
+  - Full FT **in mixed precision only**: add master weight copy (+4 bytes/param).
+    Under `precision="fp32"` there is no master copy — $W_{base}$ already holds FP32 params.
+    See SPEC Component 3 for the indicator and the 16 bytes/param invariant.
 - [ ] **3.4** Implement `memory/gradients.py`
   - `estimate_gradient_memory(trainable_params, precision) -> float` (MiB)
   - BF16/FP16: 2 bytes/param. FP32: 4 bytes/param.

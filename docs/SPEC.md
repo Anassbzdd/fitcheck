@@ -110,10 +110,10 @@ Double Quantization **quantizes the quantization constants themselves**:
    **8-bit integers**. Note: 8-bit *quantized ints*, not FP8 — the format is an int8 codebook, not a float type.
 2. A second-level scale $c_2$ in **FP32 (32 bits)** is added once every **256 blocks**.
 
-$$ 	ext{Overhead}^{DQ} = rac{8	ext{ bits}}{64} + rac{32	ext{ bits}}{64 	imes 256} = 0.125 + 0.00195 pprox \mathbf{0.127}	ext{ bits/param} pprox \mathbf{0.0158}	ext{ bytes/param} $$
+$$ \text{Overhead}^{DQ} = \frac{8\text{ bits}}{64} + \frac{32\text{ bits}}{64 \times 256} = 0.125 + 0.00195 \approx \mathbf{0.127}\text{ bits/param} \approx \mathbf{0.0158}\text{ bytes/param} $$
 
 Against the single-quantization $0.03125$ bytes/param that is a factor of $0.5078$, so the implementation
-applies the simpler **$Q_{overhead} 	imes 0.5$**. The 0.8% difference is far inside the ±20% accuracy target.
+applies the simpler **$Q_{overhead} \times 0.5$**. The 0.8% difference is far inside the ±20% accuracy target.
 
 **Parameter counting from config** (no weight download):
 
@@ -155,9 +155,33 @@ $$S_{optim} = P_{trainable} \times \beta_{optim}$$
 | SGD + momentum      |               4               |
 | SGD (no momentum)   |               0               |
 
-**Subtlety — full fine-tuning:** Add $P_{trainable} \times 4$ bytes for FP32 master weight copy when not using LoRA.
+**Subtlety — full fine-tuning master copy:** Add $P_{trainable} \times 4$ bytes for the FP32 master weight
+copy **only when full fine-tuning in mixed precision** — that is, when `is_lora` is false *and*
+`precision != "fp32"`:
 
-**Implementation:** `memory/optimizer.py` — function `estimate_optimizer_memory(trainable_params, optimizer_type, is_lora)`.
+$$S_{optim} = P_{trainable} \times \left(\beta_{optim} + 4 \cdot \mathbb{1}[\text{not LoRA}] \cdot \mathbb{1}[\text{precision} \ne \text{fp32}]\right)$$
+
+A master weight is the FP32 shadow of a parameter stored in lower precision. Under `--precision fp32` the
+parameters *are* FP32, there is nothing to shadow, and $W_{base}$ has already paid those 4 bytes/param —
+adding the copy there double-counts. The two correct paths must agree at **16 bytes/param** for full FT with
+AdamW, which is the invariant to test:
+
+| precision | $W_{base}$ | $G_{grad}$ | $\beta_{optim}$ | master copy | total |
+|:---|--:|--:|--:|--:|--:|
+| bf16 / fp16 (mixed) | 2 | 2 | 8 | **+4** | **16** |
+| fp32 | 4 | 4 | 8 | **+0** | **16** |
+
+On Llama-3.1-8B, billing the copy unconditionally over-reports `--no-lora --precision fp32` by
+$8{,}030{,}261{,}248 \times 4$ B = **30,633 MiB**, which is enough to flip a fits/doesn't-fit verdict on any card.
+
+The condition is keyed on **precision, not optimizer** — master weights predate Adam and apply to
+mixed-precision SGD too. Do not overload `optimizer_dtype`, which is the state dtype and an independent axis.
+
+> **Known simplification:** pure-BF16 training with BF16 states and no master copy (stochastic-rounding
+> setups) is over-counted by this rule. Rare, and the error is conservative. Not modeled in v0.1.
+
+**Implementation:** `memory/optimizer.py` — function
+`estimate_optimizer_memory(trainable_params, optimizer, is_lora, optimizer_dtype, precision)`.
 
 ---
 
@@ -270,6 +294,8 @@ fitcheck/
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
+├── test_config_parser.py
+├── test_gpu_db.py
 ├── test_weights.py
 ├── test_lora.py
 ├── test_optimizer.py
@@ -561,12 +587,12 @@ L·γbsh  = 32 · 2·4·2048·4096               = 2,147,483,648 B = 2,048 MiB
 
 | Component      | Formula                                                  | Bytes            | Result (MiB) |
 | :------------- | :------------------------------------------------------- | ---------------: | -----------: |
-| $W_{base}$     | $P 	imes 0.5 + P 	imes rac{2}{64}$                   |    4,266,076,288 |     4,068.45 |
-| $W_{lora}$     | $32 	imes 1{,}703{,}936 	imes 2$ bytes                 |      109,051,904 |       104.00 |
-| $S_{optim}$    | $54{,}525{,}952 	imes 8$ bytes                          |      436,207,616 |       416.00 |
-| $G_{grad}$     | $54{,}525{,}952 	imes 2$ bytes                          |      109,051,904 |       104.00 |
+| $W_{base}$     | $P \times 0.5 + P \times \frac{2}{64}$                   |    4,266,076,288 |     4,068.45 |
+| $W_{lora}$     | $32 \times 1{,}703{,}936 \times 2$ bytes                 |      109,051,904 |       104.00 |
+| $S_{optim}$    | $54{,}525{,}952 \times 8$ bytes                          |      436,207,616 |       416.00 |
+| $G_{grad}$     | $54{,}525{,}952 \times 2$ bytes                          |      109,051,904 |       104.00 |
 | $A_{act}$      | $L \cdot \gamma bsh + A_{layer} = 2{,}048 + 1{,}088$     |    3,288,334,336 |     3,136.00 |
-| $C_{overhead}$ | $500 + 0.05 	imes (4{,}068.45 + 3{,}136)$               |                — |       860.22 |
+| $C_{overhead}$ | $500 + 0.05 \times (4{,}068.45 + 3{,}136)$               |                — |       860.22 |
 | **Total**      |                                                          |                  | **8,688.67** |
 
 RTX 4090 usable: 23,500 MiB → **✅ FITS** — headroom 14,811 MiB (63%) — max micro-batch **21**.

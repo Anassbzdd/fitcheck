@@ -127,7 +127,7 @@
   - Two paths: flash_attn ON (no $s^2$ term) vs OFF
   - Two paths: grad_checkpoint ON ($L \times \gamma bsh + A_{layer}$) vs OFF ($L \times A_{layer}$)
   - Read `intermediate_size` from config, never assume `4h`
-- [ ] **3.6** Implement `memory/overhead.py`
+- [x] **3.6** Implement `memory/overhead.py`
   - `estimate_overhead(weight_memory, activation_memory) -> float` (MiB)
   - Formula: $500 + 0.05 \times (W_{base} + A_{act})$
 - [ ] **3.7** Implement `estimator.py`
@@ -148,6 +148,7 @@
   - `test_gradients.py`: 54.5M params x BF16 -> 104 MiB
   - `test_activations.py`: Llama config, bs=4, seq=2048, grad_ckpt, flash -> 3,136 MiB (+/-10%)
     - also assert flash OFF -> 4,160 MiB, and that fp32 doubles the result
+  - `test_overhead.py`: W_base=4,068.45 + A_act=3,136 -> 860.22 MiB; floor is 500 MiB at zero input
   - `test_end_to_end.py`: full Llama config -> total **8,689 MiB** (+/-10%), `max_batch_size == 21`
 - [ ] **3.9** Write `tests/test_utils.py`
   - `precision_to_bytes` / `optimizer_bytes_per_param` for every supported key and alias

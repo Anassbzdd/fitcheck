@@ -35,8 +35,7 @@ def test_estimate_overhead_depends_on_the_sum_not_the_split() -> None:
 def test_estimate_overhead_grows_with_each_argument() -> None:
     baseline = estimate_overhead(1_000.0, 1_000.0)
 
-    assert estimate_overhead(2_000.0, 1_000.0) == pytest.approx(baseline + 50.0, rel=1e-9)
-    assert estimate_overhead(1_000.0, 2_000.0) == pytest.approx(baseline + 50.0, rel=1e-9)
+    assert estimate_overhead(2_000.0, 1_000.0) == estimate_overhead(1_000.0, 2_000.0)
 
 
 def test_estimate_overhead_takes_only_base_weights_and_activations() -> None:

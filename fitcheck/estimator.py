@@ -182,7 +182,6 @@ def _compute_components(config: ModelConfig, training: TrainingConfig) -> _Compo
         optimizer_mib=optimizer_mib,
         gradient_mib=gradient_mib,
         activation_mib=activation_mib,
-        # C_overhead tracks the BASE weights and activations only — not W_lora.
         overhead_mib=estimate_overhead(weight_mib, activation_mib),
     )
 
@@ -196,11 +195,6 @@ def _total_at_batch(
 def _max_batch_size(
     config: ModelConfig, training: TrainingConfig, usable_mib: float
 ) -> int:
-    """Largest micro-batch that still fits, found by re-running the whole estimator.
-
-    Never extrapolates: C_overhead is itself a function of A_act(b), so the true
-    slope is steeper than the activation slope alone. Always floors.
-    """
     if _total_at_batch(config, training, 1) > usable_mib:
         return 0
 
@@ -211,7 +205,6 @@ def _max_batch_size(
     if high > _MAX_BATCH_SEARCH_CEILING:
         return low
 
-    # Invariant: `low` fits, `high` does not. Converges onto the floor.
     while high - low > 1:
         mid = (low + high) // 2
         if _total_at_batch(config, training, mid) <= usable_mib:
@@ -234,7 +227,6 @@ def _format_delta(delta_mib: float) -> str:
 def _savings_hints(
     config: ModelConfig, training: TrainingConfig, baseline_mib: float
 ) -> list[str]:
-    """Price each toggle as a full-estimate delta — never by summing component deltas."""
 
     def delta(**overrides: object) -> str:
         variant = replace(training, **overrides)

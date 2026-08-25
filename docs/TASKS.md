@@ -130,7 +130,7 @@
 - [x] **3.6** Implement `memory/overhead.py`
   - `estimate_overhead(weight_memory, activation_memory) -> float` (MiB)
   - Formula: $500 + 0.05 \times (W_{base} + A_{act})$
-- [ ] **3.7** Implement `estimator.py`
+- [x] **3.7** Implement `estimator.py`
   - `estimate(model_config, training_config, gpu_spec) -> MemoryReport`
   - Calls all 6 modules and sums them. The orchestrator owns everything no single module can decide:
     - **Pick $P_{trainable}$**: LoRA param count when `lora_rank` is set, else `num_params` (full FT)
@@ -141,7 +141,7 @@
       and for the worked example the true answer is 21.99, which rounds to the wrong side.
     - `effective_batch_size = batch_size * grad_accum_steps` (display only — costs zero memory)
     - `savings_hints`: re-run the estimate with one flag flipped per hint (see 4.7)
-- [ ] **3.8** Write tests for each memory module
+- [x] **3.8** Write tests for each memory module
   - `test_weights.py`: Llama-3.1-8B NF4 -> 4,068 MiB (+/-5%)
   - `test_lora.py`: r=64 on [q,k,v,o] with GQA -> 104 MiB (+/-5%)
   - `test_optimizer.py`: 54.5M params x AdamW -> 416 MiB

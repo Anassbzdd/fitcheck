@@ -477,7 +477,11 @@ Output Options:
   --explain              Plain-English breakdown + savings hints
 ```
 
-**Validation:** reject `--quant nf4 --no-lora` — you cannot backprop into a frozen 4-bit base. Reject
+**Validation:** reject `--quant nf4 --no-lora` — **a `fitcheck` scope limitation, not a universal claim.**
+Quantized models *can* be trained (QAT, and quantized-training methods that keep master weights or
+straight-through estimators); `fitcheck` simply does not model those memory profiles. Its quantized path
+assumes the base stays frozen while only adapters train, which is what the $W_{base}$ and $S_{optim}$
+formulas are derived for. Error messages must say "not modelled", never "not possible". Reject
 `--optimizer-dtype` with a non-AdamW optimizer. `--qlora` sets defaults, so an explicit later flag wins.
 
 #### `--explain` output contract

@@ -517,7 +517,8 @@ this tool can correct, and showing a hard `0 MiB` corrects it faster than a para
 #### Mode B: Interactive REPL
 
 ```
-fitcheck                    # no args → enters REPL
+fitcheck                    # no MODEL_ID → enters REPL
+fitcheck --qlora --gpu 4090 # flags without a MODEL_ID seed the session
 
 Commands:
   model <model_id>          Load a model config from HuggingFace
@@ -534,6 +535,25 @@ Commands:
 
 Aliases: mem, q, ?, h, config/state, list-gpus.
 ```
+
+**Mode selection is the presence of `MODEL_ID`, not the absence of flags.** `cli.main` takes `MODEL_ID` as
+an optional argument; when it is missing, `main` builds the `TrainingConfig` exactly as it would for a
+one-liner and hands it to `run_repl(console, training=..., gpu=...)`. Three consequences:
+
+- **Estimate flags seed the session.** `fitcheck --qlora --lora-r 64` then `model <id>` reaches the same
+  state as entering the bare REPL and typing those flags at the `memory` prompt — the flags are sticky
+  either way, so honoring them at entry is the only reading that is not silent data loss.
+- **Only an explicit `--gpu` / `--vram-mib` presets the session GPU.** Mode A defaults to the 4090 when
+  `--gpu` is absent; carrying that default in would set a session GPU the user never named, so the seeded
+  session leaves it unset and `gpu <name>` is still required.
+- **The output-only flags are a usage error without a `MODEL_ID`.** `--json`, `--verbose`, and `--explain`
+  format one estimate; with no model there is nothing to format, and the error names `memory --json` etc.
+  as the in-session equivalent. Validation (`--no-lora --quant nf4`, bad `--lora-targets`) runs before
+  entry, so a contradictory line fails at the shell rather than three commands later.
+
+The banner echoes any seeded GPU and flags. Seeded state that nothing shows is state the user has forgotten
+by the third command. The REPL always exits 0 — a config that does not fit is a verdict inside the session,
+not the session's exit status.
 
 **REPL state:** The REPL maintains a session object holding the current `ModelConfig`, `GpuSpec`, the
 training flags in force, and the last `MemoryReport`. Commands like `explain`, `optimize`, and `compare` read

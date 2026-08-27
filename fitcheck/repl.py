@@ -879,16 +879,36 @@ def _read_line(session: _Session) -> str:
         session.console.print(line)
     return line
 
-def run_repl(console: Console | None = None) -> int:
+def run_repl(
+    console: Console | None = None,
+    training: TrainingConfig | None = None,
+    gpu: GpuSpec | None = None,
+) -> int:
+    """Run Mode B until the user leaves. `training` / `gpu` seed the session.
+
+    `fitcheck` with flags but no MODEL_ID lands here with those flags already in
+    force, which is why the banner echoes them: seeded state that nothing shows is
+    state the user will forget by the third command.
+    """
     target = console if console is not None else make_console()
     ascii_only = use_ascii_glyphs(target)
     session = _Session(
         console=target,
         glyphs=_ASCII_GLYPHS if ascii_only else _UNICODE_GLYPHS,
         ascii_only=ascii_only,
+        gpu=gpu,
+        training=training if training is not None else TrainingConfig(),
     )
 
     session.console.print(_render_banner(session))
+    if gpu is not None:
+        _ok(session, f"Target GPU set to {_gpu_line(gpu, session.glyphs)}")
+    if session.training != TrainingConfig():
+        _ok(
+            session,
+            f"Flags carried in from the command line: "
+            f"{_config_line(session.training, session.glyphs)}",
+        )
 
     while True:
         try:

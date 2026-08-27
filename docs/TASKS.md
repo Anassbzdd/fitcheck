@@ -194,9 +194,17 @@
       accumulation steps to keep the effective batch, and when nothing fits it walks a
       lever ladder (flash → ckpt → nf4 → seq/2 → adam8bit) until something does.
     - Extra commands: `show`, `reset`, `gpus`; aliases `mem`, `q`, `?`, `config`.
-- [ ] **4.4** Wire REPL into `cli.py`
+- [x] **4.4** Wire REPL into `cli.py`
   - `fitcheck` with no arguments → enters REPL
   - `fitcheck <model_id> [flags]` → one-liner mode
+  - Mode is chosen by the presence of `MODEL_ID`, not the absence of flags (SPEC §3.5 Mode B):
+    - `fitcheck --qlora --gpu 4090` **seeds** the session instead of erroring — the flags are
+      sticky in the REPL anyway, so dropping them would be silent data loss
+    - Only an explicit `--gpu` / `--vram-mib` presets the session GPU; Mode A's 4090 default
+      would set a card the user never named
+    - `--json` / `--verbose` / `--explain` without a `MODEL_ID` are a usage error (exit 2)
+      pointing at `memory --json` in-session; flag validation runs before entry
+    - Banner echoes the seeded GPU and flags. REPL always exits 0
 - [ ] **4.5** Manual test: run `fitcheck meta-llama/Llama-3.1-8B --gpu 4090 --lora-r 64 --batch-size 4 --seq-len 2048 --precision bf16 --optimizer adamw --grad-checkpoint --flash-attn`
   - Screenshot the output
 - [ ] **4.6** Manual test: run `fitcheck` (REPL mode)

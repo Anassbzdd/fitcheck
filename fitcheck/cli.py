@@ -8,6 +8,7 @@ from typing import Any
 
 import click
 from click.core import ParameterSource
+from rich.console import Console
 
 from fitcheck.config_parser import ModelConfig, fetch_model_config
 from fitcheck.display import (
@@ -27,6 +28,7 @@ from fitcheck.memory.lora import (
     LORA_TARGETS_MINIMAL,
     LORA_TARGETS_STANDARD,
 )
+from fitcheck.repl import run_repl
 
 _DEFAULT_GPU = "4090"
 _EXIT_DOES_NOT_FIT = 1
@@ -39,7 +41,8 @@ _TARGET_PRESETS: dict[str, tuple[str, ...]] = {
 _HELP_EPILOG = """\
 Exit codes: 0 the config fits, 1 it does not fit, 2 the estimate could not be run
 (bad flags, unknown model or GPU). A prediction that does not fit is a verdict, not
-an error, so `fitcheck ... && accelerate launch ...` guards a training run.
+an error, so `fitcheck ... && accelerate launch ...` guards a training run. The REPL
+always exits 0.
 
 Every figure is analytical, computed from config.json alone. No GPU is touched and
 no weights are downloaded.
@@ -137,6 +140,33 @@ def _resolve_gpu(ctx: click.Context, gpu: str | None, vram_mib: int | None) -> G
         return get_gpu(gpu or _DEFAULT_GPU)
     except ValueError as error:
         raise _EstimateError(str(error)) from error
+
+
+def _enter_repl(
+    ctx: click.Context,
+    console: Console,
+    training: TrainingConfig,
+    gpu: str | None,
+    vram_mib: int | None,
+) -> int:
+    for option, flag in (
+        ("as_json", "--json"),
+        ("verbose", "--verbose"),
+        ("explain", "--explain"),
+    ):
+        if _explicit(ctx, option):
+            raise click.UsageError(
+                f"{flag} formats one estimate, and without a MODEL_ID there is "
+                f"nothing to format. Name a model, or enter the REPL and run "
+                f"`memory {flag}` there."
+            )
+
+    seeded_gpu = (
+        _resolve_gpu(ctx, gpu, vram_mib)
+        if _explicit(ctx, "gpu") or _explicit(ctx, "vram_mib")
+        else None
+    )
+    return run_repl(console, training=training, gpu=seeded_gpu)
 
 
 def _load_model_config(model_id: str) -> ModelConfig:
@@ -312,12 +342,6 @@ def main(
         console.print(render_gpu_table())
         return
 
-    if model_id is None:
-        raise click.UsageError(
-            "Missing argument MODEL_ID. Try 'fitcheck meta-llama/Llama-3.1-8B "
-            "--qlora --gpu 4090', or 'fitcheck --list-gpus'."
-        )
-
     if qlora:
         if not _explicit(ctx, "quant"):
             quant = "nf4"
@@ -342,6 +366,9 @@ def main(
         flash_attn=flash_attn,
         grad_accum_steps=grad_accum,
     )
+
+    if model_id is None:
+        ctx.exit(_enter_repl(ctx, console, training, gpu, vram_mib))
 
     gpu_spec = _resolve_gpu(ctx, gpu, vram_mib)
     model_config = _load_model_config(model_id)

@@ -47,8 +47,6 @@ no weights are downloaded.
 
 
 class _EstimateError(click.ClickException):
-    """A run that could not produce an estimate: unknown model, GPU, or bad config."""
-
     exit_code = _EXIT_ERROR
 
 
@@ -60,11 +58,6 @@ def _package_version() -> str:
 
 
 def _explicit(ctx: click.Context, name: str) -> bool:
-    """True when the user actually typed this option, rather than taking its default.
-
-    This is what makes `--qlora` a set of *defaults*: an explicit flag always wins,
-    whichever order the two appear in.
-    """
     return ctx.get_parameter_source(name) is ParameterSource.COMMANDLINE
 
 
@@ -78,7 +71,6 @@ def _parse_lora_targets(value: str) -> list[str]:
         name = token.strip().casefold()
         if not name:
             continue
-        # Accept the shorthand people actually type: "q,k,v,o" as well as "q_proj,...".
         module = name if name.endswith("_proj") else f"{name}_proj"
         if module not in LORA_TARGETS_FULL:
             supported = ", ".join(LORA_TARGETS_FULL)
@@ -141,7 +133,6 @@ def _validate_combination(
 def _resolve_gpu(ctx: click.Context, gpu: str | None, vram_mib: int | None) -> GpuSpec:
     try:
         if vram_mib is not None:
-            # get_gpu labels the override with the name when one was given.
             return get_gpu(gpu if _explicit(ctx, "gpu") else None, vram_mib)
         return get_gpu(gpu or _DEFAULT_GPU)
     except ValueError as error:
@@ -163,11 +154,6 @@ def report_to_dict(
     gpu: GpuSpec,
     training: TrainingConfig,
 ) -> dict[str, Any]:
-    """Build the `--json` payload: a stable, machine-readable view of the report.
-
-    Shape does not vary with output flags, so a CI job can rely on the same keys
-    whether or not --verbose was passed.
-    """
     parts = activation_breakdown(config, training)
 
     def mib(value: float) -> float:
@@ -320,11 +306,6 @@ def main(
     verbose: bool,
     explain: bool,
 ) -> None:
-    """Predict GPU VRAM requirements for LLM training.
-
-    MODEL_ID is a HuggingFace repository, e.g. meta-llama/Llama-3.1-8B. Only its
-    config.json is fetched (~2 KB).
-    """
     console = make_console(no_color=no_color)
 
     if list_gpus:

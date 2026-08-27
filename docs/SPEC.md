@@ -517,20 +517,55 @@ this tool can correct, and showing a hard `0 MiB` corrects it faster than a para
 #### Mode B: Interactive REPL
 
 ```
-fitcheck              # no args → enters REPL
+fitcheck                    # no args → enters REPL
 
 Commands:
-  model <model_id>    Load a model config from HuggingFace
-  gpu <gpu_name>      Set target GPU
-  memory [OPTIONS]    Compute memory breakdown (same flags as CLI mode)
-  explain             Explain the last memory result in plain English
-  optimize            Suggest best config for current model + GPU
-  compare --gpu <X>   Compare current result against a different GPU
-  help                Show available commands
-  exit / quit         Exit the REPL
+  model <model_id>          Load a model config from HuggingFace
+  gpu <name> [--vram-mib N] Set target GPU
+  memory [OPTIONS]          Compute memory breakdown (same flags as CLI mode)
+  explain                   Explain the last memory result in plain English
+  optimize                  Suggest best config for current model + GPU
+  compare <gpu> [<gpu> ...] Compare the current config across other GPUs
+  show                      Current model, GPU, flags, and last estimate
+  reset                     Training flags back to defaults
+  gpus                      Print the GPU database
+  help                      Show available commands
+  exit / quit               Exit the REPL
+
+Aliases: mem, q, ?, h, config/state, list-gpus.
 ```
 
-**REPL state:** The REPL maintains a session object holding the current `ModelConfig`, `GpuSpec`, and last `MemoryReport`. Commands like `explain`, `optimize`, and `compare` read from the last computed report.
+**REPL state:** The REPL maintains a session object holding the current `ModelConfig`, `GpuSpec`, the
+training flags in force, and the last `MemoryReport`. Commands like `explain`, `optimize`, and `compare` read
+from the last computed report — and compute one from the session's state if none exists yet, rather than
+refusing. Only a missing model or GPU is a hard error ("Run `model <id>` and `gpu <name>` first").
+
+**"Same flags as CLI mode" is enforced structurally, not by hand.** `repl.py` builds its `memory` command
+from `cli.main.params` — the *same* `click.Option` objects — minus the four that make no sense in a session
+(`MODEL_ID`, `--list-gpus`, `--no-color`, `--version`). A flag added to Mode A appears in Mode B for free, and
+the two surfaces cannot drift.
+
+**Flags are sticky.** `memory --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --flash-attn` followed by
+`memory --batch-size 8` re-uses everything else; retyping a fifteen-flag line to move one dial is what makes
+people abandon a REPL. Only options the user actually typed are folded in (`ParameterSource.COMMANDLINE`),
+and the report header echoes the config in force, so the state is never invisible. Consequences:
+
+- Sticky booleans need an undo, so the REPL adds `--no-flash-attn`, `--no-grad-checkpoint`, and
+  `--no-double-quant`; `reset` restores every default at once. An on/off pair on one line is an error.
+- `--lora-r` or `--lora-targets` re-enables LoRA after `--no-lora` (naming a rank means you want adapters).
+- `--quant none` silently clears a sticky `--double-quant` instead of failing on a flag set three lines ago.
+- `--gpu` / `--vram-mib` override **one** estimate; only `gpu <name>` moves the session GPU.
+
+**`compare` takes several GPUs** and leads with the insight: the peak is identical on every card, only the
+ceiling moves. Columns are usable VRAM, headroom, % used, max micro-batch, and the verdict.
+
+**`optimize` recommends, it does not just report the ceiling.** It suggests the largest power-of-two
+micro-batch within ~75% of `max_batch_size`, plus the `--grad-accum` steps that restore an effective batch of
+at least 16 (free, per Component 4) — and says why the ceiling itself is the wrong thing to run. When even
+`batch_size=1` does not fit, it applies levers in ascending order of what they cost the user
+(`--flash-attn` → `--grad-checkpoint` → `--quant nf4 --double-quant` → halve `--seq-len` →
+`--optimizer adam8bit`), stopping at the first configuration that fits and printing the command to run. If
+the ladder is exhausted it names the smallest card in the database that would hold the result.
 
 ---
 

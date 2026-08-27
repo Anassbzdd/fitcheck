@@ -170,7 +170,7 @@
   - `--json` flag for machine-readable output
   - `--no-color` flag
   - `--verbose` flag for per-layer detail
-- [ ] **4.3** Implement `repl.py` (Mode B)
+- [x] **4.3** Implement `repl.py` (Mode B)
   - Session state: current `ModelConfig`, `GpuSpec`, last `MemoryReport`
   - Commands:
     - `model <id>` → fetch and store config, print confirmation
@@ -182,6 +182,18 @@
     - `help` → list commands
     - `exit` / `quit` → exit
   - Error handling: "Run `model` and `gpu` first" if missing context
+  - Beyond the spec (see SPEC §3.5 Mode B, updated to match):
+    - **The `memory` flags are literally the CLI's `click.Option` objects**, reused in a
+      second command, so the two surfaces cannot drift.
+    - **Flags stick** across `memory` calls, with `--no-flash-attn` / `--no-grad-checkpoint`
+      / `--no-double-quant` and `reset` to undo them. `--gpu` is a one-shot override;
+      only `gpu <name>` moves the session.
+    - `compare` takes **several** GPUs (`compare 3090 t4 a100-40`) and states the point
+      out loud: peak is identical on every card, only the ceiling moves.
+    - `optimize` recommends a power-of-two micro-batch at ~75% of the ceiling plus the
+      accumulation steps to keep the effective batch, and when nothing fits it walks a
+      lever ladder (flash → ckpt → nf4 → seq/2 → adam8bit) until something does.
+    - Extra commands: `show`, `reset`, `gpus`; aliases `mem`, `q`, `?`, `config`.
 - [ ] **4.4** Wire REPL into `cli.py`
   - `fitcheck` with no arguments → enters REPL
   - `fitcheck <model_id> [flags]` → one-liner mode

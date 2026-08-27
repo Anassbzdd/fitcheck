@@ -280,7 +280,6 @@ def estimate(
         headroom_mib=capacity_mib - total_mib,
         fits=total_mib <= capacity_mib,
         max_batch_size=_max_batch_size(model_config, training_config, capacity_mib),
-        # Accumulation is a display-only multiplier — it costs exactly zero memory.
         effective_batch_size=training_config.batch_size * grad_accum_steps,
         savings_hints=_savings_hints(model_config, training_config, total_mib),
     )

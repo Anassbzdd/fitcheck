@@ -57,9 +57,11 @@ Welcome to fitcheck interactive terminal. Type a command or 'help'.
 
 > explain
 💡 Explanation:
-- Activations (3,136 MiB) take 36.1% of memory — the largest single component.
-  Gradient checkpointing is active, so you store 32 layer inputs (2,048 MiB)
-  plus one layer's full activations (1,088 MiB) instead of all 32 (34,816 MiB).
+- Base model weights (4,068 MiB) are the largest single component at 46.8% — the
+  NF4-quantized 8.03B base plus its quantization scales. Near the floor for this model.
+- Activations (3,136 MiB) come second at 36.1%. Gradient checkpointing is active, so
+  you store 32 layer inputs (2,048 MiB) plus one layer's full activations (1,088 MiB)
+  instead of all 32 (34,816 MiB) — which is exactly what demotes them to second.
 - Flash Attention is ON: avoided 1,024 MiB per layer of quadratic attention matrices.
 - LoRA adapter adds only 104 MiB of trainable weights and 416 MiB of AdamW states (FP32).
   Optimizer states cost 8 bytes/param even though you train in BF16 — AdamW keeps

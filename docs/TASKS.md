@@ -158,13 +158,13 @@
 
 ## Day 4 — CLI, REPL, and Display
 
-- [ ] **4.1** Implement `display.py`
+- [x] **4.1** Implement `display.py`
   - `render_report(report: MemoryReport, config: ModelConfig, gpu: GpuSpec)` → rich Panel + Table
   - Colored bar: green (fits with >20% headroom), yellow (fits <20% headroom), red (doesn't fit)
   - Pass/Fail verdict with headroom percentage
   - Max batch size suggestion
   - Component percentage column
-- [ ] **4.2** Implement `cli.py` (Mode A — full)
+- [x] **4.2** Implement `cli.py` (Mode A — full)
   - `@click.command` with all options from SPEC §3.5
   - Calls `fetch_model_config` → `estimate` → `render_report`
   - `--json` flag for machine-readable output
@@ -190,7 +190,9 @@
 - [ ] **4.6** Manual test: run `fitcheck` (REPL mode)
   - Walk through: `model` → `gpu` → `memory` → `explain` → `optimize` → `compare` → `exit`
 
-- [ ] **4.7** `--explain` flag + savings hints (see SPEC §3.5 "explain output contract")
+- [x] **4.7** `--explain` flag + savings hints (see SPEC §3.5 "explain output contract")
+  - Landed with 4.2, since SPEC §3.5 lists `--explain` in the Mode A surface. The REPL's own
+    `explain` command is still 4.3's to wire — it calls `render_explanation()`.
   - Promote `explain` out of the REPL: `--explain` works in CLI mode too
   - Default output gets one hint line; `--explain` prints the full breakdown
   - Name the largest component and say *why* it's large
@@ -198,7 +200,9 @@
     `adam8bit` −312, `--flash-attn` OFF +1,075, `--grad-checkpoint` OFF +33,264, `--grad-accum` 0
   - The `--grad-accum ... 0 MiB` line is load-bearing: it kills the most common memory myth
 
-- [ ] **4.8** Wire `--list-gpus` and `--vram-mib`
+- [x] **4.8** Wire `--list-gpus` and `--vram-mib`
+  - Landed with 4.2 (both are in the SPEC §3.5 option surface). `list_gpus()` already existed
+    in `gpu_db.py`; `display.render_gpu_table()` renders it.
   - Both already work in `get_gpu()`; this is CLI plumbing only
   - Add `list_gpus()` helper to `gpu_db.py`, render as a rich table
   - `--list-gpus` is the first thing a new user reaches for

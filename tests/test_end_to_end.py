@@ -1,4 +1,3 @@
-# full pipeline: config → report → verdict
 from __future__ import annotations
 
 from dataclasses import replace
@@ -10,7 +9,6 @@ from fitcheck.config_parser import ModelConfig, fetch_model_config
 from fitcheck.estimator import MemoryReport, TrainingConfig, estimate
 from fitcheck.gpu_db import get_gpu
 
-# docs/SPEC.md Appendix — the single authoritative reference set.
 _GOLDEN_PARAMS = 8_030_261_248
 _GOLDEN_W_BASE = 4_068.45
 _GOLDEN_W_LORA = 104.0
@@ -48,7 +46,6 @@ def llama_model(
     fake_config_download: Callable[[dict[str, Any]], None],
     llama_31_8b_config: dict[str, Any],
 ) -> ModelConfig:
-    """Drives the real pipeline entry point: config.json on disk → ModelConfig."""
     fake_config_download(llama_31_8b_config)
     return fetch_model_config("meta-llama/Llama-3.1-8B")
 
@@ -60,7 +57,7 @@ def golden_report(llama_model: ModelConfig, qlora_training: TrainingConfig) -> M
 
 def test_pipeline_derives_the_golden_parameter_count(llama_model: ModelConfig) -> None:
     assert llama_model.num_params == _GOLDEN_PARAMS
-    assert llama_model.num_kv_heads == 8  # GQA, not 32
+    assert llama_model.num_kv_heads == 8
 
 
 def test_golden_component_breakdown(golden_report: MemoryReport) -> None:
@@ -74,7 +71,7 @@ def test_golden_component_breakdown(golden_report: MemoryReport) -> None:
 
 def test_golden_total_and_verdict(golden_report: MemoryReport) -> None:
     assert golden_report.total_mib == pytest.approx(_GOLDEN_TOTAL, abs=0.01)
-    assert round(golden_report.total_mib) == 8_689  # what display.py will show
+    assert round(golden_report.total_mib) == 8_689
 
     assert golden_report.fits is True
     assert golden_report.gpu_capacity_mib == _RTX_4090_USABLE
@@ -100,7 +97,6 @@ def test_total_is_exactly_the_sum_of_the_six_components(golden_report: MemoryRep
 def test_overhead_tracks_base_weights_and_activations_only(
     golden_report: MemoryReport,
 ) -> None:
-    """C_overhead is 500 + 5% of (W_base + A_act) — W_lora must not be in the base."""
     expected = 500 + 0.05 * (golden_report.weight_mib + golden_report.activation_mib)
 
     assert golden_report.overhead_mib == pytest.approx(expected, rel=1e-12)
@@ -113,7 +109,6 @@ def test_max_batch_size_floors_at_twenty_one(golden_report: MemoryReport) -> Non
 def test_max_batch_size_boundary_is_real_not_rounded(
     llama_model: ModelConfig, qlora_training: TrainingConfig
 ) -> None:
-    """The true answer is b <= 21.99. Rounding up to 22 hands the user an OOM."""
     gpu = get_gpu("4090")
 
     at_21 = estimate(llama_model, replace(qlora_training, batch_size=21), gpu)
@@ -127,7 +122,6 @@ def test_max_batch_size_boundary_is_real_not_rounded(
 def test_max_batch_size_is_not_linear_extrapolation(
     llama_model: ModelConfig, qlora_training: TrainingConfig
 ) -> None:
-    """C_overhead depends on A_act(b), so the slope is 823.2 MiB/batch, not 784."""
     gpu = get_gpu("4090")
 
     at_4 = estimate(llama_model, replace(qlora_training, batch_size=4), gpu).total_mib
@@ -181,7 +175,6 @@ def test_flash_attention_off_adds_the_softmax_term(
     off = estimate(llama_model, replace(qlora_training, flash_attn=False), gpu)
 
     assert off.activation_mib == pytest.approx(4_160.0, rel=1e-9)
-    # 1,024 MiB of attention matrices, plus the 5% C_overhead picks up.
     assert off.total_mib - on.total_mib == pytest.approx(1_075.2, abs=0.01)
 
 
@@ -202,7 +195,6 @@ def test_full_finetune_path_replaces_lora_with_every_parameter(
 
     assert report.lora_mib == 0.0
     assert report.weight_mib == pytest.approx(_GOLDEN_PARAMS * 2 / 1024**2, rel=1e-9)
-    # AdamW fp32 on a bf16 model: 8 bytes of state + a 4-byte master copy.
     assert report.optimizer_mib == pytest.approx(_GOLDEN_PARAMS * 12 / 1024**2, rel=1e-9)
     assert report.fits is False
     assert report.headroom_mib < 0
@@ -212,7 +204,6 @@ def test_full_finetune_path_replaces_lora_with_every_parameter(
 def test_full_finetuning_a_quantized_base_is_out_of_scope(
     llama_model: ModelConfig, qlora_training: TrainingConfig
 ) -> None:
-    """Rejected because fitcheck doesn't model it — not because it's impossible."""
     with pytest.raises(ValueError, match="does not model full fine-tuning of a nf4 base model"):
         estimate(llama_model, replace(qlora_training, lora_rank=None), get_gpu("4090"))
 
@@ -231,7 +222,6 @@ def test_quantized_full_finetune_error_is_scoped_not_universal(
 def test_savings_hints_price_each_toggle_as_a_total_delta(
     golden_report: MemoryReport,
 ) -> None:
-    """Figures must match the SPEC --explain contract exactly."""
     hints = golden_report.savings_hints
 
     assert "adamw -> adam8bit: saves 312 MiB" in hints

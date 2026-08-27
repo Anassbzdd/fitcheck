@@ -490,8 +490,8 @@ formulas are derived for. Error messages must say "not modelled", never "not pos
 with that one flag flipped — no new math, just a second call:
 
 ```
-Largest component: activations (3,136 MiB, 36%) — dominated by 32 stored layer
-inputs under gradient checkpointing.
+Largest component: base model weights (4,068 MiB, 47%) — the frozen base at NF4
+plus its quantization scales, close to the floor for a model this size.
 
   adamw -> adam8bit ......... saves    312 MiB
   --flash-attn OFF .......... costs +1,075 MiB   (currently ON)
@@ -506,6 +506,13 @@ deltas by hand.
 
 The last line is load-bearing: "gradient accumulation costs memory" is the single most common misconception
 this tool can correct, and showing a hard `0 MiB` corrects it faster than a paragraph.
+
+> [!NOTE]
+> **The largest component is computed, never assumed.** Earlier drafts of this contract and of Blueprint's
+> REPL sample both named *activations* as the leader for the worked example. They are not: at 4,068.45 MiB the
+> NF4 base outweighs the 3,136 MiB of activations. Checkpointing plus Flash Attention is precisely what
+> demotes activations from first place, so the config that best shows off the tool is also the config where
+> the obvious guess is wrong. Rank the components from the report.
 
 #### Mode B: Interactive REPL
 

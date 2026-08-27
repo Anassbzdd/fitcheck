@@ -341,7 +341,6 @@ def make_console(*, no_color: bool = False) -> Console:
 
 
 def use_ascii_glyphs(console: Console) -> bool:
-    """True when the console encoding cannot represent the Unicode glyph set."""
     return "utf" not in (console.encoding or "").casefold()
 
 
@@ -364,14 +363,6 @@ def print_report(
 def activation_breakdown(
     config: ModelConfig, training: TrainingConfig
 ) -> dict[str, float]:
-    """Split A_act into its per-layer parts, in MiB.
-
-    Every figure comes from re-running `estimate_activation_memory` with one input
-    changed, never from re-deriving the formula here: A_layer is the no-checkpoint
-    total over L, and the attention-matrix term is the flash-off minus flash-on
-    difference. A formula fix in activations.py therefore lands here for free.
-    """
-
     def activations(grad_checkpoint: bool, flash_attn: bool) -> float:
         return estimate_activation_memory(
             config,
@@ -540,8 +531,6 @@ def _why_largest(name: str, config: ModelConfig, training: TrainingConfig) -> st
 
 
 def _toggle_table(report: MemoryReport, glyphs: _Glyphs) -> Table:
-    # Hints arrive as prose ("--flash-attn OFF: costs +1,075 MiB (currently ON)");
-    # split once on the colon to get a label column and a price column.
     parsed = [
         tuple(part.strip() for part in hint.split(":", 1))
         if ":" in hint
@@ -571,9 +560,6 @@ def render_explanation(
     *,
     ascii_only: bool = False,
 ) -> Panel:
-    """Render `--explain`: which component dominates and why, then the price of each
-    toggle. Every figure is a total-memory delta the estimator already computed by
-    re-running itself with one flag flipped — no new math happens here."""
     glyphs = _ASCII_GLYPHS if ascii_only else _UNICODE_GLYPHS
     name, value = _largest_component(report)
 
@@ -594,7 +580,6 @@ def render_explanation(
 
 
 def render_gpu_table() -> Table:
-    """Render the GPU database as a table, for `--list-gpus`."""
     table = Table(box=SIMPLE_HEAD, pad_edge=False, title="fitcheck GPU database")
     table.add_column("--gpu")
     table.add_column("Name")
@@ -616,8 +601,6 @@ def render_gpu_table() -> Table:
 def render_verbose_detail(
     config: ModelConfig, training: TrainingConfig, *, ascii_only: bool = False
 ) -> Panel:
-    """Render the per-layer breakdown behind `--verbose`: model geometry, parameter
-    counts, and how A_act decomposes into per-layer terms."""
     glyphs = _ASCII_GLYPHS if ascii_only else _UNICODE_GLYPHS
 
     return Panel(

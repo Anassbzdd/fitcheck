@@ -161,7 +161,7 @@
     - also assert flash OFF -> 4,160 MiB, and that fp32 doubles the result
   - `test_overhead.py`: W_base=4,068.45 + A_act=3,136 -> 860.22 MiB; floor is 500 MiB at zero input
   - `test_end_to_end.py`: full Llama config -> total **8,689 MiB** (+/-10%), `max_batch_size == 21`
-- [ ] **3.10** Generalize the activation bracket in `memory/activations.py` (SPEC Component 5, "Exact bracket")
+- [x] **3.10** Generalize the activation bracket in `memory/activations.py` (SPEC Component 5, "Exact bracket")
   - **Smaller than it looks:** the KV term is already exact — `kv_width = num_kv_heads * head_dim`.
     The only change is `6 * hidden_size` → `4 * hidden_size + 2 * (num_attention_heads * head_dim)`
   - Target: $4h + 2 n_h d_k + 2 n_{kv} d_k + 3 d_{ff}$ — reduces to the $6h$ form when $n_h d_k = h$

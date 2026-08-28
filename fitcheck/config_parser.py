@@ -8,8 +8,6 @@ from typing import Any, Mapping
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import GatedRepoError
 
-# Families that tie embedding and LM head weights without saying so in config.json.
-# Extend only with families whose parameter count has actually been checked.
 _TIES_WORD_EMBEDDINGS_BY_DEFAULT = frozenset(
     {"gemma", "gemma2", "gemma3", "gemma3_text"}
 )
@@ -65,12 +63,6 @@ def _intermediate_size(raw: Mapping[str, Any], hidden_size: int) -> int:
 
 
 def _head_dim(raw: Mapping[str, Any], hidden_size: int, num_attention_heads: int) -> int:
-    """The declared head dimension, falling back to hidden_size / num_attention_heads.
-
-    Gemma-2-9B declares head_dim 256 against hidden_size/num_attention_heads = 224, so
-    the fallback is only a fallback. The divisibility rule is a constraint on deriving
-    the value, not on the model: a config that declares head_dim need not satisfy it.
-    """
     if raw.get("head_dim") is None:
         if hidden_size % num_attention_heads != 0:
             raise ValueError(
@@ -82,13 +74,6 @@ def _head_dim(raw: Mapping[str, Any], hidden_size: int, num_attention_heads: int
 
 
 def _tie_word_embeddings(raw: Mapping[str, Any]) -> bool:
-    """Whether the embedding table is shared with the LM head.
-
-    An absent key is not a "no". Gemma omits it and ties; transformers' own default is
-    True. fitcheck still assumes untied for unrecognised architectures, because counting
-    the embedding twice over-estimates memory, and over-estimating is the safe direction
-    for a tool whose job is avoiding OOM.
-    """
     declared = raw.get("tie_word_embeddings")
     if declared is not None:
         return bool(declared)
@@ -125,12 +110,6 @@ def _attention_param_count(
     num_kv_heads: int,
     head_dim: int,
 ) -> int:
-    """q/k/v/o projection weights: 2h*n_h*d_k + 2h*n_kv*d_k.
-
-    The q/o term is not 2h^2: n_h * d_k == h is a regularity of Llama-shaped models, not
-    an invariant (Gemma-2-9B is 16 * 256 = 4096 against h = 3584). Identical arithmetic
-    wherever n_h * d_k == h.
-    """
     q_out = num_attention_heads * head_dim
     kv_out = num_kv_heads * head_dim
     return 2 * hidden_size * q_out + 2 * hidden_size * kv_out
@@ -151,7 +130,7 @@ def _count_params(fields: _ParsedFields) -> int:
     return (
         embedding_params
         + fields.num_layers * (attention_params + mlp_params + norm_params)
-        + fields.hidden_size  # final normalization
+        + fields.hidden_size 
         + lm_head_params
     )
 

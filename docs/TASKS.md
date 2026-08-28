@@ -98,6 +98,11 @@
 - [x] **2.5** Write `tests/test_gpu_db.py`
   - Test known GPUs return correct specs
   - Test unknown GPU raises clean error
+- [ ] **2.6** Fix two silent `config_parser.py` assumptions (SPEC §3.3, "Two fields that are not what they look like")
+  - `head_dim`: use the config field when present; `hidden_size // num_attention_heads` is only the fallback
+  - `tie_word_embeddings`: absent ≠ untied. Per-architecture default (Gemma-2 ties), `False` for unknown `model_type`
+  - Generalize $P_{attn}$ to $2h \cdot n_h d_k + 2h \cdot n_{kv} d_k$ (identical for Llama, right for Gemma)
+  - Verify: Gemma-2-9B counts **9.24B**, not 9.93B. Llama-3.1-8B must stay at exactly 8,030,261,248
 
 ---
 
@@ -150,9 +155,10 @@
     - also assert flash OFF -> 4,160 MiB, and that fp32 doubles the result
   - `test_overhead.py`: W_base=4,068.45 + A_act=3,136 -> 860.22 MiB; floor is 500 MiB at zero input
   - `test_end_to_end.py`: full Llama config -> total **8,689 MiB** (+/-10%), `max_batch_size == 21`
-- [ ] **3.9** Write `tests/test_utils.py`
-  - `precision_to_bytes` / `optimizer_bytes_per_param` for every supported key and alias
-  - All validation branches (bad type, unknown key, negative bytes) — `utils.py` is only 62% covered today
+- [ ] **3.10** Generalize the activation bracket in `memory/activations.py` (SPEC Component 5, "Exact bracket")
+  - $4h + 2 n_h d_k + 2 n_{kv} d_k + 3 d_{ff}$ — reduces to the $6h$ form when $n_h d_k = h$
+  - Golden path must come out bit-identical: `A_layer` 1,088 MiB, `A_act` 3,136 MiB
+  - Add a Gemma-2-9B case to `test_activations.py` ($n_h d_k = 4096$ vs $h = 3584$)
 
 ---
 
@@ -235,8 +241,10 @@
   ```bash
   pytest --cov=fitcheck --cov-report=term-missing
   ```
-  - Target: ≥80% coverage on `memory/` modules
+  - Target: ≥80% coverage on `memory/` modules — currently **100%** on all six, 222 tests green
   - All tests pass
+  - Write `tests/test_utils.py` — it does not exist yet, and `utils.py` holds the whole
+    `optimizer_bytes_per_param` β table (adamw 8 / bf16 states 4 / adam8bit 2 / sgd 4 / sgd 0)
 - [ ] **5.2** Add `README.md`
   - What it does (1 paragraph)
   - Terminal screenshot (Mode A output)
@@ -250,24 +258,25 @@
   - License (MIT)
 - [x] **5.3** Add `.gitignore`, `LICENSE` — both present
 
-- [ ] **5.8** Add GitHub Actions CI — `.github/workflows/ci.yml`
+- [ ] **5.4** Add GitHub Actions CI — `.github/workflows/ci.yml`
   - `pytest --cov=fitcheck` on Python 3.10 / 3.11 / 3.12, ubuntu-latest, on push + PR
   - Upload coverage, add the badge to README
   - Highest resume signal per hour of work in this whole plan — do not skip it
+  - SPEC §4 bullet 5 makes a green run a v0.1 ship condition, so it lands **before** the publish below
 
-- [ ] **5.9** Ship v0.1.0 with an honest accuracy banner
+- [ ] **5.5** Ship v0.1.0 with an honest accuracy banner (SPEC §4, v0.1 bullet 3)
   - README states plainly: estimates are **analytical and not yet validated** against real measurements,
     target ±20%, validation matrix landing in v0.2
   - **Hold the r/LocalLLaMA post (8.1) until the matrix has ≥3 real rows.** That audience checks numbers,
     and unvalidated claims there are very hard to walk back.
-- [ ] **5.4** Build and publish to PyPI
+- [ ] **5.6** Build and publish to PyPI
   ```bash
   python -m build
   twine upload dist/*
   ```
-- [ ] **5.5** Verify: `pip install fitcheck-llm` from PyPI works on a clean venv
-- [ ] **5.6** Verify: `fitcheck --help` works after PyPI install
-- [ ] **5.7** Git tag `v0.1.0`, push to GitHub
+- [ ] **5.7** Verify: `pip install fitcheck-llm` from PyPI works on a clean venv
+- [ ] **5.8** Verify: `fitcheck --help` works after PyPI install
+- [ ] **5.9** Git tag `v0.1.0`, push to GitHub
 
 ---
 
@@ -289,9 +298,16 @@
   - One other config (Qwen or Gemma)
 - [ ] **6.2** Fill validation matrix in README with predicted vs. actual vs. error %
 - [ ] **6.3** If any estimate is >±20% off, debug and adjust formulas
+  - First suspect if Llama-3.1-8B measures **high**: NF4 scale dtype. v0.1 models `absmax` as FP16
+    (239 MiB); `bitsandbytes` uses FP32 without double quant (479 MiB). See SPEC Component 1,
+    "Known simplification — scale dtype". Changing it moves the whole golden set and the pinned tests.
+  - Second suspect: activations. SPEC Component 5 is a principled ±10-15% estimate, not a guarantee
 - [ ] **6.4** Implement `memory/inference.py`
   - `estimate_inference_memory(config, precision, seq_len, num_concurrent) -> float`
-  - Weights + KV cache: $\text{KV} = 2 \times L \times 2 \times n_{kv} \times d_k \times s \times \text{bytes}$
+  - Weights + KV cache: $\text{KV} = 2 \times L \times n_{kv} \times d_k \times s \times n_{concurrent} \times \gamma$
+  - The leading 2 is K and V — **once**, not twice. $n_{concurrent}$ is the batch dimension: it is in
+    the signature and it belongs in the formula.
+  - No activations, no optimizer, no gradients — inference saves nothing for backward
 - [ ] **6.5** Add `fitcheck infer <model> [flags]` CLI command
 - [ ] **6.6** Add inference commands to REPL
 - [ ] **6.7** Update README with inference mode examples

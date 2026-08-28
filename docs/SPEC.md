@@ -27,7 +27,7 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 | **Cloud ML engineer** (A100/H100) | Pick the cheapest instance that fits | `fitcheck <model> --gpu a100-40 ...` vs `--gpu a100-80` |
 | **ML student / beginner** | Understand *where* GPU memory goes during training | Interactive REPL → `explain` command |
 | **Framework developer** (Axolotl, Unsloth) | Pre-validate user configs before launching jobs | JSON output mode for CI/CD integration |
-| **Inference deployer** (Ollama, vLLM) | Know if a model fits for serving | `fitcheck infer <model> --gpu 4090` |
+| **Inference deployer** (Ollama, vLLM) | Know if a model fits for serving | `fitcheck infer <model> --gpu 4090` — **v0.2**, see §2 |
 
 ### Why Existing Tools Don't Solve This
 
@@ -52,7 +52,7 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 | Interactive REPL: `fitcheck` (no args) | P0 | Commands: `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `help`, `exit` |
 | Fetch HuggingFace `config.json` via `huggingface_hub` | P0 | No weight download — config only |
 | Compute all 6 memory components | P0 | Weights, LoRA, optimizer, gradients, activations, overhead |
-| GPU database (hard-coded) | P0 | 3090, 4090, A100-40, A100-80, H100, T4, L4 |
+| GPU database (hard-coded) | P0 | 22 entries — consumer, older/cloud, workstation, datacenter. Roster in §3.4 |
 | Rich terminal output | P0 | Colored table, pass/fail verdict, headroom %, max batch suggestion |
 | Precision support: FP32, FP16, BF16, INT8, INT4 | P0 | |
 | Optimizer support: AdamW, SGD, Adam8bit | P0 | |
@@ -113,13 +113,26 @@ Double Quantization **quantizes the quantization constants themselves**:
 $$ \text{Overhead}^{DQ} = \frac{8\text{ bits}}{64} + \frac{32\text{ bits}}{64 \times 256} = 0.125 + 0.00195 \approx \mathbf{0.127}\text{ bits/param} \approx \mathbf{0.0158}\text{ bytes/param} $$
 
 Against the single-quantization $0.03125$ bytes/param that is a factor of $0.5078$, so the implementation
-applies the simpler **$Q_{overhead} \times 0.5$**. The 0.8% difference is far inside the ±20% accuracy target.
+applies the simpler **$Q_{overhead} \times 0.5$**. That shortcut understates the double-quant overhead by
+1.5% *of that term* — **1.9 MiB** on an 8B model, or 0.05% of $W_{base}$. Far inside the ±20% target.
+
+> **Known simplification — scale dtype.** fitcheck models the first-level NF4 scales as **FP16**
+> (2 bytes per block of 64). `bitsandbytes` keeps `absmax` in **FP32** when double quantization is off —
+> which is where the QLoRA paper's 0.5 bits/param figure comes from — costing $P \times \frac{4}{64}$ =
+> 0.0625 bytes/param, or **479 MiB** instead of 239 MiB on an 8B base. The DQ arithmetic above is
+> internally consistent against its own FP16 baseline, so v0.1 keeps FP16 and the golden number set
+> unchanged. This is the **first formula to revisit** if the Llama-3.1-8B row of the validation matrix
+> measures high (TASKS 6.3) — and it errs low, which is the unsafe direction for an OOM tool.
 
 **Parameter counting from config** (no weight download):
 
-$$P = V \times h + L \times \left[P_{attn} + 3h \cdot d_{ff} + \text{norms}\right] + V \times h \times \mathbb{1}[\text{untied}]$$
+$$P = V h + L \left[P_{attn} + 3h \cdot d_{ff} + 2h\right] + h + V h \cdot \mathbb{1}[\text{untied}]$$
 
-Where $V$ = vocab size, $h$ = hidden size, $L$ = layers, $d_k = h / n_h$.
+Where $V$ = vocab size, $h$ = hidden size, $L$ = layers, and $d_k$ = head dimension — **read from
+config, never assumed to be $h/n_h$** (§3.3). The $2h$ is the two per-layer RMSNorms; the lone $+h$ is
+the single final norm. Both are rounding error in MiB and neither is optional: they are the difference
+between reproducing $P = 8{,}030{,}261{,}248$ and missing it, and `test_end_to_end.py` asserts that
+integer exactly.
 
 #### **Attention parameters ($P_{attn}$) depend on the attention type:**
 
@@ -129,16 +142,26 @@ Where $V$ = vocab size, $h$ = hidden size, $L$ = layers, $d_k = h / n_h$.
 | **GQA** (Grouped Query Attention) | $1 < n_{kv} < n_h$ | $2h^2 + 2h \cdot n_{kv} \cdot d_k$ |
 | **MQA** (Multi-Query Attention)   | $n_{kv} = 1$       | $2h^2 + 2h \cdot d_k$              |
 
-General formula (works for all 3): $P_{attn} = 2h^2 + 2h \cdot n_{kv} \cdot d_k$
+General formula (works for all 3): $P_{attn} = 2h \cdot n_h \cdot d_k + 2h \cdot n_{kv} \cdot d_k$
 
 > For MHA: $n_{kv} = n_h$ → $n_{kv} \cdot d_k = h$ → $2h^2 + 2h^2 = 4h^2$ ✓
+>
+> The `q`/`o` term is written $2h \cdot n_h \cdot d_k$ rather than $2h^2$ because $n_h \cdot d_k = h$ is an
+> *observed regularity of Llama-shaped models*, not an invariant. Gemma-2-9B breaks it:
+> $16 \times 256 = 4096$ against $h = 3584$. The two forms are identical for Llama, Mistral and Qwen;
+> only the general one is also right for Gemma.
 
 **Implementation:** `memory/weights.py` — single function `estimate_weight_memory(num_params, precision, quantization_config)`. It takes the scalar param count, not the whole `ModelConfig`: counting parameters is `config_parser`'s job, and keeping the boundary there makes the function trivially testable with a bare integer.
 
 ---
 
 #### Component 2: LoRA Adapter Weights ($W_{lora}$)
-$$W_{lora} = L \times r \times \text{bytes} \times \sum_{t \in \text{targets}} \left(d_{in}^{(t)} + d_{out}^{(t)}\right)$$
+$$W_{lora} = L \times r \times \gamma \times \sum_{t \in \text{targets}} \left(d_{in}^{(t)} + d_{out}^{(t)}\right)$$
+
+$\gamma = \texttt{precision\_to\_bytes(precision)}$ — adapters are trainable, so they follow the **compute**
+dtype, never the base model's `quantization`. QLoRA's adapters are BF16 on top of an NF4 base.
+For GQA targets, $d_{out}^{(k)} = d_{out}^{(v)} = n_{kv} \cdot d_k$, not $h$.
+
 **Implementation:** `memory/lora.py` — function `estimate_lora_memory(config, rank, targets, precision)`.
 
 ---
@@ -213,11 +236,11 @@ Let $\gamma$ = `bytes_per_activation` (2 for BF16/FP16, 4 for FP32).
 |:--|:---|:---|:---|:---|
 | 1 | Layer input (pre-attn-norm input) | $(b,s,h)$ | $\gamma bsh$ | RMSNorm backward needs its input |
 | 2 | Attn-norm output | $(b,s,h)$ | $\gamma bsh$ | Input to `q/k/v_proj` — one tensor, three Linears |
-| 3 | Q (post-RoPE) | $(b,n_h,s,d_k)$ | $\gamma bsh$ | Saved by attention backward |
-| 4 | Attention output | $(b,s,h)$ | $\gamma bsh$ | Attention's `out` **and** `o_proj`'s input (same storage) |
+| 3 | Q (post-RoPE) | $(b,n_h,s,d_k)$ | $\gamma bs \cdot n_h d_k$ | Saved by attention backward |
+| 4 | Attention output | $(b,s,n_h d_k)$ | $\gamma bs \cdot n_h d_k$ | Attention's `out` **and** `o_proj`'s input (same storage) |
 | 5 | Post-attn residual sum | $(b,s,h)$ | $\gamma bsh$ | MLP-norm backward needs its input |
 | 6 | MLP-norm output | $(b,s,h)$ | $\gamma bsh$ | Input to `gate_proj` and `up_proj` |
-| | **subtotal** | | $\mathbf{\gamma bs \cdot 6h}$ | |
+| | **subtotal** | | $\mathbf{\gamma bs(4h + 2n_h d_k)}$ | $= \gamma bs \cdot 6h$ when $n_h d_k = h$ |
 | 7 | K (post-RoPE) | $(b,n_{kv},s,d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA** |
 | 8 | V | $(b,n_{kv},s,d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA** |
 | 9 | Attention weights (softmax) | $(b,n_h,s,s)$ | $\gamma bn_hs^2$ | **Removed by Flash Attention** |
@@ -233,6 +256,16 @@ Attention's `logsumexp` is $(b,n_h,s)$ in FP32 — real, but negligible next to 
 **Per-layer activation memory:**
 
 $$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + \gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}]$$
+
+**Exact bracket (implement this one).** Rows 1, 2, 5, 6 are $(b,s,h)$; rows 3 and 4 are $(b,s,n_hd_k)$;
+rows 7 and 8 are $(b,s,n_{kv}d_k)$. Written without the Llama-shaped assumption:
+
+$$\text{bracket} = 4h + 2\,n_h d_k + 2\,n_{kv} d_k + 3\,d_{ff}$$
+
+Substituting $n_h d_k = h$ gives $4h + 2h + 2h\frac{n_{kv}}{n_h} + 3d_{ff}$ — the headline form, exactly.
+The two are the same number for every model where $n_h d_k = h$ (Llama, Mistral, Qwen), so **the Appendix
+is unaffected**; only the exact form is also right for Gemma-2. Keep the $6h$ form in prose — it is the
+memorable one, and the $6$ is the fact people get wrong — and ship the exact one in code.
 
 **Total activation memory:**
 
@@ -252,6 +285,7 @@ $$A_{act} = \begin{cases} L \times A_{layer} & \text{no gradient checkpointing} 
 3. **$b$** is the micro-batch size, not effective batch. Gradient accumulation doesn't increase memory.
 4. **Gradient checkpointing** uses the practical default (checkpoint every layer), storing $L$ layer inputs + 1 layer's full activations.
 5. **$\gamma$ is derived from the compute precision**, never hardcoded to 2. Under `--precision fp32` every row in the table doubles.
+6. **$d_k$ comes from `config.json`**, not from $h/n_h$ (§3.3). Rows 3–4 scale with $n_h d_k$ and rows 7–8 with $n_{kv} d_k$; these equal $h$ and $h\frac{n_{kv}}{n_h}$ only when $n_h d_k = h$.
 
 **Implementation:** `memory/activations.py` — function `estimate_activation_memory(config, batch_size, seq_len, grad_checkpoint, flash_attn, precision)`.
 
@@ -400,12 +434,25 @@ def fetch_model_config(model_id: str) -> ModelConfig:
         num_kv_heads=raw.get("num_key_value_heads", raw["num_attention_heads"]),
         intermediate_size=raw["intermediate_size"],
         vocab_size=raw["vocab_size"],
-        head_dim=raw["hidden_size"] // raw["num_attention_heads"],
-        tie_word_embeddings=raw.get("tie_word_embeddings", False),
+        # explicit field wins; h // n_h is only the fallback
+        head_dim=raw.get("head_dim") or raw["hidden_size"] // raw["num_attention_heads"],
+        # absent ≠ untied — see below
+        tie_word_embeddings=raw.get("tie_word_embeddings", _TIES_BY_DEFAULT.get(raw["model_type"], False)),
     )
 ```
 
 This downloads only `config.json` (~2KB), never the model weights (~4–140GB).
+
+**Two fields that are not what they look like.** Both are silent, both are wrong on the same model
+family, and Gemma-2-9B is a row in the validation matrix:
+
+| Field | Naïve rule | Why it breaks | Correct rule |
+|:---|:---|:---|:---|
+| `head_dim` | $h / n_h$ | Gemma-2-9B declares `head_dim: 256` against $3584/16 = 224$; Gemma-2-27B declares `128` against $4608/32 = 144$ | Use the field when present; fall back to $h/n_h$ |
+| `tie_word_embeddings` | absent → `False` | Gemma-2 omits the key **and** ties. Defaulting to untied counts a $256000 \times 3584$ embedding twice | Per-architecture default table, `False` for unknown `model_type` |
+
+Getting both wrong compounds: Gemma-2-9B comes out at **9.93B** parameters against a true **9.24B** —
+a 7.5% over-count, ≈1.3 GiB of phantom BF16 weights, on a model the README promises to validate.
 
 ---
 
@@ -471,11 +518,37 @@ GPU Options:
   --list-gpus            Print the GPU database and exit
 
 Output Options:
-  --json                 Output as JSON (for CI/CD)
+  --json                 Output as JSON (for CI/CD) — schema below
   --no-color             Disable colored output
   --verbose              Show per-layer breakdown
   --explain              Plain-English breakdown + savings hints
+  -V, --version          Print the installed fitcheck version and exit
 ```
+
+#### `--json` output contract
+
+The machine-readable surface is a **published contract**, not a dump of whatever `MemoryReport`
+happens to hold — the framework-developer persona in §1 gates CI on it. Top-level keys:
+
+| Key | Type | Contents |
+|:---|:---|:---|
+| `fitcheck_version` | `str` | Installed package version — pin CI assertions against it |
+| `model` | `object` | `ModelConfig` fields verbatim (incl. the derived `num_params`) |
+| `gpu` | `object` | `GpuSpec`: `name`, `vram_mib`, `usable_mib` |
+| `training` | `object` | `TrainingConfig` as resolved — after `--qlora` expansion and preset lookup |
+| `trainable_params` | `int` | LoRA param count, or `num_params` under `--no-lora` |
+| `memory_mib` | `object` | `weights`, `lora`, `optimizer`, `gradients`, `activations`, `overhead`, `total` |
+| `activations_per_layer_mib` | `float` | $A_{layer}$ — the per-layer figure `--verbose` renders |
+| `verdict` | `object` | `fits`, `gpu_capacity_mib`, `headroom_mib`, `headroom_pct`, `max_batch_size`, `effective_batch_size` |
+| `savings_hints` | `list[str]` | The §3.5 hint lines, unformatted |
+
+Every `*_mib` value is a float rounded to 2 dp; `fits` and `max_batch_size` are the two fields a CI
+job should actually branch on. Keys may be **added** in a minor version, never renamed or removed.
+
+**Exit codes (Mode A):** `0` the config fits · `1` it does not fit · `2` the estimate could not be run
+(bad flags, unknown GPU, unreachable config). A CI job can therefore gate on the exit status alone and
+never parse the JSON. The REPL is the exception and **always exits 0** — inside a session a
+doesn't-fit is a verdict on screen, not the status of the shell you came from.
 
 **Validation:** reject `--quant nf4 --no-lora` — **a `fitcheck` scope limitation, not a universal claim.**
 Quantized models *can* be trained (QAT, and quantized-training methods that keep master weights or
@@ -596,7 +669,7 @@ the ladder is exhausted it names the smallest card in the database that would ho
 | **Static estimation (no GPU required)** | The whole point — predict before you spend money/time. Pure math from `config.json`. |
 | **One formula per file** | Each `memory/*.py` module has one formula. Testable, debuggable, swappable independently. |
 | **Read `config.json` not weights** | Downloads ~2KB vs. ~4–140GB. Works offline after first fetch. No GPU needed. |
-| **Practical grad checkpointing** (every layer) | This is what HuggingFace `transformers` actually does. Academic $\sqrt{L}$ formula would under-estimate memory. |
+| **Practical grad checkpointing** (every layer) | This is what HuggingFace `transformers` actually does. The academic $\sqrt{L}$ formula models a *different* strategy and would **over**-estimate — 6,517 MiB against the true 3,136 for the golden config. Derivation: Blueprint Component 5. |
 | **GQA-aware by default** | Most modern models use GQA. Ignoring it gives 20–25% error on LoRA and activation estimates. |
 | **`click` not `argparse`** | Better UX: auto-generated help, option groups, composable commands. Standard for Python CLIs. |
 | **`rich` for display** | Screenshot-worthy terminal output drives organic sharing. Tables, colors, panels, emojis. |
@@ -611,7 +684,9 @@ the ladder is exhausted it names the smallest card in the database that would ho
 | **MoE models** (Mixtral, DeepSeek) | Not supported in MVP. Active experts × per-expert FFN changes the activation formula. | ❌ v0.3 |
 | **Models with tied embeddings** | Detected via `tie_word_embeddings` in config. Count embedding params once. | ✅ MVP |
 | **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Blueprint.md's note on `intermediate_size`). | ✅ MVP |
-| **Custom attention patterns** (sliding window, local) | Not modeled. Treated as standard attention. | ❌ v0.3 |
+| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback. Affects $P$, LoRA dims, and activation rows 3–4, 7–8. | ⚠️ spec'd, TASKS 2.6 |
+| **`tie_word_embeddings` absent from config** | Architecture default table (Gemma-2 ties), `False` for unknown `model_type`. Assuming untied double-counts the embedding. | ⚠️ spec'd, TASKS 2.6 |
+| **Custom attention patterns** (sliding window, local) | Not modeled. Treated as standard attention. Note Gemma-2 alternates sliding/full layers, so its non-Flash path is approximate even once the two rows above are fixed. | ❌ v0.3 |
 | **FSDP / DeepSpeed ZeRO** | Not supported. Memory is split across GPUs — requires sharding-aware formulas. | ❌ v0.4 |
 | **`torch.compile`** | Changes which tensors are saved (kernel fusion). Not modeled. | ❌ v0.4 |
 | **Multi-GPU (tensor parallel)** | Not supported. Single-GPU estimation only. | ❌ v0.4 |
@@ -625,17 +700,28 @@ the ladder is exhausted it names the smallest card in the database that would ho
 
 ## Section 4: Definition of Done
 
-The MVP is **done** when all 5 bullets are true:
+### v0.1 (MVP) — done when all 6 bullets are true
 
 1. **`pip install fitcheck-llm` works** — published to PyPI, installs cleanly on Python 3.10+, `fitcheck --help` runs.
 
 2. **Both interaction modes functional** — Mode A (CLI one-liner) and Mode B (interactive REPL with `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `exit`) produce correct output.
 
-3. **Estimates within ±20% of measured ground truth** for ≥3 validated configurations in the README validation matrix (Llama 3.1-8B on 4090, Mistral-7B on T4, one other).
+3. **Estimates are analytical and labelled as such** — every component reproduces its row in the Appendix, and the README states plainly that the ±20% target is *not yet validated against measured ground truth*. v0.1 ships honest, not proven.
 
 4. **`pytest` passes with ≥80% line coverage** on all `memory/` modules, including at least one end-to-end test (known config → expected MiB ± tolerance).
 
-5. **README is complete** — includes: what it does (with screenshot of terminal output), comparison table vs. existing tools, installation instructions, usage examples (both modes), validation matrix, and "how it works" section linking to this spec.
+5. **CI is green** — GitHub Actions runs `pytest --cov` on 3.10 / 3.11 / 3.12 for every push and PR, badge in the README. §2 marks this P0; a red badge on day one costs more trust than a missing feature.
+
+6. **README is complete** — includes: what it does (with screenshot of terminal output), comparison table vs. existing tools, installation instructions, usage examples (both modes), the validation matrix *with its columns still TBD*, and "how it works" linking to this spec.
+
+### v0.2 — the accuracy gate
+
+7. **Estimates within ±20% of measured ground truth** for ≥3 configurations (Llama-3.1-8B on 4090, Mistral-7B on T4, one other), measured with `scripts/measure.py` and filled into the README matrix.
+
+> **Why the split.** Requiring measured rows before the first publish would block PyPI on owning a
+> 4090. Shipping unvalidated with a loud banner is the honest trade; shipping unvalidated *quietly*,
+> or launching to an audience that checks numbers before the matrix has rows, is not. TASKS 5.5 and
+> 8.1 hold that line.
 
 ---
 

@@ -6,7 +6,11 @@ Imagine this scenario — it happens to every ML practitioner:
 
 > You want to fine-tune Qwen2.5-14B with QLoRA on your RTX 4090 (24GB). You set `batch_size=4`, `lora_r=64`, `seq_len=2048`, BF16 precision, gradient checkpointing on. You launch the job... wait 3 minutes for the model to load... and then: **`CUDA OutOfMemoryError`**. You lower batch size to 2, try again, wait 3 more minutes... still OOM. You lower to 1, try again... it works, but now you've wasted 10 minutes and you're not sure if you could have squeezed in `batch_size=2` with a smaller LoRA rank.
 
-`fitcheck` eliminates this entire cycle. **Before you ever touch a GPU**, it offers two seamless interfaces:
+`fitcheck` eliminates this entire cycle. One command, no GPU, no model download, under two seconds:
+it tells you whether the config fits, where every MiB went, and the largest micro-batch that still
+fits — the three questions that ten-minute loop was going to answer eventually anyway.
+
+**Before you ever touch a GPU**, it offers two seamless interfaces:
 
 ### Mode A: Power-User One-Liner (CLI Flags)
 
@@ -97,7 +101,7 @@ Before building, it's critical to understand the competitive landscape and **cle
 |:---|:---|:---|
 | [`accelerate estimate-memory`](https://huggingface.co/docs/accelerate) | Estimates VRAM for full model loading | **No LoRA/QLoRA support.** No activation estimation. No optimizer states. Only computes weight memory. |
 | [HF Model Memory Calculator](https://huggingface.co/spaces/hf-accelerate/model-memory-usage) | Gradio Space for inference memory | **Inference only.** No training components (activations, optimizer, gradients). |
-| [LLM-Calc](https://github.com/simonw/llm-calc) | Quick napkin math for model memory | Very rough estimates. **No component breakdown.** No LoRA, no QLoRA, no optimizer modeling. |
+| [llm-calc](https://github.com/JimJafar/llm-calc) | Browser calculator: does this model + quantization fit my RAM, with a context-length slider | **Inference sizing.** No training components at all — no optimizer, gradients, or activations. No LoRA/QLoRA. |
 | [Model Memory Estimator](https://vram.asmirnov.xyz/) | Web calculator for training memory | Decent but **no GQA-aware formulas**, limited architecture support, no CLI. |
 
 ### `fitcheck`'s differentiators:
@@ -107,8 +111,9 @@ Before building, it's critical to understand the competitive landscape and **cle
 3. **GQA-aware** — properly accounts for reduced KV heads in modern models (Llama 3, Mistral, Qwen, Gemma)
 4. **Architecture-specific** — reads `config.json` directly, uses actual `intermediate_size` instead of assuming `4h`
 5. **Actionable advice** — "you can increase batch_size to X" or "switch to 8-bit optimizer to save Y MiB"
-6. **CLI-first** — designed for the terminal workflow where ML engineers actually work
-7. **Calibration mode** (Phase 3) — run 1 real forward pass to compute a correction factor for future estimates
+6. **CLI-first** — designed for the terminal workflow where ML engineers actually work, and
+   `--json` + an exit code (0 fits / 1 doesn't / 2 error) so CI can gate a training job on it
+7. **Calibration mode** *(roadmap — Phase 3, not in v0.1)* — run 1 real forward pass to compute a correction factor for future estimates
 
 > [!IMPORTANT]
 > Your README must include this comparison table. When someone asks "how is this different from X?", they should get a clear answer immediately. This is what separates a tool that gets adoption from one that gets ignored.
@@ -134,7 +139,7 @@ graph TD
     E --> E1["Same shape as<br/>trainable params"]
     F --> F1["Intermediate tensors<br/>saved for backward pass"]
     F --> F2["Reduced by gradient<br/>checkpointing"]
-    G --> G1["CUDA context ~300-800MB<br/>+ cuDNN workspace"]
+    G --> G1["CUDA context ~300-800 MiB<br/>+ cuDNN workspace"]
 ```
 
 Let me walk through each component with real math:
@@ -163,7 +168,9 @@ Using the real Llama-3.1-8B count, $P = 8{,}030{,}261{,}248$:
 > [!NOTE]
 > For QLoRA, the base model is quantized to 4-bit but there's overhead from the quantization constants (one FP16 scale factor per block of 64 weights). This adds ~0.03125 bytes/param on top. For this 8B model that's 239 MiB of quantization overhead, giving **4,068 MiB** rather than the naïve 3,829 MiB.
 >
-> With **double quantization** (enabled by default in QLoRA), the scales themselves are quantized, reducing this overhead by ~50% (to ~120 MiB). `fitcheck` should model both modes.
+> With **double quantization**, the scales themselves are quantized, reducing this overhead by ~50% (to ~120 MiB). `fitcheck` models both modes, but `--qlora` leaves double quant **off** — the `bitsandbytes` recipe usually turns it on, so fitcheck's default is the more expensive of the two readings. Pass `--double-quant` to model it, and note that the estimate only ever moves *down* when you do.
+>
+> One assumption worth knowing you are making: the scale is counted as **FP16**. `bitsandbytes` actually keeps `absmax` in FP32 when double quant is off, which would cost 479 MiB rather than 239 MiB here. v0.1 keeps FP16 — see SPEC Component 1, "Known simplification — scale dtype", and TASKS 6.3.
 
 ### Component 2: LoRA Adapter Weights
 
@@ -179,15 +186,19 @@ $$\text{LoRA params per module} = r \times (d_{in} + d_{out})$$
 > - `v_proj`: $d_{in} = h,\quad d_{out} = n_{kv} \times d_k$ (smaller!)
 > - `o_proj`: $d_{in} = h,\quad d_{out} = h$ (unchanged)
 >
-> For Llama 3.1-8B with 32 Q heads and 8 KV heads: `k_proj` and `v_proj` have $d_{out} = 8 \times 128 = 1024$, not 4096. Failing to account for this **over-estimates LoRA memory by ~25%** on GQA models.
+> For Llama 3.1-8B with 32 Q heads and 8 KV heads: `k_proj` and `v_proj` have $d_{out} = 8 \times 128 = 1024$, not 4096. Failing to account for this **over-estimates LoRA memory by 23%** on that shape — 128 MiB claimed against 104 MiB real, worked through in Step 2 below.
 
 The general formula accounting for GQA:
 
 $$\text{Total LoRA params} = L \times r \times \sum_{m \in \text{targets}} (d_{in}^{(m)} + d_{out}^{(m)})$$
 
-These are always stored in the **training precision** (FP16/BF16), so:
+These are stored in the **compute precision** — the same $\gamma$ that drives gradients and
+activations, not a constant:
 
-$$\text{LoRA Memory} = \text{Total LoRA params} \times 2 \text{ bytes}$$
+$$\text{LoRA Memory} = \text{Total LoRA params} \times \gamma \qquad (\gamma = 2 \text{ for BF16/FP16},\ 4 \text{ for FP32})$$
+
+The adapters are trained, so they follow `--precision`, never the base model's `--quant`. In QLoRA the
+base is 4-bit and the adapters are still BF16; that asymmetry is the whole point of the method.
 
 ### Component 3: Optimizer States
 
@@ -206,15 +217,15 @@ $$\text{Optimizer Memory} = \text{trainable\_params} \times \text{bytes\_per\_pa
 > [!IMPORTANT]
 > **Subtlety 1 — AdamW state dtype:** Even though LoRA trains in BF16, **AdamW stores its states in FP32 by default**. This means optimizer states are 8 bytes/param, not 4. This catches a lot of people off guard. (This is about the *states*, `m` and `v` — not about master weights, which are Subtlety 2.)
 >
-> **Subtlety 2 — Full fine-tuning master copy:** When full fine-tuning (not LoRA) with mixed precision (BF16/FP16 forward + FP32 optimizer), the optimizer also keeps a **FP32 master copy** of all trainable parameters. This adds another 4 bytes/param. For LoRA/QLoRA this is negligible (only LoRA params), but for full fine-tuning this doubles the effective weight memory cost. `fitcheck` must handle both cases.
+> **Subtlety 2 — Full fine-tuning master copy:** When full fine-tuning (not LoRA) with mixed precision (BF16/FP16 forward + FP32 optimizer), the optimizer also keeps a **FP32 master copy** of all trainable parameters. This adds another 4 bytes/param. For LoRA/QLoRA this is negligible (only LoRA params), but for full fine-tuning the FP32 shadow costs *twice what the BF16 weights themselves cost* — 2 bytes/param of weights carrying 4 bytes/param of master copy. `fitcheck` must handle both cases.
 >
 > **The "mixed precision" qualifier is load-bearing.** A master weight is the FP32 shadow of a parameter held in lower precision. Under `--precision fp32` the parameters already *are* FP32 — there is no shadow, and $W_{base}$ has already paid those 4 bytes/param. Adding the copy there double-counts by 4 bytes/param (**30,633 MiB** on an 8B model). Both correct paths land at 16 bytes/param for full FT + AdamW; a rule that makes them disagree is wrong. Exact condition and the invariant table: SPEC.md Component 3.
 
 ### Component 4: Gradients
 
-During backward, PyTorch allocates a `.grad` tensor for each trainable parameter. Same shape, same dtype as the parameter:
+During backward, PyTorch allocates a `.grad` tensor for each trainable parameter. Same shape, same dtype as the parameter — so this term scales with the **compute** precision, exactly like activations:
 
-$$\text{Gradient Memory} = \text{trainable\_params} \times 2 \text{ bytes (BF16)}$$
+$$\text{Gradient Memory} = \text{trainable\_params} \times \gamma \qquad (\gamma = 2 \text{ for BF16/FP16},\ 4 \text{ for FP32})$$
 
 With gradient accumulation, gradients are **not** multiplied by the accumulation steps — they're accumulated in-place into the same tensor.
 
@@ -242,11 +253,11 @@ x  = x + down_proj(silu(g) * u)           #     SAVED ×1 — down_proj's input
 | :-| :------------------------------ | :-------------------- | :----------------------------------- | :------------------------------------- |
 | 1 | Layer input (pre-attn-norm)     | $(b, s, h)$           | $\gamma bsh$                         | RMSNorm backward needs its input       |
 | 2 | Attn-norm output                | $(b, s, h)$           | $\gamma bsh$                         | Input to `q/k/v_proj` — shared by 3    |
-| 3 | Q projection output (post-RoPE) | $(b, n_h, s, d_k)$    | $\gamma bsh$                         | $n_h \times d_k = h$ always            |
-| 4 | Attention output                | $(b, s, h)$           | $\gamma bsh$                         | Also `o_proj`'s input — same storage   |
+| 3 | Q projection output (post-RoPE) | $(b, n_h, s, d_k)$    | $\gamma bs \cdot n_hd_k$             | $n_h d_k = h$ for Llama-shaped models  |
+| 4 | Attention output                | $(b, s, n_hd_k)$      | $\gamma bs \cdot n_hd_k$             | Also `o_proj`'s input — same storage   |
 | 5 | Post-attn residual sum          | $(b, s, h)$           | $\gamma bsh$                         | MLP-norm backward needs its input      |
 | 6 | MLP-norm output                 | $(b, s, h)$           | $\gamma bsh$                         | Input to `gate_proj` and `up_proj`     |
-|   | **subtotal**                    |                       | $\mathbf{\gamma bs \cdot 6h}$        |                                        |
+|   | **subtotal**                    |                       | $\mathbf{\gamma bs(4h + 2n_hd_k)}$   | $= \gamma bs \cdot 6h$ when $n_hd_k = h$ |
 | 7 | K projection output             | $(b, n_{kv}, s, d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA**                    |
 | 8 | V projection output             | $(b, n_{kv}, s, d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA**                    |
 | 9 | Attention weights (softmax)     | $(b, n_h, s, s)$      | $\gamma bn_hs^2$                     | **Removed by Flash Attention**         |
@@ -278,7 +289,16 @@ Where:
 - $n_h$ = number of attention heads (query heads)
 - $n_{kv}$ = number of key-value heads (= $n_h$ for MHA, < $n_h$ for GQA)
 - $d_{ff}$ = FFN intermediate size (read from `intermediate_size` in `config.json`)
+- $d_k$ = head dimension — read from `head_dim` in `config.json` when present, else $h / n_h$
 - $\gamma$ = bytes per activation element, from the **compute** precision (2 for BF16/FP16, 4 for FP32)
+
+> [!NOTE]
+> **The $6h$ form quietly assumes $n_h d_k = h$.** Rows 3 and 4 are really $n_h d_k$ wide and rows 7–8
+> are $n_{kv}d_k$ wide, so the bracket without any assumption is
+> $4h + 2n_hd_k + 2n_{kv}d_k + 3d_{ff}$. Substitute $n_hd_k = h$ and you get the $6h$ form back exactly
+> — which is why every number in this document is unaffected. It matters for Gemma-2-9B, where
+> $16 \times 256 = 4096$ against $h = 3584$, so the $6h$ form counts its Q and attention-output tensors
+> 12.5% short. Teach the $6h$ form, implement the other one.
 
 > [!WARNING]
 > **Don't hardcode $\gamma = 2$.** It is tempting, because BF16 training is the overwhelmingly common case and
@@ -287,13 +307,19 @@ Where:
 > dominate most. Derive $\gamma$ from the compute dtype, always.
 
 > [!NOTE]
-> **Don't assume $d_{ff} = 4h$.** Modern models use varying FFN sizes:
+> **Don't assume $d_{ff} = 4h$.** Modern models use varying FFN sizes (values below read from each
+> model's published `config.json`):
 > - Llama 3.1-8B: $d_{ff} = 14336 = 3.5h$
-> - Mistral-7B: $d_{ff} = 14336 = 3.5h$
-> - Qwen2.5-14B: $d_{ff} = 13696 = 2.67h$
-> - Gemma 2-9B: $d_{ff} = 36864 = 4.57h$ (wider FFN)
+> - Mistral-7B-v0.3: $d_{ff} = 14336 = 3.5h$
+> - Qwen2.5-14B: $d_{ff} = 13824 = 2.7h$
+> - Gemma 2-9B: $d_{ff} = 14336 = 4.0h$
+> - Gemma 2-27B: $d_{ff} = 36864 = 8.0h$ (twice the "textbook" width)
 >
-> Always read `intermediate_size` from the model's `config.json`. Using a hardcoded `4h` can give 10–30% error.
+> Note Gemma 2-9B: it *is* exactly $4h$ — and that is the trap, not the exception. The ratio ranges from
+> $2.7h$ to $8h$ across four current families, so a hardcoded `4h` is right occasionally and wrong by up
+> to 2× otherwise, with nothing in the model name to tell you which. Always read `intermediate_size`.
+> Getting it wrong moves the FFN term, which is the largest single block of activation memory: 10–30%
+> error on typical configs, more on Gemma 2-27B.
 
 > [!WARNING]
 > **Flash Attention changes this dramatically.** With Flash Attention, the attention weight matrix $(b, n_h, s, s)$ is **never materialized in HBM**. This removes the $O(s^2)$ term, making attention $O(s)$ in memory. For a batch of 4 with seq_len=2048 and 32 heads, this saves $2 \times 4 \times 32 \times 2048^2 = 1{,}073{,}741{,}824$ bytes $= 1{,}024$ MiB **per layer** — 32,768 MiB across all 32 layers without checkpointing. `fitcheck` must have two code paths: `--flash-attn` ON vs OFF.
@@ -303,12 +329,27 @@ Where:
 
 **With gradient checkpointing:**
 
-There are two strategies:
+Every checkpointing scheme is the same one-parameter family. Split $L$ layers into $k$ segments, store
+the input to each segment, and recompute one segment at a time during backward:
 
-| Strategy | Formula | Used by |
-|:---|:---|:---|
-| Theoretical optimal (checkpoint every $\sqrt{L}$ layers) | $\sqrt{L} \times A_{layer} + L \times \gamma bsh$ | Academic papers |
-| **Checkpoint every layer** (practical default) | $L \times \gamma bsh + 1 \times A_{layer}$ | HuggingFace `transformers`, most frameworks |
+$$A(k) = k \cdot \gamma bsh + \frac{L}{k} \cdot A_{layer}$$
+
+The strategies are just choices of $k$ — and for the worked example ($L = 32$, $\gamma bsh = 64$ MiB,
+$A_{layer} = 1{,}088$ MiB) they land nowhere near where the folklore says:
+
+| $k$ | Strategy | $A_{act}$ | Used by |
+|:---|:---|---:|:---|
+| $\sqrt{L} \approx 5.66$ | "checkpoint every $\sqrt{L}$ layers" | **6,517 MiB** | Academic papers |
+| $L = 32$ | **checkpoint every layer** | **3,136 MiB** | HuggingFace `transformers` |
+| $\sqrt{L \cdot A_{layer}/\gamma bsh} \approx 23$ | true minimum of $A(k)$ | **2,986 MiB** | nobody, and it barely matters |
+
+> [!NOTE]
+> **The $\sqrt{L}$ result is real but lives in a different regime.** It minimizes $A(k)$ only when a
+> layer's full activations cost about the same as a layer's input. Here they cost **17×** as much
+> ($1{,}088$ vs $64$ MiB), which pushes the true optimum up to $k \approx 23$ and leaves every-layer
+> checkpointing within **5%** of it. So the practical default is not a compromise — it is very nearly
+> optimal *and* it is what the framework actually does. Modelling $\sqrt{L}$ instead would over-estimate
+> the golden config by more than 2×.
 
 `fitcheck` should use the **practical default** (checkpoint every layer), which is what `model.gradient_checkpointing_enable()` does in HuggingFace Transformers. This stores only the *input* to each transformer layer ($L$ tensors of shape $(b, s, h)$) plus **one layer's worth** of full activations at a time (recomputed during backward):
 
@@ -322,12 +363,15 @@ $$A_{checkpointed} = L \times \gamma bsh + A_{layer}$$
 ### Component 6: CUDA Overhead
 
 - **CUDA context**: ~300-800 MiB just for initializing CUDA (loading the driver, cuDNN, cuBLAS)
-- **Memory fragmentation**: PyTorch's caching allocator reserves blocks; actual usable memory is ~95-97% of reported VRAM
+- **Memory fragmentation**: PyTorch's caching allocator reserves blocks; actual usable memory is ~91-97% of reported VRAM, depending on the card
 - **Workspace buffers**: cuBLAS/cuDNN allocate temporary workspace for GEMM/convolution operations
 
 This is modeled as a constant + small percentage:
 
-$$\text{Overhead} \approx 500\text{ MiB} + 0.05 \times \text{(weights + activations)}$$
+$$\text{Overhead} \approx 500\text{ MiB} + 0.05 \times (W_{base} + A_{act})$$
+
+The percentage tracks $W_{base}$ specifically, not $W_{base} + W_{lora}$ — the adapters are too small to
+move it, and pinning the definition keeps the term reproducible.
 
 ## Code Architecture
 
@@ -354,6 +398,8 @@ fitcheck/
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
+├── test_config_parser.py
+├── test_gpu_db.py
 ├── test_weights.py
 ├── test_lora.py
 ├── test_optimizer.py
@@ -563,8 +609,8 @@ print(torch.cuda.memory_summary())
 
 | Phase | Target Error | How |
 |:---|:---|:---|
-| MVP (v0.1) | ±20% | Analytical formulas only |
-| Validated (v0.3) | ±10% | Formulas tuned against real measurements |
+| MVP (v0.1) | ±20%, **unvalidated** | Analytical formulas only — shipped with an honest banner, not with proof |
+| Validated (v0.2) | ±10% | Formulas tuned against ≥3 real measurements (SPEC §4, bullet 7) |
 | Calibrated (v1.0) | ±5% | Per-architecture correction factors from calibration mode |
 
 ---
@@ -585,7 +631,7 @@ print(torch.cuda.memory_summary())
 | 1 | **GPU memory hierarchy** | HBM (VRAM) vs. SRAM (on-chip) vs. registers. What lives where during training. | You're estimating HBM usage specifically. SRAM matters for understanding why Flash Attention changes the memory model. |
 | 2 | **CUDA context overhead** | What happens when you call `torch.cuda.init()`. How much memory the driver, cuDNN, and cuBLAS pre-allocate. | You need a realistic constant for the "overhead" component. |
 | 3 | **PyTorch's caching allocator** | How `torch.cuda.memory_allocated()` vs `torch.cuda.memory_reserved()` differ. What "fragmentation" means. The `expandable_segments` feature. | You need to know the difference between "memory used by tensors" and "memory held by PyTorch's allocator" to set realistic headroom. |
-| 4 | **GPU spec sheets** | VRAM capacities of common GPUs (T4=16GB, 3090=24GB, 4090=24GB, A100=40/80GB, H100=80GB, L4=24GB). Actual usable memory vs. advertised. | You're building a GPU database. Usable VRAM is typically 95-97% of advertised. |
+| 4 | **GPU spec sheets** | VRAM capacities of common GPUs (T4=16GB, 3090=24GB, 4090=24GB, A100=40/80GB, H100=80GB, L4=24GB). Actual usable memory vs. advertised. | You're building a GPU database. Usable VRAM is 91-97% of advertised — consumer cards with a display attached sit at the bottom of that range, headless datacenter cards at the top. |
 
 ---
 
@@ -702,7 +748,7 @@ $$\boxed{\text{Peak VRAM} = W_{base} + W_{lora} + S_{optim} + G_{grad} + A_{act}
 
 Where:
 - $W_{base}$ = base model weight memory (function of param count + **storage** precision + quantization overhead)
-- $W_{lora}$ = LoRA adapter memory (function of rank, targets, layers, **GQA head dimensions**)
+- $W_{lora}$ = LoRA adapter memory (function of rank, targets, layers, **GQA head dimensions**, and the **compute** precision — adapters follow `--precision`, never the base model's `--quant`)
 - $S_{optim}$ = optimizer states (function of trainable params + optimizer type + **master weight copy for full FT**)
 - $G_{grad}$ = gradient memory (function of trainable params + **compute** precision)
 - $\gamma$ = bytes per activation element, from the **compute** precision (2 for BF16/FP16, 4 for FP32)

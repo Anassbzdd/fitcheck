@@ -91,6 +91,137 @@ def test_fetch_model_config_handles_tied_embeddings(
     assert untied.num_params - tied.num_params == embedding_params
 
 
+_GEMMA_2_9B_PARAMS = 9_241_404_928
+
+
+def test_declared_head_dim_wins_over_hidden_size_over_heads(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    gemma_2_9b_config: dict[str, Any],
+) -> None:
+    """Gemma-2-9B declares head_dim 256; hidden_size // heads would give 224."""
+    fake_config_download(gemma_2_9b_config)
+
+    config = fetch_model_config("google/gemma-2-9b")
+
+    assert config.head_dim == 256
+    assert config.head_dim != config.hidden_size // config.num_attention_heads
+
+
+def test_head_dim_falls_back_to_hidden_size_over_heads_when_absent(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    gemma_2_9b_config: dict[str, Any],
+) -> None:
+    without_head_dim = {
+        key: value for key, value in gemma_2_9b_config.items() if key != "head_dim"
+    }
+    fake_config_download(without_head_dim)
+
+    config = fetch_model_config("fake-org/no-head-dim")
+
+    assert config.head_dim == 3584 // 16 == 224
+
+
+def test_declared_head_dim_lifts_the_divisibility_requirement(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    gemma_2_9b_config: dict[str, Any],
+) -> None:
+    """Divisibility constrains deriving head_dim, not the model itself."""
+    indivisible = dict(gemma_2_9b_config, hidden_size=3585)
+    fake_config_download(indivisible)
+
+    config = fetch_model_config("fake-org/indivisible")
+
+    assert config.hidden_size % config.num_attention_heads != 0
+    assert config.head_dim == 256
+
+
+def test_absent_tie_word_embeddings_means_tied_for_gemma(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    gemma_2_9b_config: dict[str, Any],
+) -> None:
+    assert "tie_word_embeddings" not in gemma_2_9b_config
+    fake_config_download(gemma_2_9b_config)
+
+    config = fetch_model_config("google/gemma-2-9b")
+
+    assert config.tie_word_embeddings is True
+
+
+def test_absent_tie_word_embeddings_defaults_untied_for_unknown_architecture(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    gemma_2_9b_config: dict[str, Any],
+) -> None:
+    """Unrecognised model_type keeps the conservative (over-counting) default."""
+    unknown = dict(gemma_2_9b_config, model_type="not-a-real-architecture")
+    fake_config_download(unknown)
+
+    config = fetch_model_config("fake-org/unknown-arch")
+
+    assert config.tie_word_embeddings is False
+
+
+def test_an_explicit_tie_word_embeddings_beats_the_architecture_default(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    gemma_2_9b_config: dict[str, Any],
+) -> None:
+    fake_config_download(dict(gemma_2_9b_config, tie_word_embeddings=False))
+
+    config = fetch_model_config("fake-org/gemma-untied")
+
+    assert config.tie_word_embeddings is False
+
+
+def test_gemma_2_9b_counts_924b_not_993b(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    gemma_2_9b_config: dict[str, Any],
+) -> None:
+    """Both traps compound: head_dim 224 + untied would over-count by 7.4%."""
+    fake_config_download(gemma_2_9b_config)
+
+    config = fetch_model_config("google/gemma-2-9b")
+
+    assert config.num_params == _GEMMA_2_9B_PARAMS
+    assert config.num_params / 1e9 == pytest.approx(9.24, abs=0.005)
+    assert config.num_params < 9_500_000_000
+
+
+def test_attention_params_use_head_dim_not_hidden_size_squared(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    gemma_2_9b_config: dict[str, Any],
+) -> None:
+    fake_config_download(gemma_2_9b_config)
+    config = fetch_model_config("google/gemma-2-9b")
+
+    q_out = config.num_attention_heads * config.head_dim
+    kv_out = config.num_kv_heads * config.head_dim
+    expected_attention = 2 * config.hidden_size * q_out + 2 * config.hidden_size * kv_out
+
+    embedding = config.vocab_size * config.hidden_size
+    mlp = 3 * config.hidden_size * config.intermediate_size
+    norms = 2 * config.hidden_size
+    expected = (
+        embedding
+        + config.num_layers * (expected_attention + mlp + norms)
+        + config.hidden_size
+    )
+
+    assert q_out == 4096 != config.hidden_size
+    assert config.num_params == expected
+
+
+def test_generalized_attention_formula_leaves_llama_untouched(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    llama_31_8b_config: dict[str, Any],
+) -> None:
+    """n_h * d_k == h for Llama, so 2h*n_h*d_k + 2h*n_kv*d_k == 2h^2 + 2h*n_kv*d_k."""
+    fake_config_download(llama_31_8b_config)
+
+    config = fetch_model_config("meta-llama/Llama-3.1-8B")
+
+    assert config.num_attention_heads * config.head_dim == config.hidden_size
+    assert config.num_params == 8_030_261_248
+
+
 @pytest.mark.parametrize("missing_field", ["hidden_size", "vocab_size", "num_hidden_layers"])
 def test_fetch_model_config_missing_required_field_raises(
     fake_config_download: Callable[[dict[str, Any]], None],

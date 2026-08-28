@@ -437,7 +437,7 @@ def fetch_model_config(model_id: str) -> ModelConfig:
         # explicit field wins; h // n_h is only the fallback
         head_dim=raw.get("head_dim") or raw["hidden_size"] // raw["num_attention_heads"],
         # absent ≠ untied — see below
-        tie_word_embeddings=raw.get("tie_word_embeddings", _TIES_BY_DEFAULT.get(raw["model_type"], False)),
+        tie_word_embeddings=_tie_word_embeddings(raw),   # model_type lookup, False if unknown
     )
 ```
 
@@ -453,6 +453,17 @@ family, and Gemma-2-9B is a row in the validation matrix:
 
 Getting both wrong compounds: Gemma-2-9B comes out at **9.93B** parameters against a true **9.24B** —
 a 7.5% over-count, ≈1.3 GiB of phantom BF16 weights, on a model the README promises to validate.
+
+Two consequences worth stating outright:
+
+- **Divisibility is a rule about the fallback, not about the model.** Rejecting a config because
+  $h \bmod n_h \ne 0$ is only valid when $d_k$ is being derived. A config that declares `head_dim`
+  is free to violate it, and must be accepted.
+- **`False` for an unknown `model_type` is a deliberate divergence from `transformers`,** whose own
+  `PretrainedConfig` default is `True`. Assuming untied over-counts the embedding, and for a tool
+  whose job is avoiding OOM, over-counting is the direction that costs the user nothing. Known
+  tying families are listed explicitly so the conservative default only ever applies to
+  architectures fitcheck has not seen.
 
 ---
 
@@ -684,8 +695,8 @@ the ladder is exhausted it names the smallest card in the database that would ho
 | **MoE models** (Mixtral, DeepSeek) | Not supported in MVP. Active experts × per-expert FFN changes the activation formula. | ❌ v0.3 |
 | **Models with tied embeddings** | Detected via `tie_word_embeddings` in config. Count embedding params once. | ✅ MVP |
 | **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Blueprint.md's note on `intermediate_size`). | ✅ MVP |
-| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback. Affects $P$, LoRA dims, and activation rows 3–4, 7–8. | ⚠️ spec'd, TASKS 2.6 |
-| **`tie_word_embeddings` absent from config** | Architecture default table (Gemma-2 ties), `False` for unknown `model_type`. Assuming untied double-counts the embedding. | ⚠️ spec'd, TASKS 2.6 |
+| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$ and LoRA dims are correct; activation rows 3–4 still assume $n_hd_k = h$ (TASKS 3.10). | ⚠️ partial |
+| **`tie_word_embeddings` absent from config** | Architecture default table (Gemma family ties), `False` for unknown `model_type`. | ✅ MVP |
 | **Custom attention patterns** (sliding window, local) | Not modeled. Treated as standard attention. Note Gemma-2 alternates sliding/full layers, so its non-Flash path is approximate even once the two rows above are fixed. | ❌ v0.3 |
 | **FSDP / DeepSpeed ZeRO** | Not supported. Memory is split across GPUs — requires sharding-aware formulas. | ❌ v0.4 |
 | **`torch.compile`** | Changes which tensors are saved (kernel fusion). Not modeled. | ❌ v0.4 |

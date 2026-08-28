@@ -43,6 +43,25 @@ def mqa_config() -> dict[str, Any]:
 
 
 @pytest.fixture
+def gemma_2_9b_config() -> dict[str, Any]:
+    """Verbatim from google/gemma-2-9b: declares head_dim, omits tie_word_embeddings.
+
+    head_dim 256 != 3584 / 16 = 224, and the absent tie flag means *tied*, not untied.
+    Both traps in one config, which is why it is the fixture for 2.6.
+    """
+    return {
+        "model_type": "gemma2",
+        "hidden_size": 3584,
+        "num_hidden_layers": 42,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 256,
+        "intermediate_size": 14336,
+        "vocab_size": 256000,
+    }
+
+
+@pytest.fixture
 def tied_embeddings_config() -> dict[str, Any]:
     return {
         "hidden_size": 1024,

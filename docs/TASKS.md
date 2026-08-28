@@ -80,7 +80,8 @@
   - Uses `hf_hub_download` to get `config.json` only (~2KB)
   - Parses: `hidden_size`, `num_hidden_layers`, `num_attention_heads`, `num_key_value_heads`, `intermediate_size`, `vocab_size`, `tie_word_embeddings`
   - Computes `num_params` from config fields (no weight download)
-  - Computes `head_dim` = `hidden_size // num_attention_heads`
+  - Computes `head_dim` = `hidden_size // num_attention_heads` — **superseded by 2.6**: that is the
+    fallback, not the rule. Do not re-implement it as the rule.
 - [x] **2.2** Implement `gpu_db.py`
   - Dict mapping short names to `GpuSpec(name, vram_mib, usable_mib)`
   - GPUs: 22 entries — consumer, older/cloud, workstation, datacenter. `gpu_db.py` is the
@@ -98,11 +99,16 @@
 - [x] **2.5** Write `tests/test_gpu_db.py`
   - Test known GPUs return correct specs
   - Test unknown GPU raises clean error
-- [ ] **2.6** Fix two silent `config_parser.py` assumptions (SPEC §3.3, "Two fields that are not what they look like")
+- [x] **2.6** Fix two silent `config_parser.py` assumptions (SPEC §3.3, "Two fields that are not what they look like")
   - `head_dim`: use the config field when present; `hidden_size // num_attention_heads` is only the fallback
   - `tie_word_embeddings`: absent ≠ untied. Per-architecture default (Gemma-2 ties), `False` for unknown `model_type`
   - Generalize $P_{attn}$ to $2h \cdot n_h d_k + 2h \cdot n_{kv} d_k$ (identical for Llama, right for Gemma)
   - Verify: Gemma-2-9B counts **9.24B**, not 9.93B. Llama-3.1-8B must stay at exactly 8,030,261,248
+  - Done: `_head_dim()`, `_tie_word_embeddings()`, generalized `_attention_param_count()`.
+    Divisibility is now checked only when `head_dim` is *derived* — a config that declares it
+    need not satisfy `h % n_h == 0`. 9 new tests + a `gemma_2_9b_config` fixture; `config_parser.py`
+    at 100% coverage. Checked against the live Hub: Llama-3.1-8B **8,030,261,248**,
+    Gemma-2-9B **9,241,404,928**, Qwen2.5-14B 14.77B
 
 ---
 
@@ -156,9 +162,13 @@
   - `test_overhead.py`: W_base=4,068.45 + A_act=3,136 -> 860.22 MiB; floor is 500 MiB at zero input
   - `test_end_to_end.py`: full Llama config -> total **8,689 MiB** (+/-10%), `max_batch_size == 21`
 - [ ] **3.10** Generalize the activation bracket in `memory/activations.py` (SPEC Component 5, "Exact bracket")
-  - $4h + 2 n_h d_k + 2 n_{kv} d_k + 3 d_{ff}$ — reduces to the $6h$ form when $n_h d_k = h$
+  - **Smaller than it looks:** the KV term is already exact — `kv_width = num_kv_heads * head_dim`.
+    The only change is `6 * hidden_size` → `4 * hidden_size + 2 * (num_attention_heads * head_dim)`
+  - Target: $4h + 2 n_h d_k + 2 n_{kv} d_k + 3 d_{ff}$ — reduces to the $6h$ form when $n_h d_k = h$
   - Golden path must come out bit-identical: `A_layer` 1,088 MiB, `A_act` 3,136 MiB
-  - Add a Gemma-2-9B case to `test_activations.py` ($n_h d_k = 4096$ vs $h = 3584$)
+  - Add a Gemma-2-9B case to `test_activations.py` ($n_h d_k = 4096$ vs $h = 3584$). Its
+    `_model_config` helper hardcodes `head_dim=hidden_size // num_attention_heads` — that has to
+    become a parameter or the new case cannot be expressed
 
 ---
 
@@ -259,7 +269,11 @@
 - [x] **5.3** Add `.gitignore`, `LICENSE` — both present
 
 - [ ] **5.4** Add GitHub Actions CI — `.github/workflows/ci.yml`
-  - `pytest --cov=fitcheck` on Python 3.10 / 3.11 / 3.12, ubuntu-latest, on push + PR
+  - `pytest --cov=fitcheck -m "not network"` on Python 3.10 / 3.11 / 3.12, ubuntu-latest, push + PR
+  - **`-m "not network"` is required, not optional.** `test_config_parser.py` has one
+    `@pytest.mark.network` test that fetches `meta-llama/Llama-3.1-8B` for real. That repo is
+    **gated**: it passes locally because this machine is authenticated, and will fail on a runner
+    with no `HF_TOKEN`. The 221 offline tests cover the same parsing via `fake_config_download`.
   - Upload coverage, add the badge to README
   - Highest resume signal per hour of work in this whole plan — do not skip it
   - SPEC §4 bullet 5 makes a green run a v0.1 ship condition, so it lands **before** the publish below

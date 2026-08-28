@@ -8,6 +8,12 @@ from typing import Any, Mapping
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import GatedRepoError
 
+# Families that tie embedding and LM head weights without saying so in config.json.
+# Extend only with families whose parameter count has actually been checked.
+_TIES_WORD_EMBEDDINGS_BY_DEFAULT = frozenset(
+    {"gemma", "gemma2", "gemma3", "gemma3_text"}
+)
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -58,6 +64,37 @@ def _intermediate_size(raw: Mapping[str, Any], hidden_size: int) -> int:
     return _required_int(raw, "intermediate_size")
 
 
+def _head_dim(raw: Mapping[str, Any], hidden_size: int, num_attention_heads: int) -> int:
+    """The declared head dimension, falling back to hidden_size / num_attention_heads.
+
+    Gemma-2-9B declares head_dim 256 against hidden_size/num_attention_heads = 224, so
+    the fallback is only a fallback. The divisibility rule is a constraint on deriving
+    the value, not on the model: a config that declares head_dim need not satisfy it.
+    """
+    if raw.get("head_dim") is None:
+        if hidden_size % num_attention_heads != 0:
+            raise ValueError(
+                "'hidden_size' must be divisible by 'num_attention_heads' when "
+                "config.json does not declare 'head_dim'"
+            )
+        return hidden_size // num_attention_heads
+    return _required_int(raw, "head_dim")
+
+
+def _tie_word_embeddings(raw: Mapping[str, Any]) -> bool:
+    """Whether the embedding table is shared with the LM head.
+
+    An absent key is not a "no". Gemma omits it and ties; transformers' own default is
+    True. fitcheck still assumes untied for unrecognised architectures, because counting
+    the embedding twice over-estimates memory, and over-estimating is the safe direction
+    for a tool whose job is avoiding OOM.
+    """
+    declared = raw.get("tie_word_embeddings")
+    if declared is not None:
+        return bool(declared)
+    return str(raw.get("model_type", "")).strip().casefold() in _TIES_WORD_EMBEDDINGS_BY_DEFAULT
+
+
 def _parse_fields(raw: Mapping[str, Any]) -> _ParsedFields:
     hidden_size = _required_int(raw, "hidden_size")
     num_layers = _required_int(raw, "num_hidden_layers")
@@ -65,9 +102,8 @@ def _parse_fields(raw: Mapping[str, Any]) -> _ParsedFields:
     num_kv_heads = _num_kv_heads(raw, num_attention_heads)
     intermediate_size = _intermediate_size(raw, hidden_size)
     vocab_size = _required_int(raw, "vocab_size")
+    head_dim = _head_dim(raw, hidden_size, num_attention_heads)
 
-    if hidden_size % num_attention_heads != 0:
-        raise ValueError("'hidden_size' must be divisible by 'num_attention_heads'")
     if num_kv_heads > num_attention_heads:
         raise ValueError("'num_key_value_heads' cannot exceed 'num_attention_heads'")
 
@@ -78,22 +114,32 @@ def _parse_fields(raw: Mapping[str, Any]) -> _ParsedFields:
         num_kv_heads=num_kv_heads,
         intermediate_size=intermediate_size,
         vocab_size=vocab_size,
-        head_dim=hidden_size // num_attention_heads,
-        tie_word_embeddings=bool(raw.get("tie_word_embeddings", False)),
+        head_dim=head_dim,
+        tie_word_embeddings=_tie_word_embeddings(raw),
     )
 
 
 def _attention_param_count(
     hidden_size: int,
+    num_attention_heads: int,
     num_kv_heads: int,
     head_dim: int,
-) -> int:    
-    return 2 * hidden_size**2 + 2 * hidden_size * num_kv_heads * head_dim
+) -> int:
+    """q/k/v/o projection weights: 2h*n_h*d_k + 2h*n_kv*d_k.
+
+    The q/o term is not 2h^2: n_h * d_k == h is a regularity of Llama-shaped models, not
+    an invariant (Gemma-2-9B is 16 * 256 = 4096 against h = 3584). Identical arithmetic
+    wherever n_h * d_k == h.
+    """
+    q_out = num_attention_heads * head_dim
+    kv_out = num_kv_heads * head_dim
+    return 2 * hidden_size * q_out + 2 * hidden_size * kv_out
 
 
 def _count_params(fields: _ParsedFields) -> int:
     attention_params = _attention_param_count(
         fields.hidden_size,
+        fields.num_attention_heads,
         fields.num_kv_heads,
         fields.head_dim,
     )

@@ -12,7 +12,7 @@ per-component breakdown, a fits/doesn't-fit verdict against a specific card, and
 micro-batch that still fits.
 
 > **Accuracy status:** the estimates are analytical and **not yet validated against measured
-> ground truth**. The target is ±20%; the validation matrix below is empty until
+> ground truth**. The target is ±10%; the validation matrix below is empty until
 > `scripts/measure.py` (TASKS 6.0) has been run. Treat the numbers as a well-derived prediction,
 > not a measurement.
 

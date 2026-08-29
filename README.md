@@ -154,8 +154,7 @@ the Hub cache.
 fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --flash-attn
 
 # All seven target modules, 8-bit optimizer, on a 16 GB T4
-fitcheck mistralai/Mistral-7B-v0.3 --qlora --lora-r 32 --lora-targets full \
-  --optimizer adam8bit --batch-size 2 --seq-len 1024 --flash-attn --gpu t4
+fitcheck mistralai/Mistral-7B-v0.3 --qlora --lora-r 32 --lora-targets full --optimizer adam8bit --batch-size 2 --seq-len 1024 --flash-attn --gpu t4
 
 # Full fine-tuning in mixed precision (adds the FP32 master weight copy).
 # This one reports "doesn't fit" and exits 1 — which is the useful answer.

@@ -21,9 +21,7 @@ micro-batch that still fits.
 ## Mode A — one-liner
 
 ```bash
-fitcheck meta-llama/Llama-3.1-8B \
-  --qlora --lora-r 64 --batch-size 4 --seq-len 2048 \
-  --optimizer adamw --flash-attn --gpu 4090
+fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --optimizer adamw --flash-attn --gpu 4090
 ```
 
 <!-- SCREENSHOT: Mode A (single-shot) output -->

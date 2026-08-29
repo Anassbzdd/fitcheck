@@ -13,8 +13,8 @@ micro-batch that still fits.
 
 > **Accuracy status:** the estimates are analytical and **not yet validated against measured
 > ground truth**. The target is ±10%; the validation matrix below is empty until
-> `scripts/measure.py` (TASKS 6.0) has been run. Treat the numbers as a well-derived prediction,
-> not a measurement.
+> `scripts/measure.py` has been run. Treat the numbers as a well-derived prediction, not a
+> measurement.
 
 ---
 
@@ -24,8 +24,7 @@ micro-batch that still fits.
 fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --optimizer adamw --flash-attn --gpu 4090
 ```
 
-<!-- SCREENSHOT: Mode A (single-shot) output -->
-![fitcheck-llm Mode A output](docs/images/mode-a-output.png)
+![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090, 8,689 MiB predicted peak, fits with 63% headroom](docs/images/mode-a-output.png)
 
 Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
 `fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
@@ -37,86 +36,28 @@ Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate coul
 Run `fitcheck` with no model ID and you get a session instead. Flags typed at the `memory`
 prompt stick, so moving one dial doesn't mean retyping the whole line.
 
-<!-- SCREENSHOT: Mode B (interactive REPL) output -->
-![fitcheck-llm Mode B REPL](docs/images/mode-b-repl.png)
+![fitcheck Mode B session: banner, then model and gpu commands, then a memory estimate for Llama-3.1-8B QLoRA on an RTX 4090](docs/images/mode-b-session.png)
 
-```
-fitcheck > model meta-llama/Llama-3.1-8B
-✓ Loaded Llama-3.1-8B · 8.03B params · 32 layers · 32 heads, GQA 8 KV heads
-fitcheck > gpu 4090
-✓ Target GPU set to RTX 4090 · 23,500 MiB usable of 24,576 MiB
-fitcheck > memory --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --flash-attn
-┌─ fitcheck ──────────────────────────────────────────────────────────────────────┐
-│                                                                                 │
-│   Model  Llama-3.1-8B · 8.03B params · 32 layers · 32 heads, GQA 8 KV heads     │
-│     GPU  RTX 4090 · 23,500 MiB usable of 24,576 MiB                             │
-│  Config  QLoRA r=64 [q,k,v,o] · bs 4 · seq 2,048 · bf16 · adamw (fp32 states)   │
-│                                                                                 │
-│   Component                                        Memory (MiB)    % of Total   │
-│   ───────────────────────────────────────────────────────────────────────────   │
-│   Base model weights (NF4)                                4,068         46.8%   │
-│   LoRA adapter (trainable)                                  104          1.2%   │
-│   Optimizer states                                          416          4.8%   │
-│   Gradients                                                 104          1.2%   │
-│   Activations (grad ckpt, flash attn)                     3,136         36.1%   │
-│   CUDA context + buffers                                    860          9.9%   │
-│                                                                                 │
-│   TOTAL (predicted peak)                                  8,689                 │
-│   GPU capacity (usable)                                  23,500                 │
-│   Headroom                                               14,811           63%   │
-│                                                                                 │
-│  ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  37% of 23,500 MiB                │
-│                                                                                 │
-│  ✅ FITS → 14,811 MiB (63%) headroom remaining                                  │
-│  💡 You could increase batch_size to 21 before hitting the memory ceiling.      │
-│  💡 adamw → adam8bit: saves 312 MiB                                             │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-fitcheck > explain
-┌─ explain ───────────────────────────────────────────────────────────────────────┐
-│                                                                                 │
-│  Largest component: base model weights (4,068 MiB, 47%) — the frozen base       │
-│  model at NF4 plus its quantization scales. That is close to the floor for a    │
-│  model this size.                                                               │
-│                                                                                 │
-│  adamw → adam8bit ......  saves 312 MiB                                         │
-│  --flash-attn OFF ....... costs +1,075 MiB (currently ON)                       │
-│  --grad-checkpoint OFF .. costs +33,264 MiB (currently ON)                      │
-│  --grad-accum 8 ......... costs 0 MiB (accumulation is free)                    │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-fitcheck > compare 3090 t4
-┌─ compare ───────────────────────────────────────────────────────────────────────┐
-│                                                                                 │
-│  QLoRA r=64 [q,k,v,o] · bs 4 · seq 2,048 · bf16 · adamw (fp32 states)           │
-│                                                                                 │
-│                                                                                 │
-│   GPU         Usable (MiB)   Headroom (MiB)   Used   Max bs @ 2,048   Verdict   │
-│   ───────────────────────────────────────────────────────────────────────────   │
-│   RTX 4090          23,500           14,811    37%               21   ✅ fits   │
-│   RTX 3090          23,500           14,811    37%               21   ✅ fits   │
-│   Tesla T4          15,360            6,671    57%               12   ✅ fits   │
-│                                                                                 │
-│  Peak is identical on every card: 8,689 MiB — only the ceiling moves.           │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-fitcheck > exit
-Goodbye!
-```
+`help` lists the command surface:
 
-Three things worth pointing at in that session:
+![fitcheck REPL help: the model, gpu, memory, explain, optimize, compare, show, reset, gpus, help and exit commands](docs/images/mode-b-help.png)
 
-- **`explain` prices each toggle by re-running the whole estimate with one flag flipped.** The
-  `+1,075 MiB` for turning Flash Attention off is 1,024 MiB of attention matrices plus the 5%
-  that CUDA overhead picks up on top — not a hand-summed component delta.
-- **`--grad-accum 8 → 0 MiB` is the point of that line.** Gradients accumulate in place;
-  accumulation buys effective batch size for free. It is the misconception this tool corrects
-  most often.
-- **`compare` leads with "peak is identical on every card".** Only the ceiling moves, which is
-  why the max micro-batch column is the interesting one.
+`explain` names the largest component and prices every toggle by re-running the whole estimate
+with one flag flipped. The `+1,075 MiB` for turning Flash Attention off is 1,024 MiB of
+attention matrices plus the 5% that CUDA overhead picks up on top — not a hand-summed component
+delta. The last line is the one that matters most: gradient accumulation costs **0 MiB**,
+because gradients accumulate in place.
 
-Other commands: `optimize` (largest micro-batch that fits, plus a config actually worth
-running), `show`, `reset`, `gpus`, `help`.
+![fitcheck REPL explain output: base model weights named as the largest component at 4,068 MiB, followed by the cost of flipping each flag](docs/images/mode-b-explain.png)
+
+`compare` puts the same config on several cards, and leads with the point — the peak is
+identical everywhere, only the ceiling moves, so the max micro-batch column is the interesting
+one.
+
+![fitcheck REPL compare output: RTX 4090, RTX 3090 and Tesla T4 side by side, all fitting, with max micro-batch 21, 21 and 12](docs/images/mode-b-compare.png)
+
+Also available: `optimize` (largest micro-batch that fits, plus a config actually worth
+running), `show`, `reset`, and `gpus`.
 
 ---
 
@@ -227,11 +168,11 @@ proven one.
 
 | Model | Config | Predicted VRAM | Actual VRAM | Error % |
 |:---|:---|---:|---:|---:|
-| TBD — pending `scripts/measure.py` (see [TASKS.md 6.0](docs/TASKS.md)) | | | | |
+| TBD — pending the `scripts/measure.py` ground-truth harness | | | | |
 
-Planned first rows, per TASKS 6.1: Llama-3.1-8B on an RTX 4090 (QLoRA r=64, bs=4, seq=2048,
-FA2), Mistral-7B-v0.3 on a T4 (QLoRA r=32, bs=2, seq=1024, no FA), and one Qwen or Gemma
-config. Measurements come from `torch.cuda.max_memory_allocated()` after one full training step.
+Planned first rows: Llama-3.1-8B on an RTX 4090 (QLoRA r=64, bs=4, seq=2048, FA2),
+Mistral-7B-v0.3 on a T4 (QLoRA r=32, bs=2, seq=1024, no FA), and one Qwen or Gemma config.
+Measurements come from `torch.cuda.max_memory_allocated()` after one full training step.
 If you have a card and want to contribute a row, that harness is the thing to run — it's the
 highest-value contribution to this repo right now.
 

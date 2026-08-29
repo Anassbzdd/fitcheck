@@ -114,7 +114,7 @@ $$ \text{Overhead}^{DQ} = \frac{8\text{ bits}}{64} + \frac{32\text{ bits}}{64 \t
 
 Against the single-quantization $0.03125$ bytes/param that is a factor of $0.5078$, so the implementation
 applies the simpler **$Q_{overhead} \times 0.5$**. That shortcut understates the double-quant overhead by
-1.5% *of that term* — **1.9 MiB** on an 8B model, or 0.05% of $W_{base}$. Far inside the ±20% target.
+1.5% *of that term* — **1.9 MiB** on an 8B model, or 0.05% of $W_{base}$. Far inside the ±10% target.
 
 > **Known simplification — scale dtype.** fitcheck models the first-level NF4 scales as **FP16**
 > (2 bytes per block of 64). `bitsandbytes` keeps `absmax` in **FP32** when double quantization is off —
@@ -717,7 +717,7 @@ the ladder is exhausted it names the smallest card in the database that would ho
 
 2. **Both interaction modes functional** — Mode A (CLI one-liner) and Mode B (interactive REPL with `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `exit`) produce correct output.
 
-3. **Estimates are analytical and labelled as such** — every component reproduces its row in the Appendix, and the README states plainly that the ±20% target is *not yet validated against measured ground truth*. v0.1 ships honest, not proven.
+3. **Estimates are analytical and labelled as such** — every component reproduces its row in the Appendix, and the README states plainly that the ±10% target is *not yet validated against measured ground truth*. v0.1 ships honest, not proven.
 
 4. **`pytest` passes with ≥80% line coverage** on all `memory/` modules, including at least one end-to-end test (known config → expected MiB ± tolerance).
 
@@ -727,7 +727,7 @@ the ladder is exhausted it names the smallest card in the database that would ho
 
 ### v0.2 — the accuracy gate
 
-7. **Estimates within ±20% of measured ground truth** for ≥3 configurations (Llama-3.1-8B on 4090, Mistral-7B on T4, one other), measured with `scripts/measure.py` and filled into the README matrix.
+7. **Estimates within ±10% of measured ground truth** for ≥3 configurations (Llama-3.1-8B on 4090, Mistral-7B on T4, one other), measured with `scripts/measure.py` and filled into the README matrix.
 
 > **Why the split.** Requiring measured rows before the first publish would block PyPI on owning a
 > 4090. Shipping unvalidated with a loud banner is the honest trade; shipping unvalidated *quietly*,

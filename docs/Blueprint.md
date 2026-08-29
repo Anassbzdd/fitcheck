@@ -609,7 +609,7 @@ print(torch.cuda.memory_summary())
 
 | Phase | Target Error | How |
 |:---|:---|:---|
-| MVP (v0.1) | ±20%, **unvalidated** | Analytical formulas only — shipped with an honest banner, not with proof |
+| MVP (v0.1) | ±10%, **unvalidated** | Analytical formulas only — shipped with an honest banner, not with proof |
 | Validated (v0.2) | ±10% | Formulas tuned against ≥3 real measurements (SPEC §4, bullet 7) |
 | Calibrated (v1.0) | ±5% | Per-architecture correction factors from calibration mode |
 

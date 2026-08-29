@@ -31,3 +31,5 @@ venv/
 # docs/ IS tracked on purpose: SPEC.md and Blueprint.md are the public "how it works"
 # reference, and README's how-it-works section links to them (SPEC.md Definition of Done #5).
 CLAUDE.md
+
+docs/TASKS.md

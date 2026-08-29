@@ -29,6 +29,10 @@ fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 20
 Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
 `fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
 
+> Llama and Gemma are **gated** on the Hub, so that command needs `hf auth login` or an
+> `HF_TOKEN` first — see [Hugging Face access](#hugging-face-access). Public models like
+> `Qwen/Qwen2.5-14B` and `mistralai/Mistral-7B-v0.3` need no token at all.
+
 ---
 
 ## Mode B — interactive REPL
@@ -80,9 +84,32 @@ fitcheck --help
 Python 3.10+. Runtime dependencies are `click`, `rich`, and `huggingface-hub` — no torch, no
 CUDA.
 
-Gated repos (Llama, Gemma) need Hub credentials: accept the license on the model page, then
-`hf auth login`. Everything else works unauthenticated, and offline once `config.json` is in
-the Hub cache.
+### Hugging Face access
+
+Most models need no authentication at all — `fitcheck Qwen/Qwen2.5-14B` and
+`fitcheck mistralai/Mistral-7B-v0.3` work on a fresh machine with no token and no login.
+
+**Gated repos are the exception, and that includes Llama and Gemma** — the models used in most
+of the examples here. For those, accept the license on the model page, then either log in:
+
+```bash
+hf auth login
+```
+
+or set the token in the environment, which is what you want in CI or a container:
+
+```bash
+export HF_TOKEN=hf_...
+```
+
+Without it you get a clear error rather than a stack trace:
+
+```
+Error: Could not read config.json for 'meta-llama/Llama-3.1-8B': This model is gated on
+Hugging Face. Accept its license on the model page, then run: hf auth login
+```
+
+Once a `config.json` is in the Hub cache, `fitcheck` runs offline.
 
 ---
 
@@ -209,7 +236,9 @@ The bar for a merge:
 
 - `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 233
   offline tests, with 100% line coverage on all six `memory/` modules; ≥80% there is the
-  floor. The `-m "not network"` filter skips the one test that hits the real Hub.
+  floor. The `-m "not network"` filter is not optional: it skips the one test that fetches the
+  gated `meta-llama/Llama-3.1-8B` for real, which fails without an `HF_TOKEN`. The offline
+  tests cover the same parsing against a fixture.
 - Any change to a formula updates its module, its test, and `docs/SPEC.md` in the same PR. The
   Llama-3.1-8B golden numbers in the SPEC appendix are the reference set — if a change moves
   them, say so explicitly in the PR description.

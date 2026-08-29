@@ -17,6 +17,8 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage.xml
+htmlcov/
 
 # Environment secrets (if you ever add API keys, etc.)
 .env

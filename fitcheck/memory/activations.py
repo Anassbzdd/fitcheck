@@ -33,10 +33,6 @@ def estimate_activation_memory(
     hidden_size = config.hidden_size
     q_width = config.num_attention_heads * config.head_dim
     kv_width = config.num_kv_heads * config.head_dim
-
-    # Exact bracket (SPEC Component 5): rows 1/2/5/6 are (b,s,h), rows 3/4 are
-    # (b,s,n_h*d_k), rows 7/8 are (b,s,n_kv*d_k). Reduces to the headline
-    # 6h + 2h*(n_kv/n_h) + 3*d_ff whenever n_h*d_k == h.
     bracket = (
         4 * hidden_size + 2 * q_width + 2 * kv_width + 3 * config.intermediate_size
     )

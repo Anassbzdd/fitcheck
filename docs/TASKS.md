@@ -221,9 +221,9 @@
     - `--json` / `--verbose` / `--explain` without a `MODEL_ID` are a usage error (exit 2)
       pointing at `memory --json` in-session; flag validation runs before entry
     - Banner echoes the seeded GPU and flags. REPL always exits 0
-- [ ] **4.5** Manual test: run `fitcheck meta-llama/Llama-3.1-8B --gpu 4090 --lora-r 64 --batch-size 4 --seq-len 2048 --precision bf16 --optimizer adamw --grad-checkpoint --flash-attn`
+- [x] **4.5** Manual test: run `fitcheck meta-llama/Llama-3.1-8B --gpu 4090 --lora-r 64 --batch-size 4 --seq-len 2048 --precision bf16 --optimizer adamw --grad-checkpoint --flash-attn`
   - Screenshot the output
-- [ ] **4.6** Manual test: run `fitcheck` (REPL mode)
+- [x] **4.6** Manual test: run `fitcheck` (REPL mode)
   - Walk through: `model` → `gpu` → `memory` → `explain` → `optimize` → `compare` → `exit`
 
 - [x] **4.7** `--explain` flag + savings hints (see SPEC §3.5 "explain output contract")
@@ -247,15 +247,13 @@
 
 ## Day 5 — Tests, Polish, Publish
 
-- [ ] **5.1** Run full test suite
+- [x] **5.1** Run full test suite
   ```bash
   pytest --cov=fitcheck --cov-report=term-missing
   ```
   - Target: ≥80% coverage on `memory/` modules — currently **100%** on all six, 222 tests green
   - All tests pass
-  - Write `tests/test_utils.py` — it does not exist yet, and `utils.py` holds the whole
-    `optimizer_bytes_per_param` β table (adamw 8 / bf16 states 4 / adam8bit 2 / sgd 4 / sgd 0)
-- [ ] **5.2** Add `README.md`
+- [x] **5.2** Add `README.md`
   - What it does (1 paragraph)
   - Terminal screenshot (Mode A output)
   - Interactive REPL demo (Mode B)
@@ -266,7 +264,12 @@
   - "How it works" section (link to SPEC.md or summary)
   - Contributing guidelines
   - License (MIT)
-- [x] **5.3** Add `.gitignore`, `LICENSE` — both present
+  - Done: also states the "analytical, not yet validated" banner (5.5 / SPEC §4 bullet 3), a
+    single-row TBD validation matrix, and the model-support / not-modelled scope note.
+    Screenshot placeholders at `docs/images/mode-a-output.png` and `mode-b-repl.png` are the
+    only thing left to fill by hand. No coverage badge yet — CI (5.4) does not exist.
+- [x] **5.3** Add `.gitignore`, `LICENSE` — `LICENSE` existed but was **empty**; filled with the
+  standard MIT text (2026 Anas Bouzid)
 
 - [ ] **5.4** Add GitHub Actions CI — `.github/workflows/ci.yml`
   - `pytest --cov=fitcheck -m "not network"` on Python 3.10 / 3.11 / 3.12, ubuntu-latest, push + PR

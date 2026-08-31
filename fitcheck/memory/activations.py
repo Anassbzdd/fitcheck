@@ -3,6 +3,9 @@ from __future__ import annotations
 from fitcheck.config_parser import ModelConfig
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
 
+_LOGITS_COPIES = 4
+_LOGITS_BYTES = 4.0
+
 
 def _validate_positive_int(value: int, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -52,5 +55,7 @@ def estimate_activation_memory(
         total_bytes += layer_bytes
     else:
         total_bytes = config.num_layers * layer_bytes
+
+    total_bytes += _LOGITS_COPIES * _LOGITS_BYTES * tokens * config.vocab_size
 
     return bytes_to_mib(round(total_bytes))

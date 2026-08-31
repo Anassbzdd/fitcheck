@@ -11,10 +11,12 @@ tool runs the same on a laptop as on the machine you're sizing for. You get the 
 per-component breakdown, a fits/doesn't-fit verdict against a specific card, and the largest
 micro-batch that still fits.
 
-> **Accuracy status:** the estimates are analytical and **not yet validated against measured
-> ground truth**. The target is ±10%; the validation matrix below is empty until
-> `scripts/measure.py` has been run. Treat the numbers as a well-derived prediction, not a
-> measurement.
+> **Accuracy status (v0.1.1, 2026-08-31):** one real measurement exists, and it moved the
+> formulas. v0.1.0 under-predicted a Mistral-7B QLoRA run by **35.6%**; four causes were found
+> and corrected, bringing that same run to **−6.4%**. The correction is calibrated against a
+> **single** measurement on a single GPU, so the estimates are *better grounded* than v0.1.0,
+> not yet *validated*. The target is still ±10%. See the validation matrix below for what is
+> and is not measured.
 
 ---
 
@@ -193,15 +195,29 @@ proven one.
 
 ## Validation matrix
 
-| Model | Config | Predicted VRAM | Actual VRAM | Error % |
-|:---|:---|---:|---:|---:|
-| TBD — pending the `scripts/measure.py` ground-truth harness | | | | |
+Measured with `scripts/measure.py`: one full training step, peak read from
+`torch.cuda.max_memory_allocated()`. Predicted values are the six-component total **minus
+`C_overhead`**, because the PyTorch allocator counters can see neither the CUDA context nor
+fragmentation — comparing against the full total would flatter or damn the tool for the wrong
+reason.
 
-Planned first rows: Llama-3.1-8B on an RTX 4090 (QLoRA r=64, bs=4, seq=2048, FA2),
-Mistral-7B-v0.3 on a T4 (QLoRA r=32, bs=2, seq=1024, no FA), and one Qwen or Gemma config.
-Measurements come from `torch.cuda.max_memory_allocated()` after one full training step.
-If you have a card and want to contribute a row, that harness is the thing to run — it's the
-highest-value contribution to this repo right now.
+| Model | GPU | Config | Predicted | Actual | Error |
+|:---|:---|:---|---:|---:|---:|
+| Mistral-7B-v0.3 | Tesla T4 | QLoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, ckpt, no FA | 7,121 | 7,605 | **−6.4%** |
+
+**One row is not a validation matrix.** That single measurement is what the current formulas
+are fitted to, so it is closer to a calibration point than to independent evidence. Two things
+are still unmeasured and both matter:
+
+- **A second vocabulary size.** The largest correction — four FP32 copies of the `(b, s, V)`
+  logits tensor — scales with vocabulary. It was fitted on a 32,768-token vocabulary and is
+  currently extrapolated to models with four times that.
+- **A second GPU.** The CUDA context measured 105 MiB on this T4 against the 500 MiB constant
+  fitcheck assumes, and nothing else has been checked.
+
+Wanted next: Qwen2.5-7B (152k vocab — the direct test of the logits term), and anything on an
+Ampere or newer card. If you have a GPU, running that harness is the highest-value contribution
+to this repo right now.
 
 ---
 

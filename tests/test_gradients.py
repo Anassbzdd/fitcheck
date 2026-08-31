@@ -58,8 +58,21 @@ def test_estimate_gradient_memory_full_ft_llama_8b_bf16() -> None:
 def test_estimate_gradient_memory_takes_no_accumulation_argument() -> None:
     parameters = inspect.signature(estimate_gradient_memory).parameters
 
-    assert set(parameters) == {"trainable_params", "precision"}
+    assert set(parameters) == {"trainable_params", "precision", "param_precision"}
     assert not any("accum" in name for name in parameters)
+
+
+def test_gradient_dtype_follows_the_parameter_not_the_compute_dtype() -> None: 
+    compute_dtype = estimate_gradient_memory(_GOLDEN_LORA_PARAMS, "bf16")
+    fp32_params = estimate_gradient_memory(_GOLDEN_LORA_PARAMS, "bf16", "fp32")
+
+    assert fp32_params == pytest.approx(2 * compute_dtype, rel=1e-9)
+
+
+def test_param_precision_defaults_to_the_compute_dtype() -> None:
+    assert estimate_gradient_memory(_GOLDEN_LORA_PARAMS, "bf16") == (
+        estimate_gradient_memory(_GOLDEN_LORA_PARAMS, "bf16", None)
+    )
 
 
 def test_estimate_gradient_memory_only_counts_trainable_params() -> None:

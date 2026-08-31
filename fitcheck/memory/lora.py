@@ -54,9 +54,10 @@ def estimate_lora_memory(
     rank: int,
     targets: Iterable[str],
     precision: str,
+    adapter_precision: str | None = None,
 ) -> float:
     validated_rank = _validate_rank(rank)
-    bytes_per_param = precision_to_bytes(precision)
+    bytes_per_param = precision_to_bytes(adapter_precision or precision)
 
     target_list = list(targets)
     if not target_list:

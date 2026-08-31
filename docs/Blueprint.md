@@ -24,21 +24,22 @@ $ fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 
 │ Component               │ Memory (MiB) │ % of Total            │
 │─────────────────────────┼──────────────┼───────────────────────│
 │ Base model weights      │              │                       │
-│   └─ NF4 quantized      │    4,068     │  46.8%                │
-│ LoRA adapter (trainable)│      104     │   1.2%                │
-│ Optimizer states        │      416     │   4.8%                │
-│ Gradients               │      104     │   1.2%                │
-│ Activations (grad ckpt) │    3,136     │  36.1%                │
-│ CUDA context + buffers  │      860     │   9.9%                │
+│   └─ NF4 + unquant fp32 │    7,753     │  26.2%                │
+│ LoRA adapter (trainable)│      208     │   0.7%                │
+│ Optimizer states        │      416     │   1.4%                │
+│ Gradients               │      208     │   0.7%                │
+│ Activations (grad ckpt) │   19,168     │  64.8%                │
+│   └─ of which logits    │   16,032     │  54.2%                │
+│ CUDA context + buffers  │    1,846     │   6.2%                │
 │─────────────────────────┼──────────────┼───────────────────────│
-│ TOTAL (predicted peak)  │    8,689     │                       │
+│ TOTAL (predicted peak)  │   29,599     │                       │
 │ GPU capacity            │   23,500     │                       │
-│ Headroom                │   14,811     │                       │
+│ Headroom                │   -6,099     │                       │
 ├────────────────────────────────────────────────────────────────┤
-│ ✅ FITS — 63% headroom remaining                              │
+│ ❌ DOES NOT FIT — over by 6,099 MiB                            │
 │                                                                │
-│ 💡 You could increase batch_size to 21 before hitting the      │
-│    memory ceiling. Switching to adam8bit would free 312 MiB.   │
+│ 💡 Drop batch_size to 2 to fit. The logits term is 54% of the  │
+│    budget, and grad checkpointing does not reduce it.          │
 ╰────────────────────────────────────────────────────────────────╯
 ```
 
@@ -83,7 +84,7 @@ Welcome to fitcheck interactive terminal. Type a command or 'help'.
 
 > compare --gpu 3090
 ⚖️ Comparison: RTX 4090 (24GB) vs RTX 3090 (24GB)
-- Both fit this configuration identically (Peak 8,689 MiB).
+- Both give the same peak (29,599 MiB) — and on a 4090 neither fits it.
 
 > exit
 Goodbye!
@@ -166,7 +167,13 @@ Using the real Llama-3.1-8B count, $P = 8{,}030{,}261{,}248$:
 > to **MiB** once.
 
 > [!NOTE]
-> For QLoRA, the base model is quantized to 4-bit but there's overhead from the quantization constants (one FP16 scale factor per block of 64 weights). This adds ~0.03125 bytes/param on top. For this 8B model that's 239 MiB of quantization overhead, giving **4,068 MiB** rather than the naïve 3,829 MiB.
+> For QLoRA, the base model is quantized to 4-bit but there's overhead from the quantization constants (one **FP32** scale factor per block of 64 weights). This adds ~0.0625 bytes/param on top.
+>
+> **Corrected 2026-08-31 after the first real measurement.** Two things this section originally got wrong, both confirmed to the MiB on a Kaggle T4 (Mistral-7B-v0.3):
+> 1. The scales are **FP32**, not FP16 — twice what was assumed here.
+> 2. **Not every parameter gets quantized.** bitsandbytes quantizes only the transformer `nn.Linear` weights; `embed_tokens`, `lm_head` and the layernorms are left alone, and peft's `prepare_model_for_kbit_training` then upcasts them to FP32. For Llama-3.1-8B that is 1.05B parameters at 4 B/param = 4,009 MiB, where a flat 0.5 B/param model charged 501 MiB.
+>
+> Together these take $W_{base}$ from the 4,068 MiB this document used to claim to **7,753 MiB**. The measured Mistral split was NF4 linears 3,328 + scales 416 + unquantized FP32 1,129 MiB, against a formula prediction of 3,328 + 416 + 1,129 — exact.
 >
 > With **double quantization**, the scales themselves are quantized, reducing this overhead by ~50% (to ~120 MiB). `fitcheck` models both modes, but `--qlora` leaves double quant **off** — the `bitsandbytes` recipe usually turns it on, so fitcheck's default is the more expensive of the two readings. Pass `--double-quant` to model it, and note that the estimate only ever moves *down* when you do.
 >
@@ -360,6 +367,45 @@ $$A_{checkpointed} = L \times \gamma bsh + A_{layer}$$
 > So under checkpointing you are paying for row 1 twice for the single layer being recomputed. That
 > double-count is one tensor out of twelve, and it errs toward over-estimating, which is the safe direction.
 
+#### Component 5b: The logits — the term this document originally forgot
+
+Everything above describes the transformer *stack*. It stops at the last layer's output. But a
+causal LM then projects that output through the LM head, producing a tensor of shape
+$(b, s, V)$ — one score per vocabulary token, per position. For Llama-3.1-8B at $b=4$, $s=2048$,
+$V = 128{,}256$ that is **1.05 billion elements**, and the loss is computed in FP32:
+
+$$A_{logits} = 4 \times 4\text{ bytes} \times bsV$$
+
+The factor of four is the number of logits-sized tensors alive at the backward peak:
+
+| # | Tensor | Why it exists |
+| :- | :--- | :--- |
+| 1 | `logits` | the LM head output itself |
+| 2 | `shift_logits.contiguous()` | a causal LM shifts by one position, and `.contiguous()` copies |
+| 3 | `log_softmax` output | saved by `cross_entropy` for its own backward |
+| 4 | gradient w.r.t. logits | the incoming gradient in backward |
+
+Two properties make this term dangerous to omit:
+
+- **Gradient checkpointing does not touch it.** The logits live outside the checkpointed layer
+  stack, so the one knob people reach for when they run out of memory does nothing here.
+- **Flash Attention does not touch it either.** It is not an attention tensor.
+
+It also scales with $V$, which varies far more across model families than $h$ or $L$ do —
+32,768 for Mistral, 128,256 for Llama-3, 152,064 for Qwen2.5. For a large-vocabulary model at a
+healthy batch size this is frequently the **single largest** entry in the whole budget:
+16,032 MiB of the golden config's 29,599 MiB total.
+
+> [!WARNING]
+> **Calibration status.** The factor of four is the count of copies that provably exist, but it
+> has been checked against exactly one measurement (Mistral-7B-v0.3, Kaggle T4, 2026-08-31),
+> where the observed residual implied closer to 5.9 copies. Four is the conservative end, and
+> the whole estimate still runs ~6% low on that run. Training stacks that use chunked or fused
+> cross-entropy — Unsloth, Liger Kernel, `cut-cross-entropy` — deliberately avoid materialising
+> these copies and will use dramatically less. `fitcheck` models the vanilla `transformers` +
+> `peft` path only, and has no way to know which stack you are using.
+
+
 ### Component 6: CUDA Overhead
 
 - **CUDA context**: ~300-800 MiB just for initializing CUDA (loading the driver, cuDNN, cuBLAS)
@@ -533,17 +579,20 @@ $$C_{overhead} = 500 + 0.05 \times (W_{base} + A_{act}) = 500 + 0.05 \times (4{,
 
 | Component | Memory (MiB) | % of Total |
 |:---|---:|---:|
-| Base model weights (NF4) | 4,068.45 | 46.8% |
-| LoRA adapter | 104.00 | 1.2% |
-| Optimizer states (AdamW FP32) | 416.00 | 4.8% |
-| Gradients | 104.00 | 1.2% |
-| Activations (grad ckpt + Flash Attn) | 3,136.00 | 36.1% |
-| CUDA overhead | 860.22 | 9.9% |
-| **TOTAL (predicted peak)** | **8,688.67** | |
+| Base model weights (NF4 + unquantized FP32) | 7,753.02 | 26.2% |
+| LoRA adapter (FP32) | 208.00 | 0.7% |
+| Optimizer states (AdamW FP32) | 416.00 | 1.4% |
+| Gradients (FP32) | 208.00 | 0.7% |
+| Activations (grad ckpt + Flash Attn) | 19,168.00 | 64.8% |
+| &nbsp;&nbsp;of which: logits | 16,032.00 | 54.2% |
+| CUDA overhead | 1,846.05 | 6.2% |
+| **TOTAL (predicted peak)** | **29,599.07** | |
 
-$$4{,}068.45 + 104 + 416 + 104 + 3{,}136 + 860.22 = \mathbf{8{,}688.67\text{ MiB}}$$
+$$7{,}753.02 + 208 + 416 + 208 + 19{,}168 + 1{,}846.05 = \mathbf{29{,}599.07\text{ MiB}}$$
 
-**RTX 4090 usable VRAM: ~23,500 MiB → ✅ FITS** with 14,811 MiB (63%) headroom.
+**RTX 4090 usable VRAM: ~23,500 MiB → ❌ DOES NOT FIT**, over by 6,099 MiB (−26%). The same
+configuration at bs=1 costs 14,504 MiB and fits. The largest component is now the logits
+term, which neither gradient checkpointing nor Flash Attention reduces — see Component 5b.
 
 **Max batch size — by search, not extrapolation:**
 
@@ -576,9 +625,9 @@ Accuracy is the make-or-break metric for `fitcheck`. If the estimates are more t
 
 | Model | GPU | Config | Predicted (MiB) | Actual (MiB) | Error (%) |
 |:---|:---|:---|---:|---:|---:|
-| Llama-3.1-8B | RTX 4090 | QLoRA r=64, bs=4, seq=2048, FA2 | 8,689 | TBD | TBD |
+| Llama-3.1-8B | RTX 4090 | QLoRA r=64, bs=4, seq=2048, FA2 | 29,599 | TBD | TBD |
 | Llama-3.1-8B | RTX 4090 | QLoRA r=16, bs=1, seq=4096, FA2 | TBD | TBD | TBD |
-| Mistral-7B-v0.3 | T4 16GB | QLoRA r=32, bs=2, seq=1024, no FA | TBD | TBD | TBD |
+| Mistral-7B-v0.3 | T4 16GB | QLoRA r=32, bs=2, seq=1024, no FA | 7,121 | 7,605 | **−6.4%** |
 | Qwen2.5-14B | A100-40GB | QLoRA r=64, bs=4, seq=2048, FA2 | TBD | TBD | TBD |
 | Gemma-2-9B | RTX 3090 | LoRA r=16, bs=2, seq=512, FA2 | TBD | TBD | TBD |
 | Llama-3.1-70B | A100-80GB | QLoRA r=16, bs=1, seq=2048, FA2 | TBD | TBD | TBD |

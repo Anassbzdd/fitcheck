@@ -753,20 +753,41 @@ A_layer = γ·b·s·bracket = 2·4·2048·69,632  = 1,140,850,688 B = 1,088 MiB
 L·γbsh  = 32 · 2·4·2048·4096               = 2,147,483,648 B = 2,048 MiB
 ```
 
+Let $P_{skip}$ be the parameters bitsandbytes does not quantize -- embeddings, LM head,
+layernorms -- which peft then upcasts to FP32:
+$P_{skip} = 2Vh + (2Lh + h) = 1{,}050{,}673{,}152 + 266{,}240 = 1{,}050{,}939{,}392$ for the
+untied Llama-3.1-8B ($V = 128{,}256$). The quantized slice is $P_q = P - P_{skip} = 6{,}979{,}321{,}856$.
+
 | Component      | Formula                                                  | Bytes            | Result (MiB) |
 | :------------- | :------------------------------------------------------- | ---------------: | -----------: |
-| $W_{base}$     | $P \times 0.5 + P \times \frac{2}{64}$                   |    4,266,076,288 |     4,068.45 |
-| $W_{lora}$     | $32 \times 1{,}703{,}936 \times 2$ bytes                 |      109,051,904 |       104.00 |
+| $W_{base}$     | $P_q(0.5 + \frac{4}{64}) + P_{skip} \times 4$            |    8,129,706,496 |     7,753.02 |
+| $W_{lora}$     | $32 \times 1{,}703{,}936 \times 4$ bytes                 |      218,103,808 |       208.00 |
 | $S_{optim}$    | $54{,}525{,}952 \times 8$ bytes                          |      436,207,616 |       416.00 |
-| $G_{grad}$     | $54{,}525{,}952 \times 2$ bytes                          |      109,051,904 |       104.00 |
-| $A_{act}$      | $L \cdot \gamma bsh + A_{layer} = 2{,}048 + 1{,}088$     |    3,288,334,336 |     3,136.00 |
-| $C_{overhead}$ | $500 + 0.05 \times (4{,}068.45 + 3{,}136)$               |                — |       860.22 |
-| **Total**      |                                                          |                  | **8,688.67** |
+| $G_{grad}$     | $54{,}525{,}952 \times 4$ bytes                          |      218,103,808 |       208.00 |
+| $A_{act}$      | $L\gamma bsh + A_{layer} + A_{logits}$                   |   20,098,908,160 |    19,168.00 |
+| $C_{overhead}$ | $500 + 0.05 \times (7{,}753.02 + 19{,}168)$              |                — |     1,846.05 |
+| **Total**      |                                                          |                  | **29,599.07** |
 
-RTX 4090 usable: 23,500 MiB → **✅ FITS** — headroom 14,811 MiB (63%) — max micro-batch **21**.
+$A_{act} = 2{,}048 + 1{,}088 + 16{,}032$, where
+$A_{logits} = 4 \times 4 \times bsV = 4 \times 4 \times 8{,}192 \times 128{,}256 = 16{,}810{,}573{,}824$ B
+$= 16{,}032$ MiB — four FP32 copies of the logits tensor, reduced by neither gradient
+checkpointing nor Flash Attention.
 
-Displayed rounded as **8,689 MiB**. Tests assert the unrounded total within a tolerance, never the display
+RTX 4090 usable: 23,500 MiB → **❌ DOES NOT FIT** — headroom −6,099 MiB (−26%) — max micro-batch **2**.
+The same configuration at $b = 1$ costs 14,504 MiB and fits comfortably.
+
+Displayed rounded as **29,599 MiB**. Tests assert the unrounded total within a tolerance, never the display
 string.
+
+> [!IMPORTANT]
+> **This appendix changed on 2026-08-31.** v0.1 published 8,688.67 MiB here and claimed the
+> config fits a 4090 with 63% headroom. The first real measurement — Mistral-7B-v0.3, QLoRA
+> r=32 bs=2 seq=1024 fp16 no-FA on a Kaggle T4 — came back 35.6% above the v0.1 prediction, and
+> the four causes are itemised in docs/TASKS.md 6.3. Three of them ($P_{skip}$, FP32 absmax,
+> FP32 adapters) were confirmed to the MiB against the measured storage breakdown. The fourth,
+> $A_{logits}$, is calibrated against that **single** measurement, on a 32,768-vocab model; it
+> dominates this 128,256-vocab golden config, so the total above is the least-validated number
+> in this document. A second measurement at a different vocabulary size is the outstanding work.
 
 **Units discipline:** all values are MiB ($1024^2$), never MB ($10^6$). $W_{base}$ is 4,266 **MB** but 4,068
 **MiB**; quoting the former as the latter is a 4.9% error, which is enough on its own to flip a fits/doesn't-fit

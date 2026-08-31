@@ -120,6 +120,18 @@ def _count_lora_params(config: ModelConfig, rank: int, targets: Iterable[str]) -
     return config.num_layers * rank * dims_sum
 
 
+def _unquantized_param_count(config: ModelConfig) -> int:
+    embedding_params = config.vocab_size * config.hidden_size
+    if not config.tie_word_embeddings:
+        embedding_params *= 2
+    norm_params = config.num_layers * 2 * config.hidden_size + config.hidden_size
+    return embedding_params + norm_params
+
+
+def _adapter_precision(training: TrainingConfig) -> str:
+    return "fp32" if training.quantization != "none" else training.precision
+
+
 def _base_weight_memory(config: ModelConfig, training: TrainingConfig) -> float:
     quantization = _validate_quantization(training.quantization)
     _validate_flag(training.double_quant, "double_quant")
@@ -131,6 +143,7 @@ def _base_weight_memory(config: ModelConfig, training: TrainingConfig) -> float:
         config.num_params,
         quantization,
         QuantizationConfig(enabled=True, double_quant=training.double_quant),
+        unquantized_params=_unquantized_param_count(config),
     )
 
 
@@ -150,10 +163,14 @@ def _compute_components(config: ModelConfig, training: TrainingConfig) -> _Compo
 
     weight_mib = _base_weight_memory(config, training)
 
+    adapter_precision = _adapter_precision(training)
+
     if is_lora:
         rank = _validate_positive_int(training.lora_rank, "lora_rank")
         targets = list(training.lora_targets)
-        lora_mib = estimate_lora_memory(config, rank, targets, training.precision)
+        lora_mib = estimate_lora_memory(
+            config, rank, targets, training.precision, adapter_precision
+        )
         trainable_params = _count_lora_params(config, rank, targets)
     else:
         lora_mib = 0.0
@@ -166,7 +183,9 @@ def _compute_components(config: ModelConfig, training: TrainingConfig) -> _Compo
         training.optimizer_dtype,
         training.precision,
     )
-    gradient_mib = estimate_gradient_memory(trainable_params, training.precision)
+    gradient_mib = estimate_gradient_memory(
+        trainable_params, training.precision, adapter_precision if is_lora else None
+    )
     activation_mib = estimate_activation_memory(
         config,
         training.batch_size,

@@ -10,14 +10,14 @@ from fitcheck.estimator import MemoryReport, TrainingConfig, estimate
 from fitcheck.gpu_db import get_gpu
 
 _GOLDEN_PARAMS = 8_030_261_248
-_GOLDEN_W_BASE = 4_068.45
-_GOLDEN_W_LORA = 104.0
+_GOLDEN_W_BASE = 7_753.02
+_GOLDEN_W_LORA = 208.0
 _GOLDEN_S_OPTIM = 416.0
-_GOLDEN_G_GRAD = 104.0
-_GOLDEN_A_ACT = 3_136.0
-_GOLDEN_C_OVERHEAD = 860.22
-_GOLDEN_TOTAL = 8_688.67
-_GOLDEN_MAX_BATCH = 21
+_GOLDEN_G_GRAD = 208.0
+_GOLDEN_A_ACT = 19_168.0
+_GOLDEN_C_OVERHEAD = 1_846.05
+_GOLDEN_TOTAL = 29_599.07
+_GOLDEN_MAX_BATCH = 2
 
 _RTX_4090_USABLE = 23_500
 
@@ -71,13 +71,13 @@ def test_golden_component_breakdown(golden_report: MemoryReport) -> None:
 
 def test_golden_total_and_verdict(golden_report: MemoryReport) -> None:
     assert golden_report.total_mib == pytest.approx(_GOLDEN_TOTAL, abs=0.01)
-    assert round(golden_report.total_mib) == 8_689
+    assert round(golden_report.total_mib) == 29_599
 
-    assert golden_report.fits is True
+    assert golden_report.fits is False
     assert golden_report.gpu_capacity_mib == _RTX_4090_USABLE
-    assert golden_report.headroom_mib == pytest.approx(14_811.33, abs=0.01)
+    assert golden_report.headroom_mib == pytest.approx(-6_099.07, abs=0.01)
     assert golden_report.headroom_mib / golden_report.gpu_capacity_mib == pytest.approx(
-        0.63, abs=0.005
+        -0.26, abs=0.005
     )
 
 
@@ -102,7 +102,7 @@ def test_overhead_tracks_base_weights_and_activations_only(
     assert golden_report.overhead_mib == pytest.approx(expected, rel=1e-12)
 
 
-def test_max_batch_size_floors_at_twenty_one(golden_report: MemoryReport) -> None:
+def test_max_batch_size_floors_at_two(golden_report: MemoryReport) -> None:
     assert golden_report.max_batch_size == _GOLDEN_MAX_BATCH
 
 
@@ -111,12 +111,14 @@ def test_max_batch_size_boundary_is_real_not_rounded(
 ) -> None:
     gpu = get_gpu("4090")
 
-    at_21 = estimate(llama_model, replace(qlora_training, batch_size=21), gpu)
-    at_22 = estimate(llama_model, replace(qlora_training, batch_size=22), gpu)
+    at_max = estimate(llama_model, replace(qlora_training, batch_size=_GOLDEN_MAX_BATCH), gpu)
+    over = estimate(
+        llama_model, replace(qlora_training, batch_size=_GOLDEN_MAX_BATCH + 1), gpu
+    )
 
-    assert at_21.fits is True
-    assert at_22.fits is False
-    assert at_22.total_mib > _RTX_4090_USABLE
+    assert at_max.fits is True
+    assert over.fits is False
+    assert over.total_mib > _RTX_4090_USABLE
 
 
 def test_max_batch_size_is_not_linear_extrapolation(
@@ -127,13 +129,13 @@ def test_max_batch_size_is_not_linear_extrapolation(
     at_4 = estimate(llama_model, replace(qlora_training, batch_size=4), gpu).total_mib
     at_5 = estimate(llama_model, replace(qlora_training, batch_size=5), gpu).total_mib
 
-    assert at_5 - at_4 == pytest.approx(823.2, abs=0.01)
+    assert at_5 - at_4 == pytest.approx(5_031.60, abs=0.01)
 
 
 def test_max_batch_size_adapts_to_a_smaller_gpu(golden_report: MemoryReport, llama_model: ModelConfig, qlora_training: TrainingConfig) -> None:
     on_3060 = estimate(llama_model, qlora_training, get_gpu("3060-12"))
 
-    assert on_3060.max_batch_size == 7
+    assert on_3060.max_batch_size == 0
     assert on_3060.max_batch_size < golden_report.max_batch_size
 
 
@@ -174,7 +176,7 @@ def test_flash_attention_off_adds_the_softmax_term(
     on = estimate(llama_model, qlora_training, gpu)
     off = estimate(llama_model, replace(qlora_training, flash_attn=False), gpu)
 
-    assert off.activation_mib == pytest.approx(4_160.0, rel=1e-9)
+    assert off.activation_mib == pytest.approx(20_192.0, rel=1e-9)
     assert off.total_mib - on.total_mib == pytest.approx(1_075.2, abs=0.01)
 
 
@@ -237,5 +239,5 @@ def test_report_is_json_serializable_for_ci(golden_report: MemoryReport) -> None
     payload = json.loads(json.dumps(dataclasses.asdict(golden_report)))
 
     assert payload["total_mib"] == pytest.approx(_GOLDEN_TOTAL, abs=0.01)
-    assert payload["fits"] is True
+    assert payload["fits"] is False
     assert payload["max_batch_size"] == _GOLDEN_MAX_BATCH

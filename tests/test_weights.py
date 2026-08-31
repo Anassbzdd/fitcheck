@@ -37,14 +37,51 @@ def test_estimate_weight_memory_precision_lookup_is_case_and_whitespace_insensit
 
 def test_estimate_weight_memory_llama_31_8b_qlora_matches_worked_example() -> None:
     num_params = 8_030_261_248
+    # embed_tokens + lm_head (untied, V=128,256 h=4,096) + 32 layers of norms
+    unquantized = 2 * 128_256 * 4_096 + 32 * 2 * 4_096 + 4_096
 
-    result = estimate_weight_memory(num_params, "int4", QuantizationConfig(enabled=True))
+    result = estimate_weight_memory(
+        num_params, "int4", QuantizationConfig(enabled=True), unquantized_params=unquantized
+    )
 
-    base_bytes = num_params * 0.5
-    overhead_bytes = num_params * (2.0 / 64)
+    quantized = num_params - unquantized
+    base_bytes = quantized * 0.5 + unquantized * 4.0
+    overhead_bytes = quantized * (4.0 / 64)
     expected_mib = round(base_bytes + overhead_bytes) / _MIB
     assert result == pytest.approx(expected_mib, rel=1e-9)
-    assert result == pytest.approx(4_068, rel=0.05)
+    assert result == pytest.approx(7_753, rel=0.05)
+
+
+def test_unquantized_slice_is_ignored_without_quantization() -> None: 
+    plain = estimate_weight_memory(1_000_000, "bf16")
+    with_arg = estimate_weight_memory(1_000_000, "bf16", unquantized_params=400_000)
+    assert plain == with_arg
+
+
+def test_unquantized_slice_costs_fp32_not_the_quantized_rate() -> None: 
+    flat = estimate_weight_memory(1_000_000, "nf4", QuantizationConfig(enabled=True))
+    split = estimate_weight_memory(
+        1_000_000, "nf4", QuantizationConfig(enabled=True), unquantized_params=200_000
+    )
+    assert split > flat
+    assert (split - flat) == pytest.approx(
+        (200_000 * (4.0 - 0.5) - 200_000 * (4.0 / 64)) / _MIB, rel=1e-6
+    )
+
+
+@pytest.mark.parametrize("bad", [-1, True, 1.5])
+def test_estimate_weight_memory_rejects_invalid_unquantized_params(bad: object) -> None:
+    with pytest.raises(ValueError, match="unquantized_params must be a non-negative integer"):
+        estimate_weight_memory(
+            1_000_000, "nf4", QuantizationConfig(enabled=True), unquantized_params=bad
+        )
+
+
+def test_estimate_weight_memory_rejects_unquantized_params_over_total() -> None:
+    with pytest.raises(ValueError, match="cannot exceed num_params"):
+        estimate_weight_memory(
+            1_000, "nf4", QuantizationConfig(enabled=True), unquantized_params=1_001
+        )
 
 
 _QUANTIZABLE_BYTES_PER_PARAM = [
@@ -64,7 +101,7 @@ def test_estimate_weight_memory_qlora_overhead_default_block_size(
     result = estimate_weight_memory(num_params, precision, QuantizationConfig(enabled=True))
 
     base_bytes = num_params * bytes_per_param
-    overhead_bytes = num_params * (2.0 / 64)
+    overhead_bytes = num_params * (4.0 / 64)
     expected_mib = round(base_bytes + overhead_bytes) / _MIB
     assert result == pytest.approx(expected_mib, rel=1e-9)
 
@@ -78,7 +115,7 @@ def test_estimate_weight_memory_custom_block_size(precision: str, bytes_per_para
     )
 
     base_bytes = num_params * bytes_per_param
-    overhead_bytes = num_params * (2.0 / 32)
+    overhead_bytes = num_params * (4.0 / 32)
     expected_mib = round(base_bytes + overhead_bytes) / _MIB
     assert result == pytest.approx(expected_mib, rel=1e-9)
 

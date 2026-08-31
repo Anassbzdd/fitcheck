@@ -13,8 +13,12 @@ def _validate_trainable_params(trainable_params: int) -> int:
     return trainable_params
 
 
-def estimate_gradient_memory(trainable_params: int, precision: str) -> float:
+def estimate_gradient_memory(
+    trainable_params: int,
+    precision: str,
+    param_precision: str | None = None,
+) -> float:
     validated_trainable_params = _validate_trainable_params(trainable_params)
-    bytes_per_param = precision_to_bytes(precision)
+    bytes_per_param = precision_to_bytes(param_precision or precision)
 
     return bytes_to_mib(validated_trainable_params * bytes_per_param)

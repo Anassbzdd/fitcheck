@@ -6,10 +6,20 @@ from fitcheck.memory.activations import estimate_activation_memory
 # Golden set: Llama-3.1-8B, bs=4, seq=2048, bf16 .
 _GOLDEN_BATCH = 4
 _GOLDEN_SEQ = 2048
-_A_ACT_CKPT_FLASH = 3_136.0  
-_A_ACT_CKPT_NO_FLASH = 4_160.0  
-_A_ACT_NO_CKPT_FLASH = 34_816.0
-_A_ACT_NO_CKPT_NO_FLASH = 67_584.0
+_GOLDEN_VOCAB = 128_256
+
+
+_LOGITS = 4 * 4.0 * _GOLDEN_BATCH * _GOLDEN_SEQ * _GOLDEN_VOCAB / 1024**2
+
+_A_LAYER_CKPT_FLASH = 3_136.0
+_A_LAYER_CKPT_NO_FLASH = 4_160.0
+_A_LAYER_NO_CKPT_FLASH = 34_816.0
+_A_LAYER_NO_CKPT_NO_FLASH = 67_584.0
+
+_A_ACT_CKPT_FLASH = _A_LAYER_CKPT_FLASH + _LOGITS
+_A_ACT_CKPT_NO_FLASH = _A_LAYER_CKPT_NO_FLASH + _LOGITS
+_A_ACT_NO_CKPT_FLASH = _A_LAYER_NO_CKPT_FLASH + _LOGITS
+_A_ACT_NO_CKPT_NO_FLASH = _A_LAYER_NO_CKPT_NO_FLASH + _LOGITS
 
 
 def _model_config(
@@ -96,7 +106,11 @@ def test_flash_attn_off_adds_exactly_the_softmax_term(llama: ModelConfig) -> Non
 
 @pytest.mark.parametrize(
     ("precision", "expected"),
-    [("bf16", _A_ACT_CKPT_FLASH), ("fp16", _A_ACT_CKPT_FLASH), ("fp32", 6_272.0)],
+    [
+        ("bf16", _A_ACT_CKPT_FLASH),
+        ("fp16", _A_ACT_CKPT_FLASH),
+        ("fp32", 2 * _A_LAYER_CKPT_FLASH + _LOGITS),
+    ],
 )
 def test_scales_with_compute_dtype_never_hardcoded_two(
     llama: ModelConfig, precision: str, expected: float
@@ -109,7 +123,7 @@ def test_reads_intermediate_size_from_config_instead_of_assuming_4h(
 ) -> None:
     four_h = _model_config(intermediate_size=4 * 4096)
 
-    assert _estimate(four_h) == pytest.approx(3_232.0, rel=1e-9)
+    assert _estimate(four_h) == pytest.approx(3_232.0 + _LOGITS, rel=1e-9)
     assert _estimate(llama) != pytest.approx(_estimate(four_h), rel=1e-6)
 
 
@@ -124,7 +138,7 @@ def test_gemma2_uses_head_dim_not_hidden_size_for_q_and_attn_output(
 ) -> None:
     # bracket = 4*3584 + 2*(16*256) + 2*(8*256) + 3*14336 = 69,632
     # A_layer = 2 * 4*2048 * 69,632 B = 1,088 MiB; ckpt term = 2*42*8192*3584 B = 2,352 MiB
-    assert _estimate(gemma2_9b) == pytest.approx(3_440.0, rel=1e-9)
+    assert _estimate(gemma2_9b) == pytest.approx(3_440.0 + _LOGITS, rel=1e-9)
 
 
 def test_gemma2_differs_from_the_n_h_d_k_equals_h_assumption(
@@ -139,7 +153,7 @@ def test_gemma2_differs_from_the_n_h_d_k_equals_h_assumption(
         intermediate_size=14336,
     )
 
-    assert _estimate(as_if_square) == pytest.approx(3_416.0, rel=1e-9)
+    assert _estimate(as_if_square) == pytest.approx(3_416.0 + _LOGITS, rel=1e-9)
     assert _estimate(gemma2_9b) > _estimate(as_if_square)
 
 
@@ -156,7 +170,7 @@ def test_exact_bracket_reduces_to_the_six_h_form_when_n_h_d_k_equals_h(
     ckpt_mib = gamma * llama.num_layers * tokens * llama.hidden_size / 1024**2
 
     assert a_layer_mib == pytest.approx(1_088.0, rel=1e-9)
-    assert _estimate(llama) == pytest.approx(ckpt_mib + a_layer_mib, rel=1e-9)
+    assert _estimate(llama) == pytest.approx(ckpt_mib + a_layer_mib + _LOGITS, rel=1e-9)
 
 
 def test_micro_batch_scales_linearly(llama: ModelConfig) -> None:

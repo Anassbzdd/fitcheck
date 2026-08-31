@@ -82,7 +82,9 @@ def fake_config_download(
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
 
-        def _fake_hf_hub_download(*, repo_id: str, filename: str) -> str:
+        def _fake_hf_hub_download(
+            *, repo_id: str, filename: str, token: str | None = None
+        ) -> str:
             return str(config_path)
 
         monkeypatch.setattr("fitcheck.config_parser.hf_hub_download", _fake_hf_hub_download)

@@ -1,4 +1,6 @@
 from __future__ import annotations
+import json
+from pathlib import Path
 from typing import Any, Callable
 import httpx
 import pytest
@@ -281,10 +283,8 @@ def test_fetch_model_config_empty_model_id_raises(model_id: str) -> None:
         fetch_model_config(model_id)
 
 
-def test_fetch_model_config_gated_repo_raises_actionable_runtime_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise_gated(*, repo_id: str, filename: str) -> str:
+def _install_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_gated(*, repo_id: str, filename: str, token: str | None = None) -> str:
         fake_response = httpx.Response(
             403, request=httpx.Request("GET", f"https://huggingface.co/{repo_id}")
         )
@@ -292,5 +292,111 @@ def test_fetch_model_config_gated_repo_raises_actionable_runtime_error(
 
     monkeypatch.setattr("fitcheck.config_parser.hf_hub_download", _raise_gated)
 
+
+def _clear_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+
+
+def test_fetch_model_config_gated_repo_raises_actionable_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_token_env(monkeypatch)
+    _install_gated(monkeypatch)
+
     with pytest.raises(RuntimeError, match="gated"):
         fetch_model_config("meta-llama/some-gated-model")
+
+
+def test_gated_error_without_a_token_points_at_login_and_hf_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_token_env(monkeypatch)
+    _install_gated(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="no token was found") as excinfo:
+        fetch_model_config("meta-llama/some-gated-model")
+
+    message = str(excinfo.value)
+    assert "hf auth login" in message
+    assert "HF_TOKEN" in message
+
+
+def test_gated_error_with_a_token_blames_access_not_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token that is present but unapproved is a different problem, and a
+    'run hf auth login' message sends the user in the wrong direction."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("HF_TOKEN", "hf_secret_value")
+    _install_gated(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="does not grant access") as excinfo:
+        fetch_model_config("meta-llama/some-gated-model")
+
+    assert "hf auth login" not in str(excinfo.value)
+
+
+def test_gated_error_never_echoes_the_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("HF_TOKEN", "hf_secret_value")
+    _install_gated(monkeypatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        fetch_model_config("meta-llama/some-gated-model")
+
+    assert "hf_secret_value" not in str(excinfo.value)
+    assert "hf_secret_value" not in repr(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "variable", ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"]
+)
+def test_environment_token_is_forwarded_to_the_hub(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, variable: str
+) -> None:
+    """Kaggle and Colab export a token instead of caching a CLI login."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv(variable, "  hf_from_env  ")
+    seen: dict[str, Any] = {}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_MINIMAL_CONFIG), encoding="utf-8")
+
+    def _capture(*, repo_id: str, filename: str, token: str | None = None) -> str:
+        seen["token"] = token
+        return str(config_path)
+
+    monkeypatch.setattr("fitcheck.config_parser.hf_hub_download", _capture)
+    fetch_model_config("some/model")
+
+    assert seen["token"] == "hf_from_env"
+
+
+def test_no_environment_token_forwards_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """None lets huggingface_hub fall back to a cached `hf auth login`."""
+    _clear_token_env(monkeypatch)
+    seen: dict[str, Any] = {}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_MINIMAL_CONFIG), encoding="utf-8")
+
+    def _capture(*, repo_id: str, filename: str, token: str | None = None) -> str:
+        seen["token"] = token
+        return str(config_path)
+
+    monkeypatch.setattr("fitcheck.config_parser.hf_hub_download", _capture)
+    fetch_model_config("some/model")
+
+    assert seen["token"] is None
+
+
+_MINIMAL_CONFIG = {
+    "hidden_size": 64,
+    "num_hidden_layers": 2,
+    "num_attention_heads": 4,
+    "num_key_value_heads": 2,
+    "intermediate_size": 128,
+    "vocab_size": 100,
+    "tie_word_embeddings": False,
+}

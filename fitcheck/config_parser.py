@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -135,17 +136,44 @@ def _count_params(fields: _ParsedFields) -> int:
     )
 
 
+def _hub_token() -> str | None:
+    """Token from the environment, if the caller set one.
+
+    `hf_hub_download` already falls back to a cached CLI login, but hosted notebooks
+    (Kaggle, Colab) have no cached login and instead export the token. Reading it here
+    makes an explicitly-exported token work without an `hf auth login` step. The value
+    is passed straight to the Hub client and is never logged or echoed.
+    """
+    for variable in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        token = os.environ.get(variable, "").strip()
+        if token:
+            return token
+    return None
+
+
 def fetch_model_config(model_id: str) -> ModelConfig:
     if not model_id or not model_id.strip():
         raise ValueError("model_id must be a non-empty Hugging Face repository ID")
 
     normalized_model_id = model_id.strip()
+    token = _hub_token()
     try:
-        config_path = hf_hub_download(repo_id=normalized_model_id, filename="config.json")
+        config_path = hf_hub_download(
+            repo_id=normalized_model_id, filename="config.json", token=token
+        )
     except GatedRepoError as error:
+        if token is None:
+            raise RuntimeError(
+                f"'{normalized_model_id}' is gated on Hugging Face and no token was found.\n"
+                "Accept its license on the model page, then either run `hf auth login` or "
+                "export HF_TOKEN.\n"
+                "On Kaggle or Colab, set HF_TOKEN from your notebook secrets before running."
+            ) from error
         raise RuntimeError(
-            "This model is gated on Hugging Face.\n"
-            "Accept its license on the model page, then run: hf auth login"
+            f"'{normalized_model_id}' is gated on Hugging Face. A token was found, but it "
+            "does not grant access to this repository.\n"
+            "Accept the license on the model page with the same account that issued the "
+            "token, and check the token has 'read' permission."
         ) from error
     with Path(config_path).open(encoding="utf-8") as config_file:
         raw: Mapping[str, Any] = json.load(config_file)

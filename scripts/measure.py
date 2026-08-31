@@ -1,34 +1,3 @@
-#!/usr/bin/env python
-"""Ground-truth harness: measure real peak VRAM for one LoRA/QLoRA training step.
-
-This is **not** part of the ``fitcheck`` package and is never imported by it. It is the
-only place in this repository allowed to import ``torch``, ``transformers``, ``peft``,
-or ``bitsandbytes`` (see CLAUDE.md, "Hard Constraints"). It exists to fill the
-validation matrix in README.md: run it on a real GPU, paste the markdown row it prints.
-
-    python scripts/measure.py meta-llama/Llama-3.1-8B --qlora --lora-r 64
-        --batch-size 4 --seq-len 2048 --flash-attn --gpu 4090
-
-Flags mirror the ``fitcheck`` CLI one-for-one, so the same arguments describe the same
-run in both tools. This script feeds them to ``fitcheck`` itself and prints predicted
-vs. measured side by side.
-
-Comparing predicted against measured
-------------------------------------
-``fitcheck``'s total is  W + L + S + G + A + C_overhead,  where C_overhead is 500 MiB
-of CUDA context plus 5% fragmentation. PyTorch's counters measure different things, so
-there are three matched comparisons and only three:
-
-    tensors    max_memory_allocated()  <->  total - overhead   (live tensor bytes)
-    allocator  max_memory_reserved()   <->  total - 500        (tensors + fragmentation)
-    process    reserved + CUDA context <->  total              (what nvidia-smi shows)
-
-Comparing the full predicted total against ``max_memory_allocated()`` is the classic
-mistake: it charges fitcheck for ~500 MiB of context the allocator never reports, and
-makes every row look 10-15% pessimistic. The ``tensors`` tier validates the
-six-component formula; the ``process`` tier answers "will it actually fit".
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -58,13 +27,6 @@ _TARGET_PRESETS = {
     ),
 }
 _ALL_TARGETS = _TARGET_PRESETS["full"]
-
-
-# ---------------------------------------------------------------------------------
-# Arguments -- these mirror fitcheck/cli.py. Defaults are None so that --qlora can
-# tell "user did not say" from "user said the default", as _explicit() does in the CLI.
-# ---------------------------------------------------------------------------------
-
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -181,7 +143,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _apply_qlora_shorthand(args: argparse.Namespace) -> None:
-    """--qlora fills in only what the user left unset, matching cli.py's _explicit()."""
     if args.qlora:
         if args.quant is None:
             args.quant = "nf4"
@@ -304,7 +265,6 @@ def build_model(args: argparse.Namespace, targets: list[str]):
     if args.quant == "none":
         model = model.cuda()
 
-    # The KV cache is a generation-time buffer; fitcheck models training only.
     model.config.use_cache = False
 
     if args.lora_rank is not None:
@@ -351,9 +311,6 @@ def build_optimizer(model, args: argparse.Namespace):
 
     if args.optimizer == "adamw":
         if args.optimizer_dtype == "fp32":
-            # AdamW keeps exp_avg/exp_avg_sq in the parameter's dtype, so fp32 states
-            # require fp32 parameters. PEFT usually already does this; make it explicit
-            # so what is measured matches what fitcheck was told.
             for p in params:
                 if p.dtype != torch.float32:
                     p.data = p.data.float()
@@ -367,11 +324,6 @@ def build_optimizer(model, args: argparse.Namespace):
 
 
 def observed_optimizer_state_bytes(optimizer) -> tuple[float, str]:
-    """Actual optimizer-state bytes and dtype, read back off the live optimizer.
-
-    Task 6.3 names optimizer-state dtype as a prime suspect when a row is off.
-    Reading it rather than assuming it turns that debugging step into a lookup.
-    """
     import torch
 
     total = 0
@@ -404,15 +356,44 @@ class Measurement:
 
 
 def _cuda_context_mib() -> float:
-    """Bytes the CUDA context costs: device-used minus everything our allocator holds.
-
-    This is what fitcheck's _BASE_CONTEXT_MIB = 500.0 stands in for, and PyTorch's own
-    counters can never see it. Only meaningful on an otherwise-idle GPU.
-    """
     import torch
 
     free, total = torch.cuda.mem_get_info()
     return (total - free - torch.cuda.memory_reserved()) / MIB
+
+
+def _preflight_device(args: argparse.Namespace) -> None:
+    import torch
+
+    major, minor = torch.cuda.get_device_capability(0)
+    capability = major * 10 + minor
+    name = torch.cuda.get_device_name(0)
+
+    if args.precision == "bf16" and capability < 80:
+        raise SystemExit(
+            f"measure.py: {name} is sm_{capability} and has no native bf16 "
+            f"(that needs sm_80 / Ampere or newer).\n"
+            f"  Re-run with --precision fp16. On a T4 that is the correct compute "
+            f"dtype, and fitcheck models fp16 and bf16 identically at 2 bytes, so "
+            f"the prediction is unchanged.\n"
+            f"  Note --qlora implies bf16, so pass it as: --qlora --precision fp16"
+        )
+
+    if args.flash_attn and capability < 80:
+        raise SystemExit(
+            f"measure.py: {name} is sm_{capability}; Flash Attention 2 needs "
+            f"sm_80 or newer.\n"
+            f"  Drop --flash-attn. The planned T4 row is a no-FA row anyway, and "
+            f"fitcheck will then include the b*n_h*s^2 attention term it should."
+        )
+
+    visible = torch.cuda.device_count()
+    if visible > 1:
+        print(
+            f"measure.py: {visible} GPUs visible; measuring device 0 ({name}) only. "
+            f"This is by design -- fitcheck predicts single-device memory, so a "
+            f"sharded or DDP run would not be comparable to the prediction."
+        )
 
 
 def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
@@ -422,6 +403,8 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         raise SystemExit(
             "measure.py: no CUDA device visible -- this harness needs a real GPU"
         )
+
+    _preflight_device(args)
 
     torch.manual_seed(args.seed)
     torch.cuda.init()
@@ -448,14 +431,10 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         out.loss.backward()
         optimizer.step()
 
-    # Warmup is mandatory: AdamW allocates exp_avg/exp_avg_sq lazily inside the first
-    # .step(), so a peak captured over step 0 misses S_optim entirely.
     for _ in range(args.warmup_steps):
         one_step()
     torch.cuda.synchronize()
 
-    # reset_peak_memory_stats() rebases the peak to *current* allocated, so everything
-    # still resident (weights, LoRA, optimizer states) stays counted.
     torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     for _ in range(args.measure_steps):
@@ -543,7 +522,6 @@ def markdown_row(
     report,
     gpu_name: str,
 ) -> str:
-    """One ready-to-paste row for the README validation matrix (task 6.2)."""
     tensors_predicted = report.total_mib - report.overhead_mib
     err = _error_pct(tensors_predicted, m.peak_allocated_mib)
     return (

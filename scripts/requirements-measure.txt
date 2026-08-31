@@ -12,7 +12,10 @@
 # the rest of this file.
 
 torch>=2.1
-transformers>=4.44
+# >=4.56 specifically: build_model() passes from_pretrained(dtype=...), which older
+# releases only accept spelled torch_dtype. Kaggle/Colab images often ship an older
+# transformers, so upgrade it there rather than relying on the preinstalled one.
+transformers>=4.56
 peft>=0.11
 accelerate>=0.30
 

@@ -353,6 +353,52 @@ class Measurement:
     trainable_params: int
     total_params: int
     step_seconds: float
+    weight_breakdown: dict[str, float]
+
+
+def _is_4bit(param) -> bool:
+    if getattr(param, "quant_state", None) is not None:
+        return True
+    return any(cls.__name__ == "Params4bit" for cls in type(param).__mro__)
+
+
+def _logical_param_count(model) -> int:
+    total = 0
+    for p in model.parameters():
+        if _is_4bit(p):
+            state = getattr(p, "quant_state", None)
+            shape = getattr(state, "shape", None)
+            if shape is not None:
+                n = 1
+                for dim in shape:
+                    n *= dim
+                total += n
+            else:
+                total += p.numel() * 2
+        else:
+            total += p.numel()
+    return total
+
+
+def resident_weight_breakdown(model) -> dict[str, float]:
+    buckets = {"nf4_packed": 0, "quant_scales": 0, "unquantized_fp32": 0, "other": 0}
+    for p in model.parameters():
+        nbytes = p.numel() * p.element_size()
+        if _is_4bit(p):
+            buckets["nf4_packed"] += nbytes
+            state = getattr(p, "quant_state", None)
+            for attr in ("absmax", "code", "offset", "state2"):
+                value = getattr(state, attr, None)
+                inner = getattr(value, "absmax", None)
+                if inner is not None:
+                    buckets["quant_scales"] += inner.numel() * inner.element_size()
+                if hasattr(value, "numel"):
+                    buckets["quant_scales"] += value.numel() * value.element_size()
+        elif p.dtype.is_floating_point and p.element_size() == 4:
+            buckets["unquantized_fp32"] += nbytes
+        else:
+            buckets["other"] += nbytes
+    return {k: v / MIB for k, v in buckets.items()}
 
 
 def _cuda_context_mib() -> float:
@@ -416,8 +462,10 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
     torch.cuda.synchronize()
     after_load_mib = torch.cuda.memory_allocated() / MIB
 
+    weight_breakdown = resident_weight_breakdown(model)
+
     optimizer = build_optimizer(model, args)
-    total_params = sum(p.numel() for p in model.parameters())
+    total_params = _logical_param_count(model)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     vocab_size = getattr(hf_config, "vocab_size", 32000)
@@ -457,6 +505,7 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         trainable_params=trainable,
         total_params=total_params,
         step_seconds=step_seconds,
+        weight_breakdown=weight_breakdown,
     )
 
 
@@ -557,7 +606,16 @@ def render(
         f"  attention: {_attn_implementation(args)}   "
         f"warmup: {args.warmup_steps}   measured steps: {args.measure_steps}"
     )
-    add(f"  params: {m.total_params:,} total | {m.trainable_params:,} trainable")
+    add(f"  params: {m.total_params:,} logical | {m.trainable_params:,} trainable")
+    if model_config is not None:
+        base = m.total_params - m.trainable_params
+        delta = base - model_config.num_params
+        flag = "OK" if abs(delta) <= max(1, model_config.num_params // 1000) else "MISMATCH"
+        add(f"          base {base:,} vs fitcheck P {model_config.num_params:,}"
+            f"  ({delta:+,})  [{flag}]")
+        if flag == "MISMATCH":
+            add("          ^ config_parser's param count disagrees with the loaded "
+                "model; every per-param term is built on P, so fix this first.")
     add(
         f"  optimizer states: {m.optimizer_state_mib:,.0f} MiB observed, "
         f"dtype {m.optimizer_state_dtype}"
@@ -619,6 +677,20 @@ def render(
             f"    {label:<28}{predicted:>10,.0f}{actual:>12,.0f}"
             f"{_error_pct(predicted, actual):>+9.1f}%"
         )
+    add("")
+    add("")
+    add("  RESIDENT WEIGHT BYTES BY STORAGE  (fitcheck bills every param one rate)")
+    for key, label in (
+        ("nf4_packed", "NF4 packed linears"),
+        ("quant_scales", "quantization scales"),
+        ("unquantized_fp32", "unquantized, held fp32"),
+        ("other", "other"),
+    ):
+        add(f"    {label:<28}{m.weight_breakdown.get(key, 0.0):>22,.0f} MiB")
+    add("")
+    add("    embeddings and lm_head are NOT quantized by bitsandbytes, and peft's")
+    add("    prepare_model_for_kbit_training upcasts them to fp32. Any large")
+    add("    unquantized_fp32 figure is weight the W_base formula bills at 0.5 B/param.")
     add("")
     add("  MATRIX ROW  (paste into README.md)")
     add("")

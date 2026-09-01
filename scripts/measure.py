@@ -336,6 +336,20 @@ def observed_optimizer_state_bytes(optimizer) -> tuple[float, str]:
     return total / MIB, ("+".join(sorted(dtypes)) if dtypes else "none")
 
 
+def observed_gradient_bytes(model) -> float:
+    """Resident gradient bytes for the trainable parameters.
+
+    Must be read after .backward() and before zero_grad(set_to_none=True), which
+    drops .grad entirely. Together with the optimizer-state and after-load figures
+    this is what lets A_act be measured by subtraction instead of inferred by hand.
+    """
+    total = 0
+    for param in model.parameters():
+        if param.requires_grad and param.grad is not None:
+            total += param.grad.numel() * param.grad.element_size()
+    return total / MIB
+
+
 # ---------------------------------------------------------------------------------
 # Measurement
 # ---------------------------------------------------------------------------------
@@ -344,12 +358,18 @@ def observed_optimizer_state_bytes(optimizer) -> tuple[float, str]:
 @dataclass
 class Measurement:
     cuda_context_mib: float
+    cuda_context_init_mib: float
     after_load_allocated_mib: float
     peak_allocated_mib: float
     peak_reserved_mib: float
     process_mib: float
+    peak_forward_mib: float
+    peak_backward_mib: float
+    peak_optimizer_mib: float
     optimizer_state_mib: float
     optimizer_state_dtype: str
+    gradient_mib: float
+    sdpa_backend: str
     trainable_params: int
     total_params: int
     step_seconds: float
@@ -402,10 +422,39 @@ def resident_weight_breakdown(model) -> dict[str, float]:
 
 
 def _cuda_context_mib() -> float:
+    """Device memory held by the process but not by the caching allocator.
+
+    Read this AFTER the measured steps, not straight after torch.cuda.init().
+    cuBLAS/cuDNN workspaces and lazily-loaded kernel images land during the first
+    real matmul, so an init-time reading understates the true footprint and makes
+    the process tier look better than it is.
+    """
     import torch
 
     free, total = torch.cuda.mem_get_info()
     return (total - free - torch.cuda.memory_reserved()) / MIB
+
+
+def _sdpa_backend(args: argparse.Namespace):
+    """Pin SDPA to its memory-efficient backend, and say which one is in use.
+
+    Plain "sdpa" is free to fall back to the *math* backend, which does materialize
+    the (b, n_h, s, s) score matrix. That would silently void the one comparison
+    --attn-impl sdpa exists for, so pin it and fail loudly instead.
+
+    Returns a (factory, label) pair; the factory makes a fresh context manager.
+    """
+    import contextlib
+
+    if _attn_implementation(args) != "sdpa":
+        return (lambda: contextlib.nullcontext()), "n/a (not sdpa)"
+
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except ImportError:
+        return (lambda: contextlib.nullcontext()), "unpinned (torch.nn.attention missing)"
+
+    return (lambda: sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)), "EFFICIENT_ATTENTION"
 
 
 def _preflight_device(args: argparse.Namespace) -> None:
@@ -426,11 +475,19 @@ def _preflight_device(args: argparse.Namespace) -> None:
         )
 
     if args.flash_attn and capability < 80:
-        raise SystemExit(
-            f"measure.py: {name} is sm_{capability}; Flash Attention 2 needs "
-            f"sm_80 or newer.\n"
-            f"  Drop --flash-attn. The planned T4 row is a no-FA row anyway, and "
-            f"fitcheck will then include the b*n_h*s^2 attention term it should."
+        if not args.attn_impl:
+            raise SystemExit(
+                f"measure.py: {name} is sm_{capability}; Flash Attention 2 needs "
+                f"sm_80 or newer.\n"
+                f"  Either drop --flash-attn, or pass --attn-impl sdpa. SDPA's "
+                f"memory-efficient kernel also never materializes the b*n_h*s^2 "
+                f"score matrix, so it measures the same thing fitcheck's flash_attn "
+                f"branch predicts, and it runs on sm_75."
+            )
+        print(
+            f"measure.py: {name} is sm_{capability}, so Flash Attention 2 is "
+            f"unavailable. --flash-attn is being applied to the PREDICTION only; "
+            f"the measured kernel is '{args.attn_impl}'."
         )
 
     visible = torch.cuda.device_count()
@@ -456,7 +513,8 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
     torch.cuda.init()
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
-    context_mib = _cuda_context_mib()
+    context_init_mib = _cuda_context_mib()
+    sdpa_ctx, sdpa_label = _sdpa_backend(args)
 
     model, hf_config = build_model(args, targets)
     torch.cuda.synchronize()
@@ -479,29 +537,69 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         out.loss.backward()
         optimizer.step()
 
-    for _ in range(args.warmup_steps):
-        one_step()
-    torch.cuda.synchronize()
+    def phase_resolved_step() -> tuple[float, float, float, float]:
+        """One step with the peak counter reset between phases.
 
-    torch.cuda.reset_peak_memory_stats()
-    started = time.perf_counter()
-    for _ in range(args.measure_steps):
-        one_step()
-    torch.cuda.synchronize()
-    step_seconds = (time.perf_counter() - started) / args.measure_steps
+        reset_peak_memory_stats() rebases the peak to whatever is currently live,
+        so each phase peak includes the resident baseline -- which is what makes the
+        three numbers comparable to one another and to peak_allocated.
+        """
+        optimizer.zero_grad(set_to_none=True)
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
 
-    peak_allocated = torch.cuda.max_memory_allocated() / MIB
-    peak_reserved = torch.cuda.max_memory_reserved() / MIB
+        out = model(input_ids=batch, labels=batch)
+        torch.cuda.synchronize()
+        forward_peak = torch.cuda.max_memory_allocated() / MIB
+
+        torch.cuda.reset_peak_memory_stats()
+        out.loss.backward()
+        torch.cuda.synchronize()
+        backward_peak = torch.cuda.max_memory_allocated() / MIB
+        grad_mib = observed_gradient_bytes(model)
+
+        torch.cuda.reset_peak_memory_stats()
+        optimizer.step()
+        torch.cuda.synchronize()
+        optimizer_peak = torch.cuda.max_memory_allocated() / MIB
+        return forward_peak, backward_peak, optimizer_peak, grad_mib
+
+    with sdpa_ctx():
+        for _ in range(args.warmup_steps):
+            one_step()
+        torch.cuda.synchronize()
+
+        torch.cuda.reset_peak_memory_stats()
+        started = time.perf_counter()
+        for _ in range(args.measure_steps):
+            one_step()
+        torch.cuda.synchronize()
+        step_seconds = (time.perf_counter() - started) / args.measure_steps
+
+        # Read the headline peaks before the extra instrumented step, so these stay
+        # exactly what they were before phase splitting was added.
+        peak_allocated = torch.cuda.max_memory_allocated() / MIB
+        peak_reserved = torch.cuda.max_memory_reserved() / MIB
+
+        forward_peak, backward_peak, optimizer_peak, grad_mib = phase_resolved_step()
+
     opt_mib, opt_dtype = observed_optimizer_state_bytes(optimizer)
+    context_mib = _cuda_context_mib()
 
     return Measurement(
         cuda_context_mib=context_mib,
+        cuda_context_init_mib=context_init_mib,
         after_load_allocated_mib=after_load_mib,
         peak_allocated_mib=peak_allocated,
         peak_reserved_mib=peak_reserved,
         process_mib=peak_reserved + context_mib,
+        peak_forward_mib=forward_peak,
+        peak_backward_mib=backward_peak,
+        peak_optimizer_mib=optimizer_peak,
         optimizer_state_mib=opt_mib,
         optimizer_state_dtype=opt_dtype,
+        gradient_mib=grad_mib,
+        sdpa_backend=sdpa_label,
         trainable_params=trainable,
         total_params=total_params,
         step_seconds=step_seconds,
@@ -547,6 +645,20 @@ def _error_pct(predicted: float, actual: float) -> float:
     return (predicted - actual) / actual * 100.0
 
 
+def _measured_activation_mib(m: Measurement) -> float:
+    """A_act by subtraction: everything in the peak that is not weights or state.
+
+    Weights, optimizer states and gradients are all measured directly, so whatever
+    is left in max_memory_allocated() is the activation memory.
+    """
+    return (
+        m.peak_allocated_mib
+        - m.after_load_allocated_mib
+        - m.optimizer_state_mib
+        - m.gradient_mib
+    )
+
+
 def config_label(args: argparse.Namespace, targets: list[str]) -> str:
     if args.lora_rank is None:
         bits = ["full FT"]
@@ -560,7 +672,12 @@ def config_label(args: argparse.Namespace, targets: list[str]) -> str:
     bits.append(args.optimizer)
     if args.grad_checkpoint:
         bits.append("ckpt")
-    bits.append("FA2" if args.flash_attn else "no FA")
+    if args.attn_impl:
+        # The kernel was overridden, so name it rather than claiming FA2. A row
+        # labelled "FA2" that actually ran under SDPA would be a mislabelled result.
+        bits.append(f"attn={args.attn_impl}")
+    else:
+        bits.append("FA2" if args.flash_attn else "no FA")
     return ", ".join(bits)
 
 
@@ -606,6 +723,7 @@ def render(
         f"  attention: {_attn_implementation(args)}   "
         f"warmup: {args.warmup_steps}   measured steps: {args.measure_steps}"
     )
+    add(f"  sdpa backend: {m.sdpa_backend}")
     add(f"  params: {m.total_params:,} logical | {m.trainable_params:,} trainable")
     if model_config is not None:
         base = m.total_params - m.trainable_params
@@ -623,11 +741,22 @@ def render(
     add(f"  step time: {m.step_seconds:.2f}s")
     add("")
     add("  MEASURED")
-    add(f"    CUDA context (approx)            {m.cuda_context_mib:>12,.0f} MiB")
+    add(f"    CUDA context (at peak)           {m.cuda_context_mib:>12,.0f} MiB")
+    add(f"    CUDA context (at init, for ref)  {m.cuda_context_init_mib:>12,.0f} MiB")
     add(f"    allocated after load             {m.after_load_allocated_mib:>12,.0f} MiB")
+    add(f"    gradients (after backward)       {m.gradient_mib:>12,.0f} MiB")
     add(f"    peak allocated  (tensor bytes)   {m.peak_allocated_mib:>12,.0f} MiB")
     add(f"    peak reserved   (allocator pool) {m.peak_reserved_mib:>12,.0f} MiB")
     add(f"    process total   (reserved+ctx)   {m.process_mib:>12,.0f} MiB")
+    add("")
+    add("  PEAK BY PHASE  (which part of the step actually is the peak)")
+    add(f"    forward   (logits + loss)        {m.peak_forward_mib:>12,.0f} MiB")
+    add(f"    backward  (recompute + attn)     {m.peak_backward_mib:>12,.0f} MiB")
+    add(f"    optimizer step                   {m.peak_optimizer_mib:>12,.0f} MiB")
+    add("")
+    add("    fitcheck SUMS the forward and backward humps into one A_act. If the peak")
+    add("    moves between phases as seq_len grows, they do not coexist and summing")
+    add("    them is the wrong shape, not just the wrong coefficient.")
     add("")
 
     if report is None:
@@ -672,12 +801,17 @@ def render(
             m.after_load_allocated_mib,
         ),
         ("optimizer states (S_optim)", report.optimizer_mib, m.optimizer_state_mib),
+        ("gradients (G_grad)", report.gradient_mib, m.gradient_mib),
+        ("activations (A_act)", report.activation_mib, _measured_activation_mib(m)),
     ):
         add(
             f"    {label:<28}{predicted:>10,.0f}{actual:>12,.0f}"
             f"{_error_pct(predicted, actual):>+9.1f}%"
         )
     add("")
+    add("    A_act measured = peak allocated - after load - S_optim - G_grad. This is")
+    add("    the subtraction that used to be done by hand; it is the row to read first")
+    add("    when a tier is off, because every other component is measured directly.")
     add("")
     add("  RESIDENT WEIGHT BYTES BY STORAGE  (fitcheck bills every param one rate)")
     for key, label in (
@@ -730,12 +864,16 @@ def main(argv: list[str] | None = None) -> int:
                 "overhead_mib": report.overhead_mib,
                 "total_mib": report.total_mib,
             }
+            payload["measured"]["activation_mib"] = _measured_activation_mib(m)
             payload["error_pct"] = {
                 "tensors": _error_pct(
                     report.total_mib - report.overhead_mib, m.peak_allocated_mib
                 ),
                 "allocator": _error_pct(report.total_mib - 500.0, m.peak_reserved_mib),
                 "process": _error_pct(report.total_mib, m.process_mib),
+                "activation": _error_pct(
+                    report.activation_mib, _measured_activation_mib(m)
+                ),
             }
             payload["markdown_row"] = markdown_row(args, targets, m, report, gpu_name)
         print(json.dumps(payload, indent=2))

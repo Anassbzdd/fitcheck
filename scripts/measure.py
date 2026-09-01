@@ -435,6 +435,37 @@ def _cuda_context_mib() -> float:
     return (total - free - torch.cuda.memory_reserved()) / MIB
 
 
+def _install_gqa_sdpa_shim() -> None:
+    """Expand grouped-query K/V before SDPA, so the fused kernels accept them.
+
+    With no attention_mask, transformers hands SDPA un-expanded K/V plus
+    enable_gqa=True. The memory-efficient backend refuses that ("both fused kernels
+    require query, key and value to have the same num_heads"), flash needs sm_80 and
+    cuDNN attention is off -- so every GQA model dies with "No available kernel".
+
+    Expanding by hand is what the eager path already does via repeat_kv, so the
+    eager-vs-SDPA contrast still differs only by the score matrix, which is the whole
+    point of the comparison. Idempotent, and only installed for --attn-impl sdpa.
+    """
+    import torch
+
+    functional = torch.nn.functional
+    original = functional.scaled_dot_product_attention
+    if getattr(original, "_fitcheck_gqa_shim", False):
+        return
+
+    def patched(query, key, value, *args, **kwargs):
+        if key.size(-3) != query.size(-3):
+            groups = query.size(-3) // key.size(-3)
+            key = key.repeat_interleave(groups, dim=-3)
+            value = value.repeat_interleave(groups, dim=-3)
+            kwargs.pop("enable_gqa", None)
+        return original(query, key, value, *args, **kwargs)
+
+    patched._fitcheck_gqa_shim = True
+    functional.scaled_dot_product_attention = patched
+
+
 def _sdpa_backend(args: argparse.Namespace):
     """Pin SDPA to its memory-efficient backend, and say which one is in use.
 
@@ -449,12 +480,16 @@ def _sdpa_backend(args: argparse.Namespace):
     if _attn_implementation(args) != "sdpa":
         return (lambda: contextlib.nullcontext()), "n/a (not sdpa)"
 
+    _install_gqa_sdpa_shim()
+
     try:
         from torch.nn.attention import SDPBackend, sdpa_kernel
     except ImportError:
         return (lambda: contextlib.nullcontext()), "unpinned (torch.nn.attention missing)"
 
-    return (lambda: sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)), "EFFICIENT_ATTENTION"
+    return (
+        lambda: sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
+    ), "EFFICIENT_ATTENTION (+ GQA expand shim)"
 
 
 def _preflight_device(args: argparse.Namespace) -> None:
@@ -565,8 +600,20 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         return forward_peak, backward_peak, optimizer_peak, grad_mib
 
     with sdpa_ctx():
-        for _ in range(args.warmup_steps):
-            one_step()
+        try:
+            for _ in range(args.warmup_steps):
+                one_step()
+        except RuntimeError as exc:
+            if "No available kernel" not in str(exc):
+                raise
+            raise SystemExit(
+                f"measure.py: SDPA has no usable kernel for this model on "
+                f"{torch.cuda.get_device_name(0)} (backend pinned to {sdpa_label}).\n"
+                f"  The warnings printed above say which kernel was rejected and why.\n"
+                f"  Drop --attn-impl sdpa to measure the eager path instead; the "
+                f"resulting row is still valid, it just does not isolate the "
+                f"b*n_h*s^2 score matrix."
+            ) from exc
         torch.cuda.synchronize()
 
         torch.cuda.reset_peak_memory_stats()

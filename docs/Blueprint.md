@@ -24,21 +24,21 @@ $ fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 
 │ Component               │ Memory (MiB) │ % of Total            │
 │─────────────────────────┼──────────────┼───────────────────────│
 │ Base model weights      │              │                       │
-│   └─ NF4 + unquant fp32 │    7,753     │  26.2%                │
+│   └─ NF4 + unquant fp32 │    7,753     │  25.3%                │
 │ LoRA adapter (trainable)│      208     │   0.7%                │
 │ Optimizer states        │      416     │   1.4%                │
 │ Gradients               │      208     │   0.7%                │
-│ Activations (grad ckpt) │   19,168     │  64.8%                │
-│   └─ of which logits    │   16,032     │  54.2%                │
-│ CUDA context + buffers  │    1,846     │   6.2%                │
+│ Activations (grad ckpt) │   20,128     │  65.8%                │
+│   └─ of which logits    │   16,032     │  52.4%                │
+│ CUDA context + buffers  │    1,894     │   6.2%                │
 │─────────────────────────┼──────────────┼───────────────────────│
-│ TOTAL (predicted peak)  │   29,599     │                       │
+│ TOTAL (predicted peak)  │   30,607     │                       │
 │ GPU capacity            │   23,500     │                       │
-│ Headroom                │   -6,099     │                       │
+│ Headroom                │   -7,107     │                       │
 ├────────────────────────────────────────────────────────────────┤
-│ ❌ DOES NOT FIT — over by 6,099 MiB                            │
+│ ❌ DOES NOT FIT — over by 7,107 MiB                            │
 │                                                                │
-│ 💡 Drop batch_size to 2 to fit. The logits term is 54% of the  │
+│ 💡 Drop batch_size to 2 to fit. The logits term is 52% of the  │
 │    budget, and grad checkpointing does not reduce it.          │
 ╰────────────────────────────────────────────────────────────────╯
 ```
@@ -62,29 +62,35 @@ Welcome to fitcheck interactive terminal. Type a command or 'help'.
 
 > explain
 💡 Explanation:
-- Base model weights (4,068 MiB) are the largest single component at 46.8% — the
-  NF4-quantized 8.03B base plus its quantization scales. Near the floor for this model.
-- Activations (3,136 MiB) come second at 36.1%. Gradient checkpointing is active, so
-  you store 32 layer inputs (2,048 MiB) plus one layer's full activations (1,088 MiB)
-  instead of all 32 (34,816 MiB) — which is exactly what demotes them to second.
-- Flash Attention is ON: avoided 1,024 MiB per layer of quadratic attention matrices.
-- LoRA adapter adds only 104 MiB of trainable weights and 416 MiB of AdamW states (FP32).
-  Optimizer states cost 8 bytes/param even though you train in BF16 — AdamW keeps
-  momentum and variance in FP32 by default.
+- Activations (20,128 MiB) are the largest component at 65.8% — and 16,032 MiB of that
+  is the logits: four FP32 copies of the (b, s, V) tensor, which a 128k vocabulary makes
+  enormous. Neither gradient checkpointing nor Flash Attention reduces it.
+- Base model weights (7,753 MiB) come second at 25.3% — the NF4-quantized 8.03B base,
+  its FP32 quantization scales, and the embeddings and LM head that bitsandbytes does
+  not quantize and peft upcasts to FP32.
+- Gradient checkpointing is ON: you store two hidden-state tensors per layer
+  (4,096 MiB) plus the larger of the LM-head hump (16,032 MiB) and one layer's full
+  activations (1,088 MiB) — a max, not a sum, because those two never coexist.
+- Flash Attention is ON but saves nothing here: the LM-head hump wins that max either
+  way. It would start paying at longer sequences.
+- LoRA adds 208 MiB of trainable weights and 416 MiB of AdamW states. Optimizer states
+  cost 8 bytes/param even though you train in BF16 — AdamW keeps momentum and variance
+  in FP32 by default.
 
   adamw -> adam8bit ......... saves    312 MiB
-  --flash-attn OFF .......... costs +1,075 MiB   (currently ON)
-  --grad-checkpoint OFF ..... costs +33,264 MiB  (currently ON)
+  --flash-attn OFF .......... costs      0 MiB   (currently ON)
+  --grad-checkpoint OFF ..... costs +32,256 MiB  (currently ON)
   --grad-accum 8 ............ costs      0 MiB   (accumulation is free)
 
 > optimize
 🎯 Best configuration for RTX 4090:
-- Max batch size: 21 (at seq_len 2048)
-- Recommended: batch_size=8, grad_accum=2 for effective batch 16 with 47% safety headroom.
+- Max batch size: 2 (at seq_len 2048)
+- Recommended: batch_size=2, grad_accum=8 for effective batch 16. Accumulation is free,
+  so this buys the same effective batch with none of the memory.
 
 > compare --gpu 3090
 ⚖️ Comparison: RTX 4090 (24GB) vs RTX 3090 (24GB)
-- Both give the same peak (29,599 MiB) — and on a 4090 neither fits it.
+- Both give the same peak (30,607 MiB) — and neither card fits it.
 
 > exit
 Goodbye!
@@ -267,7 +273,7 @@ x  = x + down_proj(silu(g) * u)           #     SAVED ×1 — down_proj's input
 |   | **subtotal**                    |                       | $\mathbf{\gamma bs(4h + 2n_hd_k)}$   | $= \gamma bs \cdot 6h$ when $n_hd_k = h$ |
 | 7 | K projection output             | $(b, n_{kv}, s, d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA**                    |
 | 8 | V projection output             | $(b, n_{kv}, s, d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA**                    |
-| 9 | Attention weights (softmax)     | $(b, n_h, s, s)$      | $\gamma bn_hs^2$                     | **Removed by Flash Attention**         |
+| 9 | Attention score matrix          | $(b, n_h, s, s)$      | $\mathbf{9\gamma bn_hs^2}$           | **Removed by Flash Attention** — nine copies, not one |
 | 10| Gate proj output (pre-SiLU)     | $(b, s, d_{ff})$      | $\gamma bs \cdot d_{ff}$             | Saved for SiLU backward                |
 | 11| Up proj output                  | $(b, s, d_{ff})$      | $\gamma bs \cdot d_{ff}$             | Saved for element-wise multiply        |
 | 12| Down proj input (SiLU(gate)×up) | $(b, s, d_{ff})$      | $\gamma bs \cdot d_{ff}$             | Saved for down_proj backward           |
@@ -287,7 +293,7 @@ x  = x + down_proj(silu(g) * u)           #     SAVED ×1 — down_proj's input
 
 **General formula per layer (no gradient checkpointing):**
 
-$$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + \gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}]$$
+$$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + 9\gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}]$$
 
 Where:
 - $s$ = sequence length
@@ -329,7 +335,26 @@ Where:
 > error on typical configs, more on Gemma 2-27B.
 
 > [!WARNING]
-> **Flash Attention changes this dramatically.** With Flash Attention, the attention weight matrix $(b, n_h, s, s)$ is **never materialized in HBM**. This removes the $O(s^2)$ term, making attention $O(s)$ in memory. For a batch of 4 with seq_len=2048 and 32 heads, this saves $2 \times 4 \times 32 \times 2048^2 = 1{,}073{,}741{,}824$ bytes $= 1{,}024$ MiB **per layer** — 32,768 MiB across all 32 layers without checkpointing. `fitcheck` must have two code paths: `--flash-attn` ON vs OFF.
+> **Flash Attention changes this dramatically — sometimes.** With Flash Attention the score matrix
+> $(b, n_h, s, s)$ is **never materialized in HBM**: the kernel works in tiles and recomputes them
+> during the backward pass. That removes the $O(s^2)$ term outright, making attention $O(s)$ in memory.
+>
+> **Row 9 is $9\gamma$, not $\gamma$.** Eager attention builds that tensor about nine times at the
+> compute dtype across forward and backward: forward is the raw scores, the masked copy, the FP32
+> softmax (which costs $2\gamma$) and the cast back — five; backward is grad-out, the FP32 softmax
+> backward ($2\gamma$) and grad-scores — four. This was measured rather than counted from source:
+> run the same config under eager and under a tiled kernel, difference the peaks, and what remains is
+> the matrix's true cost. On TinyLlama at $b{=}2, s{=}2048$ that came to **2,758 MiB**, where a single
+> copy predicts 512.
+>
+> **But under gradient checkpointing it often saves nothing.** The score matrix is transient inside one
+> layer's recompute, and $A_{act}$ takes the *max* of that hump and the LM-head hump. For a
+> large-vocabulary model the LM head usually wins, so deleting the matrix moves the peak by zero —
+> measured at 16 MiB out of 5,297 on SmolLM2. Flash starts paying for *memory* only once the sequence
+> is long enough for $A_{layer}$ to overtake $A_{logits}$. It buys speed either way.
+>
+> `fitcheck` therefore has two code paths, `--flash-attn` ON vs OFF — but the flag really means "is the
+> $s^2$ matrix resident or not", and any tiled kernel answers no. SPEC.md §3.8 has the kernel table.
 
 > [!IMPORTANT]
 > **Micro-batch vs. effective batch size.** The memory-relevant quantity is the **micro-batch size** (what goes through a single forward/backward pass), not the effective batch size. Gradient accumulation does **not** increase memory — it accumulates gradients in-place across micro-batches. `fitcheck` should accept both `--batch-size` (micro-batch) and `--grad-accum-steps`, but only use the micro-batch for memory estimation. The effective batch size should be displayed for informational purposes.
@@ -342,12 +367,14 @@ the input to each segment, and recompute one segment at a time during backward:
 $$A(k) = k \cdot \gamma bsh + \frac{L}{k} \cdot A_{layer}$$
 
 The strategies are just choices of $k$ — and for the worked example ($L = 32$, $\gamma bsh = 64$ MiB,
-$A_{layer} = 1{,}088$ MiB) they land nowhere near where the folklore says:
+$A_{layer} = 1{,}088$ MiB) they land nowhere near where the folklore says. **These are stack-only
+numbers**: they exclude $A_{logits}$, and they assume the textbook one tensor per checkpoint
+boundary, which measurement later revised to two (see below):
 
 | $k$ | Strategy | $A_{act}$ | Used by |
 |:---|:---|---:|:---|
 | $\sqrt{L} \approx 5.66$ | "checkpoint every $\sqrt{L}$ layers" | **6,517 MiB** | Academic papers |
-| $L = 32$ | **checkpoint every layer** | **3,136 MiB** | HuggingFace `transformers` |
+| $L = 32$ | **checkpoint every layer** | **3,136 MiB** — measured: 5,184 | HuggingFace `transformers` |
 | $\sqrt{L \cdot A_{layer}/\gamma bsh} \approx 23$ | true minimum of $A(k)$ | **2,986 MiB** | nobody, and it barely matters |
 
 > [!NOTE]
@@ -358,14 +385,32 @@ $A_{layer} = 1{,}088$ MiB) they land nowhere near where the folklore says:
 > optimal *and* it is what the framework actually does. Modelling $\sqrt{L}$ instead would over-estimate
 > the golden config by more than 2×.
 
-`fitcheck` should use the **practical default** (checkpoint every layer), which is what `model.gradient_checkpointing_enable()` does in HuggingFace Transformers. This stores only the *input* to each transformer layer ($L$ tensors of shape $(b, s, h)$) plus **one layer's worth** of full activations at a time (recomputed during backward):
+`fitcheck` uses the **practical default** (checkpoint every layer), which is what
+`model.gradient_checkpointing_enable()` does in HuggingFace Transformers.
 
-$$A_{checkpointed} = L \times \gamma bsh + A_{layer}$$
+But measurement changed what "store the input to each layer" costs. The theory above assumes one
+$(b,s,h)$ tensor survives per boundary. Non-reentrant checkpointing — `use_reentrant=False`, which is
+what `transformers` uses — keeps **two**: the layer input it saved, and the recomputed output that the
+autograd graph still references. Twenty measured runs pin the multiplier at 2; a 1 gives 10.4%
+worst-case error and a 3 gives 9.8%, against 4.8% for 2.
 
-> [!NOTE]
-> The $L \times \gamma bsh$ term is row 1 of the saved-tensor table — the layer input — stored once per layer.
-> So under checkpointing you are paying for row 1 twice for the single layer being recomputed. That
-> double-count is one tensor out of twelve, and it errs toward over-estimating, which is the safe direction.
+And the stack is not the whole story. $A_{logits}$ (Component 5b, next) sits outside it, and it does
+**not** coexist with a layer's recompute — the FP32 logits are freed as backward walks down from the
+LM head, long before it reaches a decoder layer. So the peak takes whichever hump is larger:
+
+$$A_{act} = 2L\gamma bsh + \max\left(A_{logits},\ A_{layer}\right)$$
+
+> [!IMPORTANT]
+> **Peak memory is a maximum over time, not a sum.** `torch.cuda.max_memory_allocated()` reports the
+> highest the water level ever reached, and a training step is not one moment. Two big humps —
+> the LM head plus loss during forward, and one layer's recompute during backward — happen at
+> different times, so adding them prices a peak that never occurred. Think of a room where ten people
+> arrive in the morning and ten different people arrive in the evening: you need ten chairs, not
+> twenty. Summing them is what produced a 36% error in v0.1.1. `scripts/measure.py` resets the peak
+> counter between phases to show which hump actually wins; see SPEC.md §3.8.
+
+For the golden config the stack costs $2 \times 32 \times 64 = 4{,}096$ MiB, and the max picks
+$A_{logits} = 16{,}032$ over $A_{layer} = 1{,}088$, giving $A_{act} = 20{,}128$ MiB.
 
 #### Component 5b: The logits — the term this document originally forgot
 
@@ -394,16 +439,19 @@ Two properties make this term dangerous to omit:
 It also scales with $V$, which varies far more across model families than $h$ or $L$ do —
 32,768 for Mistral, 128,256 for Llama-3, 152,064 for Qwen2.5. For a large-vocabulary model at a
 healthy batch size this is frequently the **single largest** entry in the whole budget:
-16,032 MiB of the golden config's 29,599 MiB total.
+16,032 MiB of the golden config's 30,607 MiB total — and, because $A_{act}$ takes a max, it is also
+what makes Flash Attention worthless at that shape.
 
 > [!WARNING]
-> **Calibration status.** The factor of four is the count of copies that provably exist, but it
-> has been checked against exactly one measurement (Mistral-7B-v0.3, Kaggle T4, 2026-08-31),
-> where the observed residual implied closer to 5.9 copies. Four is the conservative end, and
-> the whole estimate still runs ~6% low on that run. Training stacks that use chunked or fused
-> cross-entropy — Unsloth, Liger Kernel, `cut-cross-entropy` — deliberately avoid materialising
-> these copies and will use dramatically less. `fitcheck` models the vanilla `transformers` +
-> `peft` path only, and has no way to know which stack you are using.
+> **Calibration status: confirmed out-of-sample.** The factor of four was originally fitted against
+> a single 32,768-vocab measurement. It has since been checked on two 152k-vocab models where the
+> logits are 85–93% of $A_{act}$ — Qwen2.5-7B and Qwen2.5-1.5B — and both predict to within 0.5%.
+> Four copies is right for the vanilla path.
+>
+> The caveat that remains is the *stack*, not the number: training setups that use chunked or fused
+> cross-entropy — Unsloth, Liger Kernel, `cut-cross-entropy` — deliberately avoid materialising these
+> copies and will use dramatically less. `fitcheck` models the vanilla `transformers` + `peft` path
+> only, and has no way to know which stack you are using.
 
 
 ### Component 6: CUDA Overhead
@@ -453,7 +501,18 @@ tests/
 ├── test_activations.py
 ├── test_overhead.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
+scripts/                     # NOT installed with the package
+├── measure.py               # ground-truth harness: real GPU, real training step
+└── requirements-measure.txt # torch / peft / bitsandbytes live here, not in pyproject
 ```
+
+> [!IMPORTANT]
+> **`scripts/measure.py` is the other half of the project.** Everything in `fitcheck/` is
+> arithmetic; `measure.py` is how you find out whether the arithmetic is true. It imports
+> `fitcheck`, loads the real model on a real GPU, runs a real training step, and compares.
+> The dependency is strictly one-way — `fitcheck` never imports `torch`, because an estimate
+> must cost a few KB of `config.json` and no GPU. Read SPEC.md §3.8 before using it; the three
+> comparison tiers and the phase-resolved peaks are the parts that make a result meaningful.
 
 > [!NOTE]
 > Each memory component in `memory/` is its own module with a single clear formula. This makes it easy to test, debug, and improve each component independently. When someone files a bug saying "your activation estimate is off for Gemma 2", you go straight to `activations.py`.
@@ -549,21 +608,33 @@ $$= 16{,}384 \times 69{,}632 = 1{,}140{,}850{,}688 \text{ bytes} = 1{,}088\text{
 
 **With gradient checkpointing (checkpoint every layer):**
 
-Stored inputs for all 32 layers:
+Two hidden-state tensors survive per checkpoint boundary — the layer input, and the recomputed output
+the autograd graph still holds:
 
-$$L \times \gamma bsh = 32 \times 2 \times 4 \times 2048 \times 4096 = 2{,}147{,}483{,}648\text{ bytes} = 2{,}048\text{ MiB}$$
+$$2L \times \gamma bsh = 2 \times 32 \times 2 \times 4 \times 2048 \times 4096 = 4{,}294{,}967{,}296\text{ bytes} = 4{,}096\text{ MiB}$$
 
-Plus one layer's full activations recomputed during backward:
+Then the peak adds whichever transient hump is larger — the LM head, or one layer's recompute:
 
-$$A_{layer} = 1{,}088\text{ MiB}$$
+$$A_{layer} = 1{,}088\text{ MiB} \qquad A_{logits} = 16{,}032\text{ MiB}$$
 
-$$\text{Total activations} = 2{,}048 + 1{,}088 = \mathbf{3{,}136\text{ MiB}}$$
-
-> [!NOTE]
-> **Without Flash Attention**, the attention matrix term $\gamma bn_hs^2 = 2 \times 4 \times 32 \times 2048^2 = 1{,}073{,}741{,}824$ bytes $= 1{,}024$ MiB **per layer** would be added to $A_{layer}$, taking it to 2,112 MiB. With grad checkpointing, total activations would go from 3,136 to 4,160 MiB. **Without checkpointing it is far worse:** $32 \times 2{,}112 = 67{,}584$ MiB, against $32 \times 1{,}088 = 34{,}816$ MiB with Flash Attention. Neither fits a 4090 — which is the real lesson: at bs=4/seq=2048, checkpointing is not optional on a consumer card.
+$$A_{act} = 4{,}096 + \max(16{,}032,\ 1{,}088) = \mathbf{20{,}128\text{ MiB}}$$
 
 > [!NOTE]
-> **Activation formula accuracy note:** The exact tensors saved by autograd depend on the specific PyTorch / HuggingFace implementation (fused kernels, in-place ops, etc.). The formula above is a principled estimate derived from the standard computation graph. In practice, actual memory may differ by ±10-15%. Phase 3's calibration mode will measure real peak memory and compute a correction factor per architecture.
+> **Without Flash Attention, nothing changes here.** The eager score matrix is
+> $9\gamma bn_hs^2 = 9 \times 1{,}024 = 9{,}216$ MiB per layer, which takes $A_{layer}$ from 1,088 to
+> **10,304** MiB — still below the 16,032 MiB LM-head hump, so the `max` picks the same branch and
+> $A_{act}$ stays at 20,128. Flash Attention saves **0 MiB** at this shape. That is the 128k vocabulary
+> talking, not a bug, and it is the kind of thing you only find by taking a max instead of a sum.
+>
+> **Without checkpointing it is a different world:** $32 \times 10{,}304 + 16{,}032 = 345{,}760$ MiB
+> eager, or $32 \times 1{,}088 + 16{,}032 = 50{,}848$ MiB with Flash. Neither fits a 4090 — which is the
+> real lesson: at bs=4 / seq=2048, checkpointing is not optional on a consumer card.
+
+> [!NOTE]
+> **Accuracy of this component, measured.** Across the ten runs in `fitcheck.ipynb`, $A_{act}$ measured
+> by subtraction lands within **4.6%** of this formula (mean 0.9%). That is the term this document once
+> called "±10-15%, to be calibrated later" — it has now been calibrated, and the calibration is what
+> produced the $\max$, the $2L$ and the $9\gamma$. See SPEC.md §3.8 for how it was measured.
 
 ---
 
@@ -571,7 +642,7 @@ $$\text{Total activations} = 2{,}048 + 1{,}088 = \mathbf{3{,}136\text{ MiB}}$$
 
 Apply the formula rather than guessing a round number:
 
-$$C_{overhead} = 500 + 0.05 \times (W_{base} + A_{act}) = 500 + 0.05 \times (4{,}068.45 + 3{,}136) = \mathbf{860.22\text{ MiB}}$$
+$$C_{overhead} = 500 + 0.05 \times (W_{base} + A_{act}) = 500 + 0.05 \times (7{,}753.02 + 20{,}128) = \mathbf{1{,}894.05\text{ MiB}}$$
 
 ---
 
@@ -579,88 +650,130 @@ $$C_{overhead} = 500 + 0.05 \times (W_{base} + A_{act}) = 500 + 0.05 \times (4{,
 
 | Component | Memory (MiB) | % of Total |
 |:---|---:|---:|
-| Base model weights (NF4 + unquantized FP32) | 7,753.02 | 26.2% |
+| Base model weights (NF4 + unquantized FP32) | 7,753.02 | 25.3% |
 | LoRA adapter (FP32) | 208.00 | 0.7% |
 | Optimizer states (AdamW FP32) | 416.00 | 1.4% |
 | Gradients (FP32) | 208.00 | 0.7% |
-| Activations (grad ckpt + Flash Attn) | 19,168.00 | 64.8% |
-| &nbsp;&nbsp;of which: logits | 16,032.00 | 54.2% |
-| CUDA overhead | 1,846.05 | 6.2% |
-| **TOTAL (predicted peak)** | **29,599.07** | |
+| Activations (grad ckpt + Flash Attn) | 20,128.00 | 65.8% |
+| &nbsp;&nbsp;of which: logits | 16,032.00 | 52.4% |
+| CUDA overhead | 1,894.05 | 6.2% |
+| **TOTAL (predicted peak)** | **30,607.07** | |
 
-$$7{,}753.02 + 208 + 416 + 208 + 19{,}168 + 1{,}846.05 = \mathbf{29{,}599.07\text{ MiB}}$$
+$$7{,}753.02 + 208 + 416 + 208 + 20{,}128 + 1{,}894.05 = \mathbf{30{,}607.07\text{ MiB}}$$
 
-**RTX 4090 usable VRAM: ~23,500 MiB → ❌ DOES NOT FIT**, over by 6,099 MiB (−26%). The same
-configuration at bs=1 costs 14,504 MiB and fits. The largest component is now the logits
-term, which neither gradient checkpointing nor Flash Attention reduces — see Component 5b.
+**RTX 4090 usable VRAM: ~23,500 MiB → ❌ DOES NOT FIT**, over by 7,107 MiB (−30%). The same
+configuration at bs=1 costs 14,756 MiB and fits. The largest component is the logits term, which
+neither gradient checkpointing nor Flash Attention reduces — see Component 5b.
 
 **Max batch size — by search, not extrapolation:**
 
-The tempting move is to divide: activations are 3,136 MiB at $b=4$, so 784 MiB per batch unit, so
-$\lfloor 14{,}811 / 784 \rfloor = 18$ more. That is *close* but structurally wrong, because $C_{overhead}$ is
-itself a function of $A_{act}(b)$ — growing $b$ grows the overhead term too. Write the total as a function of
-$b$ and the coupling becomes explicit:
+Write the total as a function of $b$. Every activation term is linear in $b$, so with the `max` sitting
+on the logits branch:
 
-$$\text{total}(b) = \underbrace{4{,}692.45}_{W+S+G} + 784b + \underbrace{500 + 0.05(4{,}068.45 + 784b)}_{C_{overhead}(b)} = 5{,}395.87 + 823.2\,b$$
+$$A_{act}(b) = \underbrace{1{,}024b}_{2L\gamma sh} + \underbrace{4{,}008b}_{A_{logits}} = 5{,}032\,b$$
 
-$$5{,}395.87 + 823.2\,b \le 23{,}500 \;\Rightarrow\; b \le 21.99 \;\Rightarrow\; \boxed{b_{max} = 21}$$
+$$\text{total}(b) = \underbrace{8{,}585.02}_{W+W_{lora}+S+G} + 5{,}032b + \underbrace{500 + 0.05(7{,}753.02 + 5{,}032b)}_{C_{overhead}(b)} = 9{,}472.67 + 5{,}283.60\,b$$
+
+$$9{,}472.67 + 5{,}283.60\,b \le 23{,}500 \;\Rightarrow\; b \le 2.655 \;\Rightarrow\; \boxed{b_{max} = 2}$$
+
+Note the two slopes. Activations grow at 5,032 MiB per batch unit, but the **total** grows at
+5,283.60 — the extra 251.60 is $C_{overhead}$ following $A_{act}$ upward. Divide your headroom by the
+activation slope and you over-estimate how many batches fit, in the optimistic direction.
 
 > [!WARNING]
-> That result is $21.99$. Round it and you hand the user a config that OOMs on the first step; floor it and
-> you are correct. **Always floor.** This is also why the naïve 784 MiB/batch slope is dangerous rather than
-> merely imprecise — it is the *optimistic* direction, and optimistic errors in an OOM-avoidance tool are the
-> only kind that actually cost the user anything.
+> That result is $2.655$. Round it and you hand the user a config that OOMs on the first step; floor it
+> and you are correct. **Always floor.** Optimistic errors are the only kind that actually cost the user
+> anything in an OOM-avoidance tool.
 
-`fitcheck` finds this by **re-running the whole estimator under bisection** rather than by algebra, so the
-answer stays correct even as components are added or the overhead model changes. That is exactly the kind of
-calculation `fitcheck` automates — and exactly the kind people get wrong by hand.
+> [!NOTE]
+> **Why bisection and not this algebra.** Inside one branch of the `max` the total really is linear in
+> $b$, so a two-point extrapolation would be exact — an earlier draft of this document claimed otherwise
+> and was wrong. The reason `fitcheck` still bisects is that $\text{total}(b)$ is **piecewise** linear:
+> it has a kink wherever the `max` flips from the LM-head hump to the layer hump, which happens as $b$
+> and $s$ grow (the eager $s^2$ term flips it sooner). Extrapolating across that kink gives the wrong
+> answer. Re-running the whole estimator under bisection is correct regardless of the shape of the
+> curve, and stays correct as components are added or the overhead model changes.
 
 ---
 
 ## Validation Plan
 
-Accuracy is the make-or-break metric for `fitcheck`. If the estimates are more than ~15% off, people won't trust it. Here's how to validate:
+Accuracy is the make-or-break metric for `fitcheck`. If the estimates are more than ~15% off, people
+won't trust it. As of v0.1.2 this is no longer a plan — it has been done, and it moved the formulas.
 
-### Validation Matrix (Ship This in Your README)
+### Measured results
 
-| Model | GPU | Config | Predicted (MiB) | Actual (MiB) | Error (%) |
+Ten runs, reproducible from `fitcheck.ipynb`, all on one Tesla T4 (sm_75) in FP16 with QLoRA r=32
+[q,k,v,o], AdamW FP32 states and gradient checkpointing on. "Predicted" and "Actual" are the
+**tensors tier**: the six-component total minus $C_{overhead}$, against `max_memory_allocated()`.
+
+| Model | Config | Kernel | Predicted | Actual | Error |
 |:---|:---|:---|---:|---:|---:|
-| Llama-3.1-8B | RTX 4090 | QLoRA r=64, bs=4, seq=2048, FA2 | 29,599 | TBD | TBD |
-| Llama-3.1-8B | RTX 4090 | QLoRA r=16, bs=1, seq=4096, FA2 | TBD | TBD | TBD |
-| Mistral-7B-v0.3 | T4 16GB | QLoRA r=32, bs=2, seq=1024, no FA | 7,121 | 7,605 | **−6.4%** |
-| Qwen2.5-14B | A100-40GB | QLoRA r=64, bs=4, seq=2048, FA2 | TBD | TBD | TBD |
-| Gemma-2-9B | RTX 3090 | LoRA r=16, bs=2, seq=512, FA2 | TBD | TBD | TBD |
-| Llama-3.1-70B | A100-80GB | QLoRA r=16, bs=1, seq=2048, FA2 | TBD | TBD | TBD |
+| TinyLlama-1.1B | bs=2, seq=512 | eager | 1,834 | 1,849 | −0.8% |
+| TinyLlama-1.1B | bs=2, seq=1024 | eager | 2,778 | 2,876 | **−3.4%** |
+| TinyLlama-1.1B | bs=2, seq=2048 | eager | 6,702 | 6,655 | +0.7% |
+| TinyLlama-1.1B | bs=2, seq=512 | SDPA (no s²) | 1,834 | 1,847 | −0.7% |
+| TinyLlama-1.1B | bs=2, seq=1024 | SDPA (no s²) | 2,510 | 2,528 | −0.7% |
+| TinyLlama-1.1B | bs=2, seq=2048 | SDPA (no s²) | 3,862 | 3,897 | −0.9% |
+| SmolLM2-1.7B | bs=4, seq=1024 | eager | 5,280 | 5,297 | −0.3% |
+| SmolLM2-1.7B | bs=4, seq=1024 | SDPA (no s²) | 5,280 | 5,281 | −0.0% |
+| Qwen2.5-1.5B | bs=2, seq=1024 | eager | 6,810 | 6,831 | −0.3% |
+| Qwen2.5-1.5B | bs=2, seq=1024 | SDPA (no s²) | 6,810 | 6,823 | −0.2% |
 
-> [!TIP]
-> Fill this table by running actual training jobs with `torch.cuda.max_memory_allocated()` and comparing against `fitcheck`'s predictions. Even 5 validated rows will massively boost credibility. **Nothing builds trust faster than showing "predicted X, measured X±5%".**
+| tier | max abs error | mean abs error |
+|:---|---:|---:|
+| tensors (the five physical formulas) | **3.4%** | 0.8% |
+| $A_{act}$ measured by subtraction | 4.6% | 0.9% |
+| process (full total, what the verdict uses) | **14.7%** | 5.5% |
+| allocator | 20.2% | 9.5% |
 
-### How to Measure Ground Truth
+**Read it as: the physics is validated, $C_{overhead}$ is not.** The last three tiers differ from the
+first only by the overhead model, and that is where all the remaining error lives.
 
-```python
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import get_peft_model, LoraConfig
+### What these runs changed
 
-# ... setup model and training ...
+They were not a rubber stamp. Three things in Component 5 were wrong and the measurements found each:
 
-# After one full training step:
-peak_mib = torch.cuda.max_memory_allocated() / (1024 ** 2)
-reserved_mib = torch.cuda.max_memory_reserved() / (1024 ** 2)
-print(f"Peak allocated: {peak_mib:.0f} MiB")
-print(f"Peak reserved:  {reserved_mib:.0f} MiB")
+1. $A_{act}$ **summed** the LM-head hump and the layer recompute. They never coexist — it is a `max`.
+2. The checkpoint store was $L\gamma bsh$; it is **$2L\gamma bsh$**.
+3. The eager score matrix was billed at $\gamma$; it is **$9\gamma$**.
 
-# For detailed breakdown:
-print(torch.cuda.memory_summary())
+Worst-case error across the wider development set of twenty runs fell from **36.1% to 4.8%**.
+
+### Still unmeasured
+
+- **Any GPU other than this T4.** No Ampere or newer card, so no BF16 and no real Flash Attention 2 —
+  the flash path is validated only through SDPA's memory-efficient backend as a stand-in.
+- **The no-checkpointing branch.** $L \times A_{layer} + A_{logits}$ is derived, never measured.
+- **`--quant none`, `--quant int8`, full fine-tuning, FP32 compute.** All are code paths with no
+  ground-truth row.
+- **Sequences beyond 2048.** The $9\gamma$ coefficient multiplies an $s^2$ term, so extrapolation
+  error grows with $s$.
+
+### How to measure ground truth
+
+Do not hand-roll it — `scripts/measure.py` does this properly, and SPEC.md §3.8 explains why each part
+matters (three tiers, phase-resolved peaks, component spot-checks, the eager-vs-SDPA contrast):
+
+```bash
+python scripts/measure.py TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+    --qlora --precision fp16 --lora-r 32 --batch-size 2 --seq-len 1024 --gpu t4
 ```
 
-### Accuracy Targets
+It prints prediction vs measurement at all three tiers, a per-component spot-check, and a markdown row
+ready to paste into the README matrix. The three traps it exists to avoid:
 
-| Phase | Target Error | How |
+- comparing the full total against `max_memory_allocated()`, which cannot see the CUDA context;
+- reading the CUDA context before any kernel has run, which under-states it;
+- assuming peak memory is a sum of components rather than a maximum over time.
+
+### Accuracy targets
+
+| Phase | Target error | Status |
 |:---|:---|:---|
-| MVP (v0.1) | ±10%, **unvalidated** | Analytical formulas only — shipped with an honest banner, not with proof |
-| Validated (v0.2) | ±10% | Formulas tuned against ≥3 real measurements (SPEC §4, bullet 7) |
-| Calibrated (v1.0) | ±5% | Per-architecture correction factors from calibration mode |
+| MVP (v0.1) | ±10%, unvalidated | superseded |
+| Validated (v0.2) | ±10% against ≥3 real measurements | **met on the tensors tier (3.4%)**; the process tier is 14.7%, all of it $C_{overhead}$ |
+| Calibrated (v1.0) | ±5% | needs a fragmentation model that keys off the attention kernel, and a second GPU |
 
 ---
 
@@ -691,7 +804,8 @@ print(torch.cuda.memory_summary())
 | 5 | **Tensor storage model** | How `torch.Tensor` wraps a `Storage` object. How `.view()`, `.reshape()`, `.contiguous()` affect memory. When tensors share storage vs. allocate new memory. | Determines whether operations create new memory or alias existing memory. |
 | 6 | **Autograd graph & saved tensors** | What `ctx.save_for_backward()` does. Which tensors PyTorch saves during the forward pass and why. How `saved_tensors_hooks` can intercept this. | The forward pass saves intermediate tensors for the backward pass. This is the "activation memory" you're estimating. |
 | 7 | **Gradient checkpointing internals** | How `torch.utils.checkpoint.checkpoint()` works: discards activations during forward, recomputes them layer-by-layer during backward. Memory vs. compute tradeoff. The **practical default** is checkpointing every layer. | You need to model the memory savings: from "all layers' activations" to "all layers' inputs + one layer's activations at a time." |
-| 8 | **`torch.cuda.memory_snapshot()`** | How to capture and read memory snapshots. What the output format looks like. | This is your **ground truth** for validating your estimates. You'll compare predicted vs. actual using this. |
+| 8 | **The two memory counters, and what neither means** | `max_memory_allocated()` = bytes in live tensors. `max_memory_reserved()` = bytes the caching allocator holds from the driver. Neither is “VRAM used by the process” — that also includes the CUDA context, which no PyTorch counter sees. `memory_snapshot()` for the detail. | This is your **ground truth**, and comparing the wrong number against the wrong prediction makes a correct formula look broken. `fitcheck` compares at three tiers for exactly this reason — SPEC.md §3.8. |
+| 8b | **Peak memory is a maximum over time** | `max_memory_allocated()` is the highest the water level ever reached during a step, not a total of everything allocated. Tensors that exist at different moments never add up. | The single biggest modelling trap. Summing the LM-head hump and the layer-recompute hump — which never coexist — is what produced a 36% error in v0.1.1, and fixing it to a `max` is most of the fix. |
 | 9 | **Mixed precision & AMP** | How `torch.amp.autocast` works. Which ops run in FP16/BF16 vs. FP32. The "master weights" concept. | Affects which precision each tensor is stored in, which directly changes your memory calculation. |
 
 ---
@@ -739,6 +853,8 @@ print(torch.cuda.memory_summary())
 | 25 | **Micro-batch vs. effective batch** | The memory-relevant quantity is the **micro-batch size** (what goes through a single forward/backward), not the effective batch size. | Your activation formula uses micro-batch size, not effective batch size. Getting this wrong would give bad estimates. |
 | 26 | **`torch.compile` memory overhead** | Compilation itself uses memory (for tracing, guards, code caching). Compiled kernels may fuse operations, changing which intermediates are saved. | Stretch goal for v2: estimate the memory delta of `torch.compile`. |
 | 27 | **Activation offloading** | Some frameworks can offload activations to CPU during forward and reload during backward. | Advisor mode: suggest this as a memory-saving strategy. |
+| 28 | **Attention kernels: eager vs SDPA vs FlashAttention** | Same math, different code. `eager` builds the $(b,n_h,s,s)$ score matrix in HBM; `F.scaled_dot_product_attention` picks a backend (`MATH` builds it, `EFFICIENT_ATTENTION` and `FLASH_ATTENTION` do not); FlashAttention-2 is a separate library needing sm_80+. Tiled kernels recompute tiles in backward instead of storing the matrix. | `--flash-attn` really means “is the $s^2$ matrix resident or not”, and any tiled kernel answers no. It is also how the $9\gamma$ coefficient was measured — run the same config under both kernels and difference the peaks. |
+| 29 | **GQA and `repeat_kv`** | Under GQA several query heads share one K/V head. The math still needs K and V at every query head, so they are either copied (`repeat_kv`) or broadcast (`enable_gqa=True`, PyTorch 2.5+). Not every kernel supports the broadcast. | It shrinks rows 7 and 8 of the saved-tensor table, and it is why the SDPA control runs needed a shim before grouped-query models would run at all. |
 
 ---
 
@@ -803,9 +919,16 @@ Where:
 - $\gamma$ = bytes per activation element, from the **compute** precision (2 for BF16/FP16, 4 for FP32)
 - $A_{act}$ = activation memory — **this is the hard one:**
 
-$$A_{act} = \begin{cases} L \times A_{layer} & \text{no gradient checkpointing} \\ L \times \gamma bsh + A_{layer} & \text{gradient checkpointing (every layer)} \end{cases}$$
+$$A_{act} = \begin{cases} L \times A_{layer} + A_{logits} & \text{no gradient checkpointing} \\ 2L\gamma bsh + \max(A_{logits},\ A_{layer}) & \text{gradient checkpointing (every layer)} \end{cases}$$
 
-$$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + \gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}]$$
+$$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + 9\gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}] \qquad A_{logits} = 16\, bsV$$
+
+> [!IMPORTANT]
+> **Under checkpointing that is a `max`, not a sum, and the store is $2L$, not $L$.** The LM-head hump
+> and one layer's recompute are both transient and never overlap, so pricing both prices a peak that
+> never happened. Non-reentrant checkpointing keeps two $(b,s,h)$ tensors per boundary, not one. And
+> eager attention builds the score matrix about nine times, not once. All three were found by
+> measurement, and together they took worst-case error from 36.1% to 4.8% — see the Validation Plan.
 
 - $C_{overhead}$ = CUDA context + fragmentation + workspace buffers $\approx 500\text{ MiB} + 5\%$
 

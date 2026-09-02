@@ -11,12 +11,13 @@ tool runs the same on a laptop as on the machine you're sizing for. You get the 
 per-component breakdown, a fits/doesn't-fit verdict against a specific card, and the largest
 micro-batch that still fits.
 
-> **Accuracy status (v0.1.1, 2026-08-31):** one real measurement exists, and it moved the
-> formulas. v0.1.0 under-predicted a Mistral-7B QLoRA run by **35.6%**; four causes were found
-> and corrected, bringing that same run to **−6.4%**. The correction is calibrated against a
-> **single** measurement on a single GPU, so the estimates are *better grounded* than v0.1.0,
-> not yet *validated*. The target is still ±10%. See the validation matrix below for what is
-> and is not measured.
+> **Accuracy status (v0.1.2, 2026-09-02): measured, and the measurements moved the formulas.**
+> Ten real training runs on a Tesla T4 — three models, three sequence lengths, both attention
+> kernels — put the five physical components within **3.4%** of measured peak (mean 0.8%). The full
+> total, which includes the CUDA-overhead heuristic and is what the fits/doesn't-fit verdict uses, is
+> within **14.7%** (mean 5.5%). All of the remaining error is in that one heuristic. Getting here
+> changed three things in the activation formula and moved the reference numbers — see
+> [Validation](#validation) for the table and [what is still unmeasured](#what-is-not-measured).
 
 ---
 
@@ -26,7 +27,12 @@ micro-batch that still fits.
 fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --optimizer adamw --flash-attn --gpu 4090
 ```
 
-![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090, 8,689 MiB predicted peak, fits with 63% headroom](docs/images/mode-a-output.png)
+![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090](docs/images/mode-a-output.png)
+
+> [!NOTE]
+> The screenshots on this page were captured before the v0.1.2 activation fix and show the
+> older totals. The layout is current; the numbers in them are not. The authoritative figures
+> are in [Validation](#validation) and in `docs/SPEC.md`. Regenerating them is an open task.
 
 Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
 `fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
@@ -48,13 +54,14 @@ prompt stick, so moving one dial doesn't mean retyping the whole line.
 
 ![fitcheck REPL help: the model, gpu, memory, explain, optimize, compare, show, reset, gpus, help and exit commands](docs/images/mode-b-help.png)
 
-`explain` names the largest component and prices every toggle by re-running the whole estimate
-with one flag flipped. The `+1,075 MiB` for turning Flash Attention off is 1,024 MiB of
-attention matrices plus the 5% that CUDA overhead picks up on top — not a hand-summed component
-delta. The last line is the one that matters most: gradient accumulation costs **0 MiB**,
-because gradients accumulate in place.
+`explain` names the largest component and prices every toggle by re-running the whole estimate with
+one flag flipped — never by hand-summing component deltas, so the 5% that CUDA overhead picks up is
+included automatically. Two lines are load-bearing. Gradient accumulation costs **0 MiB**, because
+gradients accumulate in place. And for this config, turning Flash Attention off also costs **0 MiB**:
+under checkpointing the peak is the *larger* of the LM-head hump and one layer's recompute, and with a
+128k vocabulary the LM head wins either way. A tool that promised a saving there would be wrong.
 
-![fitcheck REPL explain output: base model weights named as the largest component at 4,068 MiB, followed by the cost of flipping each flag](docs/images/mode-b-explain.png)
+![fitcheck REPL explain output: the largest component named, followed by the cost of flipping each flag](docs/images/mode-b-explain.png)
 
 `compare` puts the same config on several cards, and leads with the point — the peak is
 identical everywhere, only the ceiling moves, so the max micro-batch column is the interesting
@@ -178,7 +185,7 @@ attention, `torch.compile`, and multi-GPU sharding (FSDP / DeepSpeed ZeRO). See
 
 | | needs a GPU? | component breakdown? | LoRA / QLoRA training? | empirically validated? |
 |:---|:---|:---|:---|:---|
-| **fitcheck** | no | yes — all 6 | yes, GQA-aware | **in progress** (see below) |
+| **fitcheck** | no | yes — all 6 | yes, GQA-aware | **yes — 10 measured runs** (see below) |
 | [`accelerate estimate-memory`](https://huggingface.co/docs/accelerate/main/en/usage_guides/model_size_estimator) | no | weights + a coarse training multiplier | no | not published |
 | [HF Model Memory Usage Space](https://huggingface.co/spaces/hf-accelerate/model-memory-usage) | no | same, in a web UI | no | not published |
 | [llm-calc](https://github.com/JimJafar/llm-calc) | no | inference sizing only | no | not published |
@@ -189,35 +196,111 @@ The gaps `fitcheck` fills are LoRA/QLoRA-native accounting (adapter memory, opti
 sized to trainable params only, NF4 scale overhead), GQA-aware dimensions for `k_proj`/`v_proj`
 and the K/V activations, and a CLI that exits nonzero so CI can gate on it.
 
-The honest differentiator — measured predicted-vs-actual numbers — **does not exist yet**. Until
-the matrix below has rows, `fitcheck` is a better-derived estimator than the alternatives, not a
-proven one.
+The honest differentiator is the measured predicted-vs-actual table below. None of the alternatives
+publish one. That is not a claim that they are wrong — it is a claim that nobody can tell, including
+their authors. `fitcheck`'s numbers have been checked against real training runs, the checks found
+three real bugs, and the gaps that remain are listed rather than hidden.
 
-## Validation matrix
+## Validation
 
-Measured with `scripts/measure.py`: one full training step, peak read from
-`torch.cuda.max_memory_allocated()`. Predicted values are the six-component total **minus
-`C_overhead`**, because the PyTorch allocator counters can see neither the CUDA context nor
-fragmentation — comparing against the full total would flatter or damn the tool for the wrong
-reason.
+Ten real training runs, all reproducible from [`fitcheck.ipynb`](fitcheck.ipynb) with
+[`scripts/measure.py`](scripts/measure.py). One Tesla T4 (sm_75), FP16 compute, QLoRA r=32
+[q,k,v,o], AdamW with FP32 states, gradient checkpointing on. Every run loads the real model,
+applies real LoRA adapters, and runs real training steps.
 
-| Model | GPU | Config | Predicted | Actual | Error |
-|:---|:---|:---|---:|---:|---:|
-| Mistral-7B-v0.3 | Tesla T4 | QLoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, ckpt, no FA | 7,121 | 7,605 | **−6.4%** |
+### What "error" means here
 
-**One row is not a validation matrix.** That single measurement is what the current formulas
-are fitted to, so it is closer to a calibration point than to independent evidence. Two things
-are still unmeasured and both matter:
+PyTorch has two memory counters and neither of them is "VRAM used". Comparing the wrong pair makes a
+correct formula look broken, so the harness compares three times, like with like:
 
-- **A second vocabulary size.** The largest correction — four FP32 copies of the `(b, s, V)`
-  logits tensor — scales with vocabulary. It was fitted on a 32,768-token vocabulary and is
-  currently extrapolated to models with four times that.
-- **A second GPU.** The CUDA context measured 105 MiB on this T4 against the 500 MiB constant
-  fitcheck assumes, and nothing else has been checked.
+| tier | predicted | measured | what it grades |
+|:---|:---|:---|:---|
+| **tensors** | the six components **minus** `C_overhead` | `max_memory_allocated()` | the five physical formulas |
+| **process** | the full `fitcheck` total | `max_memory_reserved()` + CUDA context | what you actually see, and what the verdict uses |
 
-Wanted next: Qwen2.5-7B (152k vocab — the direct test of the logits term), and anything on an
-Ampere or newer card. If you have a GPU, running that harness is the highest-value contribution
-to this repo right now.
+Both are reported below, because showing only the flattering one would be dishonest.
+
+### Results
+
+| Model | Config | Attention | Predicted | Measured | Tensors err | Process err |
+|:---|:---|:---|---:|---:|---:|---:|
+| TinyLlama-1.1B | bs=2, seq=512 | eager | 1,834 | 1,849 | −0.8% | +9.4% |
+| TinyLlama-1.1B | bs=2, seq=1024 | eager | 2,778 | 2,876 | **−3.4%** | −7.2% |
+| TinyLlama-1.1B | bs=2, seq=2048 | eager | 6,702 | 6,655 | +0.7% | −3.2% |
+| TinyLlama-1.1B | bs=2, seq=512 | SDPA (no s²) | 1,834 | 1,847 | −0.7% | +6.7% |
+| TinyLlama-1.1B | bs=2, seq=1024 | SDPA (no s²) | 2,510 | 2,528 | −0.7% | +3.1% |
+| TinyLlama-1.1B | bs=2, seq=2048 | SDPA (no s²) | 3,862 | 3,897 | −0.9% | −4.9% |
+| SmolLM2-1.7B | bs=4, seq=1024 | eager | 5,280 | 5,297 | −0.3% | **−14.7%** |
+| SmolLM2-1.7B | bs=4, seq=1024 | SDPA (no s²) | 5,280 | 5,281 | −0.0% | −0.2% |
+| Qwen2.5-1.5B | bs=2, seq=1024 | eager | 6,810 | 6,831 | −0.3% | +1.7% |
+| Qwen2.5-1.5B | bs=2, seq=1024 | SDPA (no s²) | 6,810 | 6,823 | −0.2% | +3.7% |
+
+Predicted and Measured are MiB on the tensors tier.
+
+| tier | max abs error | mean abs error |
+|:---|---:|---:|
+| **tensors** — the five physical formulas | **3.4%** | 0.8% |
+| `A_act` alone, measured by subtraction | 4.6% | 0.9% |
+| **process** — the full total | **14.7%** | 5.5% |
+
+**How to read this.** The physical formulas are right to a few percent. `C_overhead` is not — the
+process tier differs from the tensors tier only by that one heuristic, and every bit of the extra
+error is there. Its fragmentation model assumes a flat 5%; measured fragmentation ran from 6% to 32%,
+and is worst under eager attention because transient score matrices churn the allocator pool. That is
+the next thing to fix.
+
+Errors are signed as `(predicted − measured) / measured`, so a **negative** number means fitcheck
+predicted **less** than reality — the unsafe direction.
+
+### What these runs changed
+
+They were not a rubber stamp. Three things in the activation formula were wrong, and each was found
+by measurement rather than by re-reading the derivation:
+
+1. **`A_act` summed the LM-head hump and the layer recompute.** They never coexist — the FP32 logits
+   are freed before the backward pass reaches a decoder layer — so the peak is a `max`, not a sum.
+2. **The checkpoint store was `L·γbsh`.** Non-reentrant checkpointing keeps two hidden-state tensors
+   per layer, not one, so it is `2L·γbsh`.
+3. **The eager attention score matrix was billed once.** It is materialized about nine times across
+   forward and backward, including two FP32 softmax copies — `9γ`, not `γ`.
+
+Across the wider development set of twenty runs, worst-case error fell from **36.1% to 4.8%**.
+
+The third one was found by running the same config twice, changing only the attention kernel: the
+difference between the two peaks *is* the cost of the score matrix. On a T4 that meant using SDPA's
+memory-efficient backend, which — like Flash Attention — never builds the matrix, but unlike Flash
+Attention runs on pre-Ampere hardware.
+
+### A result worth knowing
+
+**Flash Attention often saves no memory at all under gradient checkpointing.** The score matrix is
+transient inside one layer's recompute, and `A_act` takes the max of that against the LM-head hump.
+For a large-vocabulary model the LM head wins, so removing the matrix changes the peak by nothing —
+measured at 16 MiB out of 5,297 on SmolLM2, and exactly 0 MiB for the Llama-3.1-8B reference config.
+Flash still buys speed, and it starts buying memory once the sequence is long enough for the layer
+hump to overtake the LM head.
+
+### What is not measured
+
+Be as clear about the gaps as about the results:
+
+- **Any GPU other than this T4.** No Ampere or newer card, so no BF16 and no real FlashAttention-2 —
+  the flash code path is validated only through SDPA's memory-efficient backend as a stand-in.
+- **Gradient checkpointing off.** `L × A_layer + A_logits` is derived, never measured.
+- **`--quant none`, `--quant int8`, full fine-tuning, FP32 compute.** Code paths with no measured row.
+- **Sequences beyond 2048**, where the `9γ` coefficient multiplies an `s²` term.
+- **The T4 entry in `gpu_db.py` is wrong** and wrong in the unsafe direction: it claims 15,360 MiB
+  usable of 16,384, but the card reports 14,912 MiB total. Vendor GB was treated as GiB. Every ECC
+  datacenter entry needs the same audit.
+
+Reproducing any of this needs one command:
+
+```bash
+python scripts/measure.py TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+    --qlora --precision fp16 --lora-r 32 --batch-size 2 --seq-len 1024 --gpu t4
+```
+
+`docs/SPEC.md` §3.8 explains what the harness does and why each part of it matters.
 
 ---
 
@@ -231,11 +314,25 @@ params only — 8 bytes/param for AdamW, whose states stay FP32 even when you tr
 gradients, activations, and CUDA overhead. `estimator.py` orchestrates the six and returns a
 `MemoryReport`.
 
-Activations are the hard term and the one worth reading about: `A_layer` sums the twelve tensors
-autograd saves per decoder layer, Flash Attention deletes the `O(s²)` softmax matrix outright,
-and gradient checkpointing swaps `L × A_layer` for `L × γbsh + A_layer`. `max_batch_size` is
-found by bisecting the whole estimator and flooring, never by extrapolating from one point —
-CUDA overhead is itself a function of activation memory, so the slope isn't constant.
+Activations are the hard term and the one worth reading about. `A_layer` sums the twelve tensors
+autograd saves per decoder layer, plus the `(b, n_h, s, s)` attention score matrix when Flash
+Attention is off — billed at **9γ**, because eager attention materializes it about nine times across
+forward and backward. `A_logits` is four FP32 copies of the `(b, s, V)` tensor, and for a
+large-vocabulary model it is usually the single biggest line in the whole budget.
+
+Under gradient checkpointing the peak is **not** a sum of those:
+
+```
+A_act = 2L·γ·b·s·h  +  max(A_logits, A_layer)
+```
+
+Only the checkpoints are resident for the whole backward pass. The LM-head hump and one layer's
+recompute are both transient and never overlap, so the peak takes whichever is larger — adding them
+prices a moment that never happens. This is measured, not assumed, and getting it wrong is what made
+v0.1.1 under-predict by up to 36%.
+
+`max_batch_size` is found by bisecting the whole estimator and flooring, never by extrapolating from
+one point: `total(b)` is piecewise linear, with a kink wherever that `max` flips branches.
 
 See [SPEC.md](docs/SPEC.md) for the full memory model, and
 [Blueprint.md](docs/Blueprint.md) for the derivations.
@@ -250,7 +347,7 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 233
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 252
   offline tests, with 100% line coverage on all six `memory/` modules; ≥80% there is the
   floor. The `-m "not network"` filter is not optional: it skips the one test that fetches the
   gated `meta-llama/Llama-3.1-8B` for real, which fails without an `HF_TOKEN`. The offline
@@ -265,7 +362,11 @@ The bar for a merge:
 There's no `CONTRIBUTING.md` yet — one should be added, and it should start by absorbing this
 section.
 
-The most useful thing you can contribute right now is a measured row for the validation matrix.
+The most useful thing you can contribute right now is **a measured row on hardware that is not a
+Tesla T4**. Every number in the validation table comes from one card, which means BF16 and real
+FlashAttention-2 (both need sm_80 or newer) have never been exercised, and the 500 MiB CUDA-context
+constant has been checked exactly once. If you have an Ampere or newer GPU, one run of
+`scripts/measure.py` is worth more to this project than any feature.
 
 ---
 

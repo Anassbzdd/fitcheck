@@ -6,16 +6,7 @@ from fitcheck.utils import bytes_to_mib, precision_to_bytes
 _LOGITS_COPIES = 4
 _LOGITS_BYTES = 4.0
 
-# Two (b, s, h) tensors survive per checkpoint boundary, not one: non-reentrant
-# checkpointing keeps the layer input AND the recomputed output. Measured on a T4
-# across 20 runs -- a multiplier of 1 gives 10.4% worst-case error and 3 gives 9.8%,
-# against 4.8% for 2. See docs/SPEC.md, Component 5.
 _CHECKPOINT_TENSORS_PER_LAYER = 2
-
-# Eager attention materializes the (b, n_h, s, s) score matrix about nine times at
-# the compute dtype: forward is scores, masked scores, the FP32 softmax (2 gamma)
-# and the cast back = 5; backward is grad-out, the FP32 softmax backward (2 gamma)
-# and grad-scores = 4. Flash Attention removes all of it.
 _EAGER_ATTENTION_COPIES = 9
 
 

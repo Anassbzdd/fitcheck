@@ -323,6 +323,16 @@ Covers: CUDA context (~300-800 MiB), cuDNN/cuBLAS workspace, PyTorch caching all
 > whose entire job is avoiding OOM, a false "fits" is far more costly to the user than a false "doesn't fit".
 > Do not "fix" this by removing one of them.
 
+> **Measured status: this is the least accurate component, by a wide margin.** Across the ten runs in
+> §3.8 the tensors tier (which excludes $C_{overhead}$) lands within 3.4%, while the allocator and
+> process tiers — identical except that they include it — reach 20.2% and 14.7%. All of the remaining
+> error is here. The specific failure is the 5% fragmentation fraction: measured
+> `reserved - allocated` ran from 6% to 32% of the total, and it is consistently larger under eager
+> attention, because the transient score matrices churn the allocator pool. The 500 MiB context
+> constant is also generous — the T4 measured 141 MiB at peak. The two errors partly cancel, which is
+> why the process tier scores better than the allocator tier. A fragmentation model that keys off the
+> attention kernel is the obvious next improvement; it is not in the code yet.
+
 **Implementation:** `memory/overhead.py` — function `estimate_overhead(weight_memory, activation_memory)`.
 
 ---
@@ -361,7 +371,14 @@ tests/
 ├── test_activations.py
 ├── test_overhead.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
+scripts/                     # NOT part of the installed package
+├── measure.py               # ground-truth harness (§3.8) — imports torch/peft/bitsandbytes
+└── requirements-measure.txt # its deps, deliberately separate from pyproject.toml
 ```
+
+> **The dependency runs one way.** `scripts/measure.py` imports `fitcheck`; `fitcheck` never imports
+> `torch`, `peft` or `bitsandbytes` — not lazily, not inside a `try`. An estimate must cost a few KB
+> of `config.json` and no GPU, and that is the constraint the whole product rests on.
 
 **Data flow:**
 
@@ -502,6 +519,15 @@ The database ships 22 entries. `gpu_db.py` is the authority; this is the current
 `h100` and `h100-80` are intentional aliases for the same card — users reach for both spellings.
 `--list-gpus` prints this table at runtime, and `--vram-mib N` synthesizes a `GpuSpec` for anything unlisted
 (usable defaults to 95% of the value given).
+
+> [!WARNING]
+> **The T4 entry is known to be wrong, and wrong in the dangerous direction.** `gpu_db.py` lists the
+> Tesla T4 as `vram_mib=16_384, usable_mib=15_360`, but the card in every measurement reports
+> **14,912 MiB total** to `torch.cuda.get_device_properties()` — so the *usable* figure exceeds the
+> card's entire capacity by 448 MiB. The cause is treating a vendor “16 GB” as 16 GiB; a T4 is 16 GB
+> = 15,258 MiB, and less again with ECC on. This is exactly the MiB/MB confusion the units rule at the
+> end of this document warns about, and it can produce a false “fits”. Every ECC datacenter entry
+> (T4, V100, A100, H100, H200, B200) needs the same audit before it is trusted.
 
 **Usable vs. advertised:** Usable ≈ advertised × 0.91–0.97 (CUDA context, driver overhead, display if desktop
 GPU). This is a rough per-card allowance, not a fixed formula — older/consumer cards (T4, V100, L4, RTX
@@ -720,11 +746,234 @@ the ladder is exhausted it names the smallest card in the database that would ho
 | **FSDP / DeepSpeed ZeRO** | Not supported. Memory is split across GPUs — requires sharding-aware formulas. | ❌ v0.4 |
 | **`torch.compile`** | Changes which tensors are saved (kernel fusion). Not modeled. | ❌ v0.4 |
 | **Multi-GPU (tensor parallel)** | Not supported. Single-GPU estimation only. | ❌ v0.4 |
-| **Very long sequences** ($s > 8192$) | Flash Attention path is correct. Non-flash path may over-estimate (tiling in practice). | ⚠️ Known |
+| **Very long sequences** ($s > 8192$) | The $9\gamma$ eager coefficient is measured at $s \le 2048$ only. It is the term that grows as $s^2$, so extrapolation error grows with it. | ⚠️ Known |
 | **Gated linear units** (GLU variants: SiLU, GELU) | Treated uniformly — all save same intermediate shapes. | ✅ MVP |
 | **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
 | **Offline mode** | If `config.json` is cached locally, works without internet. | ✅ MVP |
+| **`C_overhead` fragmentation model** | Fixed 5% of $(W_{base}+A_{act})$. Measured fragmentation ranged 6%–32% and is larger under eager attention. This is where all the residual error sits (§3.8, Component 6). | ⚠️ Known |
+| **T4 / ECC entries in `gpu_db`** | `usable_mib` for the T4 exceeds the card's real capacity (15,360 vs a measured 14,912). Vendor GB treated as GiB. Can cause a false “fits”. | ❌ Bug |
+| **No-checkpointing branch** | `L × A_layer + A_logits` is derived, never measured — every ground-truth run so far has checkpointing on. | ⚠️ Unmeasured |
+| **Non-T4 hardware, BF16, real Flash Attention** | All twenty measurements are one Tesla T4 (sm_75) in FP16. BF16 and FA2 need sm_80+; the flash path is validated only via SDPA's memory-efficient backend as a stand-in. | ⚠️ Unmeasured |
 | **Unknown GPU** | Error message listing available GPUs. Flag to pass custom VRAM: `--vram-mib 24000`. | ✅ MVP |
+
+---
+
+### 3.8 — Ground Truth: how the numbers are checked (`scripts/measure.py`)
+
+Everything above is arithmetic. This section is how we find out whether the arithmetic is *true*.
+It is the part of the project that turned a plausible formula into a measured one, so it belongs in
+the spec even though it ships no user-facing feature.
+
+#### Why the harness lives outside the package
+
+`scripts/measure.py` imports `torch`, `peft`, `transformers` and `bitsandbytes`. The `fitcheck`
+package must never import any of them — that is the hard constraint the whole product rests on (an
+estimate costs a few KB of `config.json` and no GPU). So the dependency runs **one way only**:
+
+```
+scripts/measure.py  ──imports──>  fitcheck        ✅
+fitcheck            ──imports──>  torch           ❌ never
+```
+
+The harness is not a runtime dependency and is not installed by `pip install fitcheck-llm`. It runs
+on a machine that *has* a GPU, and it prints a markdown row you paste into the README matrix.
+
+#### What one run does
+
+```bash
+python scripts/measure.py <model_id> --qlora --precision fp16 --lora-r 32 \
+       --batch-size 2 --seq-len 1024 --gpu t4
+```
+
+1. Ask `fitcheck` for a prediction (pure arithmetic, no GPU).
+2. Load the real model with the real quantization config, apply real LoRA adapters.
+3. Run `--warmup-steps` full training steps. **Warmup must be ≥ 1**: AdamW allocates its
+   `exp_avg` / `exp_avg_sq` buffers lazily on the first `.step()`, so a zero-warmup peak would miss
+   $S_{optim}$ entirely.
+4. Reset the peak counters, run `--measure-steps` more steps, read the peaks.
+5. Run one extra *instrumented* step that resets the counter between phases.
+6. Print prediction vs measurement at three tiers, plus per-component spot-checks.
+
+Step 5 happens **after** the headline peaks are read, so adding the instrumentation did not change
+any number the harness had already reported.
+
+#### The three tiers — and why comparing the wrong one is meaningless
+
+PyTorch exposes two memory counters, and neither of them is "how much VRAM the process uses". Getting
+this wrong makes a correct formula look broken and a broken one look correct.
+
+| counter | what it counts | what it misses |
+|:---|:---|:---|
+| `max_memory_allocated()` | bytes in live tensors | the allocator's spare pool, the CUDA context |
+| `max_memory_reserved()` | bytes the caching allocator holds from the driver | the CUDA context |
+| `nvidia-smi` | everything the process holds | — |
+
+So the harness compares like with like, three times:
+
+| tier | predicted side | measured side | what it tests |
+|:---|:---|:---|:---|
+| **tensors** | six-component total **minus** $C_{overhead}$ | `max_memory_allocated()` | the five *physical* formulas |
+| **allocator** | total minus the 500 MiB context constant | `max_memory_reserved()` | the formulas + the fragmentation model |
+| **process** | the full `fitcheck` total | `max_memory_reserved()` + CUDA context | what a user actually sees |
+
+The **tensors** tier is the one that grades the physics: it is deterministic, and it excludes
+$C_{overhead}$, which is a heuristic rather than a derivation. The **process** tier is the one that
+grades the *product*, because the fits / doesn't-fit verdict is computed from the full total. A
+validation table that shows only the tensors tier is technically true and quietly flattering; publish
+both.
+
+#### Peak by phase — peak memory is a **max over time**, not a sum
+
+This is the single most important idea in the whole project, and getting it wrong is what produced a
+36% error in v0.1.1.
+
+`max_memory_allocated()` is the highest the water level ever reached. A training step is not one
+moment — memory rises and falls:
+
+```
+memory
+  │              ╱╲      ← hump B: backward, one layer recomputed
+  │      ╱╲     ╱  ╲        (holds the s² score matrix under eager attention)
+  │     ╱  ╲   ╱    ╲
+  │    ╱    ╲ ╱      ╲
+  │   ╱ hump A        ╲
+  │  ╱  logits + loss  ╲
+  └────────────────────────► time
+     forward        backward      optimizer step
+```
+
+Hump A and hump B never exist at the same time: the FP32 logits are freed as the backward pass moves
+down from the LM head, long before it reaches a decoder layer's recompute. **Adding them over-counts a
+peak that never happened.** Think of a room where ten people arrive in the morning and ten different
+people arrive in the evening — you need ten chairs, not twenty.
+
+That is why $A_{act}$ under checkpointing is `resident + max(A_logits, A_layer)` and not a sum
+(Component 5). The harness proves it by resetting the peak counter between forward, backward and
+optimizer step, and printing all three:
+
+```
+  PEAK BY PHASE  (which part of the step actually is the peak)
+    forward   (logits + loss)               4,081 MiB
+    backward  (recompute + attn)            6,655 MiB
+    optimizer step                          1,793 MiB
+```
+
+Across every measured run the peak is in the **backward** phase — never the forward, never the
+optimizer step. But *which hump dominates inside the backward* changes with shape, and that is
+exactly the behaviour a `max()` reproduces and a sum cannot.
+
+#### Component spot-checks — measuring $A_{act}$ instead of inferring it
+
+Four of the six components can be observed directly, so the harness does not have to guess which one
+is wrong:
+
+| component | measured as |
+|:---|:---|
+| $W_{base} + W_{lora}$ | `memory_allocated()` right after the model is built |
+| $S_{optim}$ | sum over `optimizer.state` tensors (also reports their dtype) |
+| $G_{grad}$ | sum over `p.grad` after backward, before `zero_grad` |
+| $A_{act}$ | `peak allocated − after load − S_optim − G_grad` |
+
+The last line is the important one. Activations cannot be read from a counter, but everything *else*
+in the peak can, so whatever is left over is the activation memory. This turns "the total is 12% off"
+into "the activation term is 16% off and the other four are exact", which is the difference between
+guessing and debugging.
+
+The harness also prints a resident-weight breakdown (NF4-packed bytes, quantization scales,
+unquantized FP32 bytes). That is what confirmed the $P_{skip}$ rule in Component 1: embeddings and the
+LM head really are held in FP32, and the number matches $2Vh \times 4$ to the MiB.
+
+#### Attention kernels — and how to measure the $s^2$ term
+
+"Attention" is the math; a **kernel** is the code that runs it. Same result, very different memory.
+
+| kernel | how it works | builds the $(b, n_h, s, s)$ matrix? |
+|:---|:---|:---|
+| `eager` | plain PyTorch ops, one at a time | **yes** — about nine times over (Component 5) |
+| `sdpa` → `MATH` | SDPA's fallback backend | **yes** |
+| `sdpa` → `EFFICIENT_ATTENTION` | tiled, running softmax | no |
+| `sdpa` → `FLASH_ATTENTION` | Flash Attention 2, tiled | no |
+| `flash_attention_2` | the standalone library | no |
+
+`fitcheck` does not really have a "Flash Attention" flag; it has an **"is the $s^2$ matrix resident or
+not"** flag. Flash is simply the best-known way of answering no. Any tiled kernel — including SDPA's
+memory-efficient backend — has the same memory profile, because all of them recompute tiles in the
+backward pass instead of storing the matrix.
+
+That equivalence is what makes the $s^2$ term measurable **by difference**:
+
+```
+eager peak  −  tiled-kernel peak  =  the true cost of the score matrix
+```
+
+Run the same config twice, change only the kernel, and everything else — weights, optimizer states,
+gradients, logits, checkpoints — cancels. It is a controlled A/B test, and it is how the $9\gamma$
+coefficient stopped being a guess. Measured on TinyLlama at $b{=}2$:
+
+| seq | eager $A_{act}$ | tiled $A_{act}$ | difference = real matrix cost | $\gamma bn_hs^2$ predicts |
+|---:|---:|---:|---:|---:|
+| 512 | 672 | 670 | **2 MiB** | 32 |
+| 1024 | 1,699 | 1,351 | **348 MiB** | 128 |
+| 2048 | 5,478 | 2,720 | **2,758 MiB** | 512 |
+
+At 512 the matrix is effectively free — hump A wins the `max` and the matrix is invisible. At 2048 it
+costs 5.4× what a single copy would. One coefficient cannot fit both, which is what proved the
+*structure* was wrong and not just the number.
+
+**Why SDPA and not Flash Attention 2.** Flash Attention 2 requires **sm_80** (Ampere: RTX 30-series,
+A100 and newer). The Tesla T4 every measurement was taken on is **sm_75** (Turing). SDPA's
+memory-efficient backend runs on Turing and has the same memory behaviour, so it stands in for flash
+on hardware that cannot run flash. `--flash-attn --attn-impl sdpa` therefore means *predict as though
+Flash Attention were on, and measure with a kernel that genuinely has no score matrix*.
+
+The backend is **pinned**, not requested. Plain `sdpa` is free to fall back to `MATH`, which does build
+the matrix, and that would silently void the comparison — so the harness forces
+`EFFICIENT_ATTENTION` and fails loudly if it is unavailable. It prints which backend was used; a run
+that does not say `EFFICIENT_ATTENTION` is not a valid control.
+
+#### The GQA shim — why grouped-query models needed extra work
+
+Under **MHA**, every query head owns a K and a V head ($n_{kv} = n_h$). Under **GQA**, several query
+heads share one K/V head ($n_{kv} < n_h$) — that is what shrinks rows 7 and 8 of the saved-tensor
+table. But the attention math still needs K and V at *every* query position, so someone must widen
+them. There are two ways:
+
+- **copy** — `repeat_kv` duplicates 4 heads into 32. Costs memory; works everywhere.
+- **broadcast** — PyTorch 2.5+ accepts `enable_gqa=True` and re-reads the narrow tensor. Cheaper.
+
+When no attention mask is passed, `transformers` chooses broadcast. The memory-efficient backend does
+not support it — it requires Q, K and V to have matching head counts — so every GQA model died with
+`RuntimeError: No available kernel`. Only SmolLM2 survived, because it is MHA.
+
+The harness therefore installs a small shim that widens K/V with `repeat_interleave` before calling
+SDPA, and drops `enable_gqa`. This is exactly what the eager path does anyway, so the eager-vs-tiled
+comparison stays fair — the only remaining difference between the two runs is the score matrix, which
+is the whole point.
+
+#### Measuring the CUDA context at the right moment
+
+`_cuda_context_mib()` computes `total − free − reserved`: device memory the process holds that the
+caching allocator does not account for. **When** you read it matters. Straight after
+`torch.cuda.init()` it reports ~105 MiB, but cuBLAS/cuDNN workspaces and lazily-loaded kernel images
+land during the first real matmul, and by peak it is ~141 MiB on this T4. Reading it early
+under-states the process total and makes `fitcheck` look better than it is, so the harness reads it
+**after** the measured steps and prints the init-time value only for reference.
+
+#### Measured status
+
+Ten runs in `fitcheck.ipynb`, on one Tesla T4 (sm_75), FP16 compute, QLoRA r=32 [q,k,v,o], AdamW FP32
+states, gradient checkpointing on — three models, three sequence lengths, both attention kernels:
+
+| tier | max abs error | mean abs error | worst run |
+|:---|---:|---:|:---|
+| **tensors** | **3.4%** | 0.8% | TinyLlama bs2 seq1024 eager |
+| $A_{act}$ alone | 4.6% | 0.9% | TinyLlama bs2 seq1024 eager |
+| **process** | **14.7%** | 5.5% | SmolLM2 bs4 seq1024 eager |
+| allocator | 20.2% | 9.5% | SmolLM2 bs4 seq1024 eager |
+
+Read that as: **the five physical formulas are right to a few percent, and $C_{overhead}$ is not.**
+The allocator and process tiers differ from the tensors tier only by the overhead model, and that is
+where all the remaining error lives — see the fragmentation note in Component 6.
 
 ---
 
@@ -736,7 +985,10 @@ the ladder is exhausted it names the smallest card in the database that would ho
 
 2. **Both interaction modes functional** — Mode A (CLI one-liner) and Mode B (interactive REPL with `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `exit`) produce correct output.
 
-3. **Estimates are analytical and labelled as such** — every component reproduces its row in the Appendix, and the README states plainly that the ±10% target is *not yet validated against measured ground truth*. v0.1 ships honest, not proven.
+3. **Estimates are analytical and labelled as such** — every component reproduces its row in the
+   Appendix, and the README states exactly what is and is not measured. This was written when nothing
+   had been measured; as of v0.1.2 the physical formulas are validated to 3.4% and $C_{overhead}$ is
+   not, so the honesty requirement now means *publishing both tiers*, not disclaiming everything.
 
 4. **`pytest` passes with ≥80% line coverage** on all `memory/` modules, including at least one end-to-end test (known config → expected MiB ± tolerance).
 
@@ -746,7 +998,15 @@ the ladder is exhausted it names the smallest card in the database that would ho
 
 ### v0.2 — the accuracy gate
 
-7. **Estimates within ±10% of measured ground truth** for ≥3 configurations (Llama-3.1-8B on 4090, Mistral-7B on T4, one other), measured with `scripts/measure.py` and filled into the README matrix.
+7. **Estimates within ±10% of measured ground truth** for ≥3 configurations, measured with
+   `scripts/measure.py` and filled into the README matrix.
+
+   **Status (2026-09-02): met on the tensors tier, not yet on the process tier.** Ten runs across
+   three models, three sequence lengths and both attention kernels land within **3.4%** on the
+   tensors tier (mean 0.8%). The process tier — the full total, which is what the fits/doesn't-fit
+   verdict uses — reaches **14.7%**, and every bit of that gap is $C_{overhead}$. Treat the gate as
+   half-passed: the physics is validated, the overhead heuristic is not. The remaining hardware gap
+   is a second GPU — all twenty measurements to date are one Tesla T4.
 
 > **Why the split.** Requiring measured rows before the first publish would block PyPI on owning a
 > 4090. Shipping unvalidated with a loud banner is the honest trade; shipping unvalidated *quietly*,

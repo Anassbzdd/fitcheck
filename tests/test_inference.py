@@ -5,13 +5,11 @@ from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.inference import estimate_inference_memory
 from fitcheck.utils import bytes_to_mib
 
-# Llama-3.1-8B, the golden model. P is the same count the training components use.
 _LLAMA_31_8B_PARAMS = 8_030_261_248
-_W_BASE_FP16 = bytes_to_mib(_LLAMA_31_8B_PARAMS * 2)  # 15,316.51
+_W_BASE_FP16 = bytes_to_mib(_LLAMA_31_8B_PARAMS * 2) 
 
-# 2 * 32 layers * 8 kv heads * 128 head_dim * 2048 tokens * 1 request * 2 bytes
 _KV_2048_FP16 = 256.0
-_KV_BYTES_PER_TOKEN_FP16 = 2 * 32 * 8 * 128 * 2  # 131,072 -> 0.125 MiB/token
+_KV_BYTES_PER_TOKEN_FP16 = 2 * 32 * 8 * 128 * 2 
 
 
 def _model_config(
@@ -46,13 +44,11 @@ def llama() -> ModelConfig:
 
 @pytest.fixture
 def mha() -> ModelConfig:
-    """Same shape as `llama` but no GQA: 32 KV heads instead of 8."""
     return _model_config(num_kv_heads=32)
 
 
 @pytest.fixture
 def gemma2_9b() -> ModelConfig:
-    """head_dim 256 != 3584 / 16 -- the cache must read head_dim, not hidden_size."""
     return _model_config(
         hidden_size=3584,
         num_layers=42,
@@ -80,7 +76,6 @@ def test_kv_cache_is_the_only_term_above_the_weights(llama: ModelConfig) -> None
 
 
 def test_no_activation_optimizer_or_gradient_terms(llama: ModelConfig) -> None:
-    """Serving is weights plus a small cache -- nothing is kept for a backward pass."""
     result = estimate_inference_memory(llama, "fp16", 2048, 1)
 
     assert result < _W_BASE_FP16 * 1.02
@@ -114,7 +109,6 @@ def test_kv_cache_scales_linearly_with_seq_len(llama: ModelConfig) -> None:
 def test_seq_len_and_num_concurrent_are_interchangeable_in_the_cache(
     llama: ModelConfig,
 ) -> None:
-    """Both are linear factors on the same tensor: 4 x 2048 == 1 x 8192 of cache."""
     wide = estimate_inference_memory(llama, "fp16", 2048, 4)
     deep = estimate_inference_memory(llama, "fp16", 8192, 1)
 

@@ -14,9 +14,9 @@ _GOLDEN_W_BASE = 7_753.02
 _GOLDEN_W_LORA = 208.0
 _GOLDEN_S_OPTIM = 416.0
 _GOLDEN_G_GRAD = 208.0
-_GOLDEN_A_ACT = 19_168.0
-_GOLDEN_C_OVERHEAD = 1_846.05
-_GOLDEN_TOTAL = 29_599.07
+_GOLDEN_A_ACT = 20_128.0
+_GOLDEN_C_OVERHEAD = 1_894.05
+_GOLDEN_TOTAL = 30_607.07
 _GOLDEN_MAX_BATCH = 2
 
 _RTX_4090_USABLE = 23_500
@@ -71,13 +71,13 @@ def test_golden_component_breakdown(golden_report: MemoryReport) -> None:
 
 def test_golden_total_and_verdict(golden_report: MemoryReport) -> None:
     assert golden_report.total_mib == pytest.approx(_GOLDEN_TOTAL, abs=0.01)
-    assert round(golden_report.total_mib) == 29_599
+    assert round(golden_report.total_mib) == 30_607
 
     assert golden_report.fits is False
     assert golden_report.gpu_capacity_mib == _RTX_4090_USABLE
-    assert golden_report.headroom_mib == pytest.approx(-6_099.07, abs=0.01)
+    assert golden_report.headroom_mib == pytest.approx(-7_107.07, abs=0.01)
     assert golden_report.headroom_mib / golden_report.gpu_capacity_mib == pytest.approx(
-        -0.26, abs=0.005
+        -0.30, abs=0.005
     )
 
 
@@ -129,7 +129,7 @@ def test_max_batch_size_is_not_linear_extrapolation(
     at_4 = estimate(llama_model, replace(qlora_training, batch_size=4), gpu).total_mib
     at_5 = estimate(llama_model, replace(qlora_training, batch_size=5), gpu).total_mib
 
-    assert at_5 - at_4 == pytest.approx(5_031.60, abs=0.01)
+    assert at_5 - at_4 == pytest.approx(5_283.60, abs=0.01)
 
 
 def test_max_batch_size_adapts_to_a_smaller_gpu(golden_report: MemoryReport, llama_model: ModelConfig, qlora_training: TrainingConfig) -> None:
@@ -168,16 +168,35 @@ def test_activations_follow_micro_batch_not_effective_batch(
     assert micro_1_accum_4.total_mib < micro_4.total_mib
 
 
-def test_flash_attention_off_adds_the_softmax_term(
+def test_flash_attention_is_free_here_because_the_lm_head_hump_dominates(
     llama_model: ModelConfig, qlora_training: TrainingConfig
 ) -> None:
+    """Llama-3.1-8B has a 128k vocabulary, so under checkpointing the LM-head hump
+    (16,032 MiB) is larger than one layer's recompute even with the score matrix in
+    it. The peak takes the max of the two, so turning Flash Attention off costs
+    nothing at this shape. Measured: SmolLM2 eager vs SDPA differed by 16 MiB."""
     gpu = get_gpu("4090")
 
     on = estimate(llama_model, qlora_training, gpu)
     off = estimate(llama_model, replace(qlora_training, flash_attn=False), gpu)
 
-    assert off.activation_mib == pytest.approx(20_192.0, rel=1e-9)
-    assert off.total_mib - on.total_mib == pytest.approx(1_075.2, abs=0.01)
+    assert off.activation_mib == pytest.approx(_GOLDEN_A_ACT, rel=1e-9)
+    assert off.total_mib - on.total_mib == pytest.approx(0.0, abs=0.01)
+
+
+def test_flash_attention_does_pay_once_the_layer_hump_wins(
+    llama_model: ModelConfig, qlora_training: TrainingConfig
+) -> None:
+    """Push the sequence out and the s^2 layer hump overtakes the LM head, at which
+    point removing the score matrix is worth a great deal."""
+    gpu = get_gpu("4090")
+    long_seq = replace(qlora_training, seq_len=16_384, batch_size=1)
+
+    on = estimate(llama_model, long_seq, gpu)
+    off = estimate(llama_model, replace(long_seq, flash_attn=False), gpu)
+
+    assert off.activation_mib > on.activation_mib
+    assert off.total_mib - on.total_mib > 10_000
 
 
 def test_full_finetune_path_replaces_lora_with_every_parameter(
@@ -227,8 +246,8 @@ def test_savings_hints_price_each_toggle_as_a_total_delta(
     hints = golden_report.savings_hints
 
     assert "adamw -> adam8bit: saves 312 MiB" in hints
-    assert "--flash-attn OFF: costs +1,075 MiB (currently ON)" in hints
-    assert "--grad-checkpoint OFF: costs +33,264 MiB (currently ON)" in hints
+    assert "--flash-attn OFF: costs 0 MiB (currently ON)" in hints
+    assert "--grad-checkpoint OFF: costs +32,256 MiB (currently ON)" in hints
     assert "--grad-accum 8: costs 0 MiB (accumulation is free)" in hints
 
 

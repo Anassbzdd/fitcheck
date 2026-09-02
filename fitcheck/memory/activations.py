@@ -6,6 +6,18 @@ from fitcheck.utils import bytes_to_mib, precision_to_bytes
 _LOGITS_COPIES = 4
 _LOGITS_BYTES = 4.0
 
+# Two (b, s, h) tensors survive per checkpoint boundary, not one: non-reentrant
+# checkpointing keeps the layer input AND the recomputed output. Measured on a T4
+# across 20 runs -- a multiplier of 1 gives 10.4% worst-case error and 3 gives 9.8%,
+# against 4.8% for 2. See docs/SPEC.md, Component 5.
+_CHECKPOINT_TENSORS_PER_LAYER = 2
+
+# Eager attention materializes the (b, n_h, s, s) score matrix about nine times at
+# the compute dtype: forward is scores, masked scores, the FP32 softmax (2 gamma)
+# and the cast back = 5; backward is grad-out, the FP32 softmax backward (2 gamma)
+# and grad-scores = 4. Flash Attention removes all of it.
+_EAGER_ATTENTION_COPIES = 9
+
 
 def _validate_positive_int(value: int, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -44,18 +56,32 @@ def estimate_activation_memory(
     layer_bytes = bytes_per_element * tokens * bracket
     if not flash_attn:
         layer_bytes += (
-            bytes_per_element
+            _EAGER_ATTENTION_COPIES
+            * bytes_per_element
             * micro_batch
             * config.num_attention_heads
             * sequence_length**2
         )
 
-    if grad_checkpoint:
-        total_bytes = bytes_per_element * config.num_layers * tokens * hidden_size
-        total_bytes += layer_bytes
-    else:
-        total_bytes = config.num_layers * layer_bytes
+    logits_bytes = _LOGITS_COPIES * _LOGITS_BYTES * tokens * config.vocab_size
 
-    total_bytes += _LOGITS_COPIES * _LOGITS_BYTES * tokens * config.vocab_size
+    if grad_checkpoint:
+        # Only the checkpoints are resident for the whole backward. The LM-head
+        # hump and one layer's recompute are both transient and never overlap, so
+        # the peak takes whichever is larger -- summing them over-counts, and it is
+        # the max that flips between the two as seq_len grows.
+        stored_bytes = (
+            _CHECKPOINT_TENSORS_PER_LAYER
+            * bytes_per_element
+            * config.num_layers
+            * tokens
+            * hidden_size
+        )
+        total_bytes = stored_bytes + max(logits_bytes, layer_bytes)
+    else:
+        # Without checkpointing every layer's activations stay resident, so they do
+        # coexist with the logits and this really is a sum. Unmeasured so far -- no
+        # ground-truth run has exercised this branch.
+        total_bytes = config.num_layers * layer_bytes + logits_bytes
 
     return bytes_to_mib(round(total_bytes))

@@ -337,6 +337,44 @@ Covers: CUDA context (~300-800 MiB), cuDNN/cuBLAS workspace, PyTorch caching all
 
 ---
 
+#### Component 7: Inference Serving ($M_{infer}$) — v0.2, not part of the training equation
+
+Serving keeps nothing for a backward pass: no optimizer states, no gradients, no saved
+activations. What is left is the resident weights plus one KV cache entry per layer, per
+concurrent request:
+
+$$M_{infer} = W_{base} + \text{KV}, \qquad \text{KV} = 2 \times L \times n_{kv} \times d_k \times s \times n_{concurrent} \times \gamma$$
+
+**Critical implementation details:**
+
+1. **The leading 2 is K and V — once each, not twice.** It counts the pair, not a per-tensor factor.
+2. **$n_{concurrent}$ is the batch dimension of the cache** and belongs in the formula, not just in the
+   signature. $s$ is the context one request holds; $n_{concurrent}$ is how many are in flight. The two
+   are interchangeable multipliers: 4 requests × 2048 tokens costs exactly what 1 × 8192 costs.
+3. **$n_{kv} d_k$, never $h$.** Under GQA the cache is $n_{kv}/n_h$ of the MHA size — a quarter for
+   Llama-3.1-8B. Reading $h$ here over-counts by 4×, and $d_k$ comes from `config.json` (§3.3).
+4. **`precision` is the serving dtype, applied to the weights and the cache alike.** A
+   quantized-weights / fp16-cache deployment (bitsandbytes, AWQ, GPTQ) is **not modelled** — it needs
+   a separate compute-dtype axis, the same split the training path draws between `precision` and
+   `quantization`. Likewise absent: the NF4 scale overhead and the unquantized embedding/LM-head slice.
+5. **$C_{overhead}$ is not included.** This is the model-side number; the caller adds Component 6
+   before rendering a fits/doesn't-fit verdict, exactly as `estimator.py` does for training.
+6. **PagedAttention / vLLM block allocation is not modelled.** The formula assumes every request holds
+   its full $s$ tokens of cache. A real vLLM deployment allocates in blocks as generation proceeds, so
+   this is a worst-case ceiling for a serving engine that pre-reserves, and an over-estimate otherwise.
+
+Reference (Llama-3.1-8B, fp16, $s$ = 2048, 1 request): $W_{base}$ = 15,316.51 MiB, KV = 256.00 MiB,
+$M_{infer}$ = **15,572.51 MiB**. The cache is 0.125 MiB per token.
+
+**Implementation:** `memory/inference.py` — function
+`estimate_inference_memory(config, precision, seq_len, num_concurrent)`.
+
+> **Not derived from Components 1–6 and not folded into them.** The master equation is the training
+> equation. Inference is a separate entry point (`fitcheck infer`, task 6.5); `estimator.py` does not
+> call this, and `MemoryReport` does not carry it.
+
+---
+
 ### 3.2 — Module / File Structure and Data Flow
 
 ```
@@ -354,7 +392,8 @@ fitcheck/
 │   ├── optimizer.py         # Component 3
 │   ├── gradients.py         # Component 4
 │   ├── activations.py       # Component 5
-│   └── overhead.py          # Component 6
+│   ├── overhead.py          # Component 6
+│   └── inference.py         # Component 7 — serving (v0.2), not in the training equation
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Phase 2: parameter sweep (stub in MVP)
@@ -370,6 +409,7 @@ tests/
 ├── test_gradients.py
 ├── test_activations.py
 ├── test_overhead.py
+├── test_inference.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
 scripts/                     # NOT part of the installed package
 ├── measure.py               # ground-truth harness (§3.8) — imports torch/peft/bitsandbytes

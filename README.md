@@ -188,7 +188,6 @@ attention, `torch.compile`, and multi-GPU sharding (FSDP / DeepSpeed ZeRO). See
 | **fitcheck** | no | yes — all 6 | yes, GQA-aware | **yes — 10 measured runs** (see below) |
 | [`accelerate estimate-memory`](https://huggingface.co/docs/accelerate/main/en/usage_guides/model_size_estimator) | no | weights + a coarse training multiplier | no | not published |
 | [HF Model Memory Usage Space](https://huggingface.co/spaces/hf-accelerate/model-memory-usage) | no | same, in a web UI | no | not published |
-| [llm-calc](https://github.com/JimJafar/llm-calc) | no | inference sizing only | no | not published |
 | [vram.asmirnov.xyz](https://vram.asmirnov.xyz/) | no | yes, for training | partial | not published |
 
 None of these need a GPU — that isn't the differentiator, and claiming it would be dishonest.

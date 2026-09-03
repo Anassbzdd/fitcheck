@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Iterable
+from typing import Callable, Iterable
 
 from fitcheck.config_parser import ModelConfig
 from fitcheck.gpu_db import GpuSpec
 from fitcheck.memory.activations import estimate_activation_memory
 from fitcheck.memory.gradients import estimate_gradient_memory
+from fitcheck.memory.inference import InferenceMemory, estimate_inference_memory
 from fitcheck.memory.lora import (
     LORA_TARGETS_STANDARD,
     _target_dims,
@@ -18,7 +19,7 @@ from fitcheck.memory.overhead import estimate_overhead
 from fitcheck.memory.weights import QuantizationConfig, estimate_weight_memory
 
 _QUANTIZATIONS = ("none", "nf4", "int8")
-_MAX_BATCH_SEARCH_CEILING = 1 << 20
+_MAX_SEARCH_CEILING = 1 << 20
 _HINT_GRAD_ACCUM_STEPS = 8
 
 
@@ -55,6 +56,29 @@ class MemoryReport:
     max_batch_size: int
     effective_batch_size: int
     savings_hints: list[str]
+
+
+@dataclass(frozen=True)
+class ServingConfig:
+    precision: str = "fp16"
+    quantization: str = "none"
+    double_quant: bool = False
+    seq_len: int = 2048
+    num_concurrent: int = 1
+
+
+@dataclass(frozen=True)
+class InferenceReport:
+    weight_mib: float
+    kv_cache_mib: float
+    overhead_mib: float
+    total_mib: float
+    kv_mib_per_request: float
+    kv_mib_per_token: float
+    gpu_capacity_mib: float
+    headroom_mib: float
+    fits: bool
+    max_concurrent: int
 
 
 @dataclass(frozen=True)
@@ -120,14 +144,6 @@ def _count_lora_params(config: ModelConfig, rank: int, targets: Iterable[str]) -
     return config.num_layers * rank * dims_sum
 
 
-def _unquantized_param_count(config: ModelConfig) -> int:
-    embedding_params = config.vocab_size * config.hidden_size
-    if not config.tie_word_embeddings:
-        embedding_params *= 2
-    norm_params = config.num_layers * 2 * config.hidden_size + config.hidden_size
-    return embedding_params + norm_params
-
-
 def _adapter_precision(training: TrainingConfig) -> str:
     return "fp32" if training.quantization != "none" else training.precision
 
@@ -143,7 +159,7 @@ def _base_weight_memory(config: ModelConfig, training: TrainingConfig) -> float:
         config.num_params,
         quantization,
         QuantizationConfig(enabled=True, double_quant=training.double_quant),
-        unquantized_params=_unquantized_param_count(config),
+        unquantized_params=config.num_unquantized_params,
     )
 
 
@@ -205,6 +221,27 @@ def _compute_components(config: ModelConfig, training: TrainingConfig) -> _Compo
     )
 
 
+def _largest_fitting(total_at: Callable[[int], float], usable_mib: float) -> int:
+    if total_at(1) > usable_mib:
+        return 0
+
+    low, high = 1, 2
+    while high <= _MAX_SEARCH_CEILING and total_at(high) <= usable_mib:
+        low, high = high, high * 2
+
+    if high > _MAX_SEARCH_CEILING:
+        return low
+
+    while high - low > 1:
+        mid = (low + high) // 2
+        if total_at(mid) <= usable_mib:
+            low = mid
+        else:
+            high = mid
+
+    return low
+
+
 def _total_at_batch(
     config: ModelConfig, training: TrainingConfig, batch_size: int
 ) -> float:
@@ -214,24 +251,9 @@ def _total_at_batch(
 def _max_batch_size(
     config: ModelConfig, training: TrainingConfig, usable_mib: float
 ) -> int:
-    if _total_at_batch(config, training, 1) > usable_mib:
-        return 0
-
-    low, high = 1, 2
-    while high <= _MAX_BATCH_SEARCH_CEILING and _total_at_batch(config, training, high) <= usable_mib:
-        low, high = high, high * 2
-
-    if high > _MAX_BATCH_SEARCH_CEILING:
-        return low
-
-    while high - low > 1:
-        mid = (low + high) // 2
-        if _total_at_batch(config, training, mid) <= usable_mib:
-            low = mid
-        else:
-            high = mid
-
-    return low
+    return _largest_fitting(
+        lambda batch_size: _total_at_batch(config, training, batch_size), usable_mib
+    )
 
 
 def _format_delta(delta_mib: float) -> str:
@@ -301,4 +323,58 @@ def estimate(
         max_batch_size=_max_batch_size(model_config, training_config, capacity_mib),
         effective_batch_size=training_config.batch_size * grad_accum_steps,
         savings_hints=_savings_hints(model_config, training_config, total_mib),
+    )
+
+
+def _inference_memory(config: ModelConfig, serving: ServingConfig) -> InferenceMemory:
+    return estimate_inference_memory(
+        config,
+        serving.precision,
+        serving.seq_len,
+        serving.num_concurrent,
+        serving.quantization,
+        serving.double_quant,
+    )
+
+
+def _inference_total(
+    config: ModelConfig, serving: ServingConfig, num_concurrent: int
+) -> float:
+    memory = _inference_memory(
+        config, replace(serving, num_concurrent=num_concurrent)
+    )
+    return memory.total_mib + estimate_overhead(memory.weight_mib, memory.kv_cache_mib)
+
+
+def estimate_inference(
+    model_config: ModelConfig,
+    serving_config: ServingConfig,
+    gpu_spec: GpuSpec,
+) -> InferenceReport:
+    if not isinstance(gpu_spec, GpuSpec):
+        raise ValueError("gpu_spec must be a GpuSpec")
+
+    memory = _inference_memory(model_config, serving_config)
+    overhead_mib = estimate_overhead(memory.weight_mib, memory.kv_cache_mib)
+    total_mib = memory.total_mib + overhead_mib
+    capacity_mib = float(gpu_spec.usable_mib)
+
+    cached_tokens = serving_config.seq_len * serving_config.num_concurrent
+
+    return InferenceReport(
+        weight_mib=memory.weight_mib,
+        kv_cache_mib=memory.kv_cache_mib,
+        overhead_mib=overhead_mib,
+        total_mib=total_mib,
+        kv_mib_per_request=memory.kv_cache_mib / serving_config.num_concurrent,
+        kv_mib_per_token=memory.kv_cache_mib / cached_tokens,
+        gpu_capacity_mib=capacity_mib,
+        headroom_mib=capacity_mib - total_mib,
+        fits=total_mib <= capacity_mib,
+        max_concurrent=_largest_fitting(
+            lambda concurrent: _inference_total(
+                model_config, serving_config, concurrent
+            ),
+            capacity_mib,
+        ),
     )

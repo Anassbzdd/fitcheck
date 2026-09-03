@@ -23,14 +23,23 @@ from fitcheck.display import (
     _config_line,
     _gpu_line,
     _model_line,
+    _serving_line,
     make_console,
     render_explanation,
     render_gpu_table,
+    render_inference_report,
     render_report,
     render_verbose_detail,
     use_ascii_glyphs,
 )
-from fitcheck.estimator import MemoryReport, TrainingConfig, estimate
+from fitcheck.estimator import (
+    InferenceReport,
+    MemoryReport,
+    ServingConfig,
+    TrainingConfig,
+    estimate,
+    estimate_inference,
+)
 from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu
 
 try:
@@ -44,6 +53,8 @@ _TARGET_EFFECTIVE_BATCH = 16
 _SAFETY_FRACTION = 0.75
 
 _MEMORY_EXCLUDED = frozenset({"model_id", "list_gpus", "no_color", "version"})
+_INFER_EXCLUDED = frozenset({"model_id", "no_color"})
+_COMPARE_INFER_FLAGS = frozenset({"--infer", "--serve", "--serving"})
 
 _OFF_SWITCHES: dict[str, str] = {
     "no_flash_attn": "flash_attn",
@@ -58,6 +69,15 @@ Estimate peak VRAM for the loaded model on the current GPU.
 Flags are the CLI's and they persist for the session, so the next `memory` only needs
 what changed. Omit --gpu to use the GPU set by `gpu` (it is a one-shot override here,
 not a session change). `reset` restores every default.
+"""
+
+_INFER_HELP = """\
+Estimate serving VRAM for the loaded model: resident weights plus the KV cache.
+
+Flags are `fitcheck infer`'s and they persist for the session, in their own set:
+serving compute defaults to fp16 and training to bf16, so `memory` and `infer` never
+share a value. Omit --gpu to use the GPU set by `gpu` (a one-shot override here, not a
+session change). `reset` restores every default.
 """
 
 
@@ -78,6 +98,15 @@ class _Result:
     gpu: GpuSpec
 
 
+@dataclass(frozen=True)
+class _InferenceResult:
+    """A computed serving report, with the exact inputs it was computed from."""
+
+    report: InferenceReport
+    serving: ServingConfig
+    gpu: GpuSpec
+
+
 @dataclass
 class _Session:
     console: Console
@@ -86,13 +115,16 @@ class _Session:
     model: ModelConfig | None = None
     gpu: GpuSpec | None = None
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    serving: ServingConfig = field(default_factory=ServingConfig)
     last: _Result | None = None
+    last_inference: _InferenceResult | None = None
 
     def invalidate(self) -> None:
-        """Drop the last report: it was computed against a model/GPU that just changed."""
+        """Drop the last reports: they were computed against a model/GPU that just changed."""
         self.last = None
+        self.last_inference = None
 
-_MEMORY_COMMAND: click.Command | None = None
+_SESSION_COMMANDS: dict[str, click.Command] = {}
 
 
 def _cli_module():
@@ -101,29 +133,44 @@ def _cli_module():
     return cli
 
 
+def _session_command(
+    name: str, source: click.Command, excluded: frozenset[str], help_text: str
+) -> click.Command:
+    command = _SESSION_COMMANDS.get(name)
+    if command is not None:
+        return command
+
+    params = [param for param in source.params if param.name not in excluded]
+    present = {param.name for param in params}
+    params.extend(
+        click.Option(
+            [f"--{off.replace('_', '-')}"],
+            is_flag=True,
+            help=f"Clear a sticky --{on.replace('_', '-')}.",
+        )
+        for off, on in _OFF_SWITCHES.items()
+        if on in present
+    )
+    command = click.Command(
+        name,
+        params=params,
+        help=help_text,
+        context_settings={"help_option_names": ["-h", "--help"]},
+    )
+    _SESSION_COMMANDS[name] = command
+    return command
+
+
 def _memory_command() -> click.Command:
-    global _MEMORY_COMMAND
-    if _MEMORY_COMMAND is None:
-        params = [
-            param
-            for param in _cli_module().main.params
-            if param.name not in _MEMORY_EXCLUDED
-        ]
-        params.extend(
-            click.Option(
-                [f"--{off.replace('_', '-')}"],
-                is_flag=True,
-                help=f"Clear a sticky --{on.replace('_', '-')}.",
-            )
-            for off, on in _OFF_SWITCHES.items()
-        )
-        _MEMORY_COMMAND = click.Command(
-            "memory",
-            params=params,
-            help=_MEMORY_HELP,
-            context_settings={"help_option_names": ["-h", "--help"]},
-        )
-    return _MEMORY_COMMAND
+    return _session_command(
+        "memory", _cli_module().estimate_command, _MEMORY_EXCLUDED, _MEMORY_HELP
+    )
+
+
+def _infer_command() -> click.Command:
+    return _session_command(
+        "infer", _cli_module().infer_command, _INFER_EXCLUDED, _INFER_HELP
+    )
 
 
 def _typed(ctx: click.Context, name: str) -> bool:
@@ -215,6 +262,46 @@ def _training_from_args(session: _Session, ctx: click.Context) -> TrainingConfig
     )
 
 
+_SERVING_FIELDS = {
+    "quant": "quantization",
+    "precision": "precision",
+    "seq_len": "seq_len",
+    "num_concurrent": "num_concurrent",
+}
+
+
+def _serving_from_args(session: _Session, ctx: click.Context) -> ServingConfig:
+    """Fold the flags typed on this line into the session's stored serving config."""
+    current = session.serving
+    params = ctx.params
+
+    if _typed(ctx, "double_quant") and _typed(ctx, "no_double_quant"):
+        raise _ReplError("--double-quant and --no-double-quant contradict each other.")
+
+    def sticky(name: str) -> object:
+        field_name = _SERVING_FIELDS[name]
+        return params[name] if _typed(ctx, name) else getattr(current, field_name)
+
+    quant = str(sticky("quant"))
+
+    if _typed(ctx, "double_quant"):
+        double_quant = True
+    elif _typed(ctx, "no_double_quant") or quant == "none":
+        double_quant = False
+    else:
+        double_quant = current.double_quant
+
+    _cli_module()._validate_serving_combination(quant, double_quant)
+
+    return ServingConfig(
+        precision=str(sticky("precision")),
+        quantization=quant,
+        double_quant=double_quant,
+        seq_len=int(sticky("seq_len")),
+        num_concurrent=int(sticky("num_concurrent")),
+    )
+
+
 def _gpu_from_args(session: _Session, ctx: click.Context) -> GpuSpec:
     """`--gpu` / `--vram-mib` override this one estimate; `gpu <name>` sets the session."""
     if _typed(ctx, "gpu") or _typed(ctx, "vram_mib"):
@@ -264,6 +351,28 @@ def _current_result(session: _Session) -> _Result:
         session.last = _Result(estimate(model, session.training, gpu), session.training, gpu)
     return session.last
 
+
+def _run_inference(
+    model: ModelConfig, serving: ServingConfig, gpu: GpuSpec
+) -> InferenceReport:
+    """Component 7 + 6 for one card, with a bad combination reported, not raised."""
+    try:
+        return estimate_inference(model, serving, gpu)
+    except ValueError as error:
+        raise _ReplError(str(error)) from error
+
+
+def _current_inference(session: _Session) -> _InferenceResult:
+    """The last serving report, computing one from the session's state if none exists."""
+    model = _require_model(session)
+    gpu = _require_gpu(session)
+    if session.last_inference is None:
+        session.last_inference = _InferenceResult(
+            _run_inference(model, session.serving, gpu), session.serving, gpu
+        )
+    return session.last_inference
+
+
 def _mib(value: float) -> str:
     return f"{value:,.0f}"
 
@@ -284,7 +393,7 @@ def _leader_grid(rows: Sequence[tuple[str, RenderableType]]) -> Table:
     return grid
 
 
-def _verdict_text(report: MemoryReport, glyphs: _Glyphs) -> Text:
+def _verdict_text(report: MemoryReport | InferenceReport, glyphs: _Glyphs) -> Text:
     headroom = report.headroom_mib / report.gpu_capacity_mib if report.gpu_capacity_mib else 0.0
     if not report.fits:
         return Text(
@@ -371,6 +480,31 @@ def _cmd_memory(session: _Session, args: list[str]) -> None:
         )
 
 
+def _cmd_infer(session: _Session, args: list[str]) -> None:
+    ctx = _infer_command().make_context("infer", list(args))
+
+    model = _require_model(session)
+    serving = _serving_from_args(session, ctx)
+    gpu = _gpu_from_args(session, ctx)
+
+    report = _run_inference(model, serving, gpu)
+
+    session.serving = serving
+    session.last_inference = _InferenceResult(report, serving, gpu)
+
+    if ctx.params["as_json"]:
+        session.console.print_json(
+            data=_cli_module().inference_report_to_dict(report, model, gpu, serving)
+        )
+        return
+
+    session.console.print(
+        render_inference_report(
+            report, model, gpu, serving, ascii_only=session.ascii_only
+        )
+    )
+
+
 def _cmd_explain(session: _Session, args: list[str]) -> None:
     if args:
         raise _ReplError(
@@ -394,20 +528,40 @@ def _cmd_optimize(session: _Session, args: list[str]) -> None:
 
 
 def _cmd_compare(session: _Session, args: list[str]) -> None:
-    names = [token for token in args if token != "--gpu"]
+    serving_mode = any(token.casefold() in _COMPARE_INFER_FLAGS for token in args)
+    names = [
+        token
+        for token in args
+        if token != "--gpu" and token.casefold() not in _COMPARE_INFER_FLAGS
+    ]
     if not names:
         raise _ReplError(
-            "Usage: compare <gpu> [<gpu> ...], e.g. `compare 3090 t4 a100-40`."
+            "Usage: compare <gpu> [<gpu> ...] [--infer], e.g. `compare 3090 t4 a100-40`."
         )
 
+    if serving_mode:
+        serving_result = _current_inference(session)
+        session.console.print(
+            _render_infer_compare(
+                session, serving_result, _compare_specs(serving_result.gpu, names)
+            )
+        )
+        return
+
     result = _current_result(session)
-    specs = [result.gpu]
+    session.console.print(
+        _render_compare(session, result, _compare_specs(result.gpu, names))
+    )
+
+
+def _compare_specs(current: GpuSpec, names: Sequence[str]) -> list[GpuSpec]:
+    """The card the report was computed on, then each named card, once each."""
+    specs = [current]
     for name in names:
         spec = _lookup_gpu(name)
         if spec not in specs:
             specs.append(spec)
-
-    session.console.print(_render_compare(session, result, specs))
+    return specs
 
 
 def _cmd_show(session: _Session, args: list[str]) -> None:
@@ -432,15 +586,20 @@ def _cmd_show(session: _Session, args: list[str]) -> None:
         )
     )
     rows.append(("Config", Text(_config_line(session.training, session.glyphs))))
+    rows.append(("Serving", Text(_serving_line(session.serving, session.glyphs))))
 
-    if session.last is not None:
-        report = session.last.report
+    for label, result in (
+        ("Last memory", session.last),
+        ("Last infer", session.last_inference),
+    ):
+        if result is None:
+            continue
         rows.append(
             (
-                "Last estimate",
+                label,
                 Text.assemble(
-                    f"{_mib(report.total_mib)} MiB peak on {session.last.gpu.name}  ",
-                    _verdict_text(report, session.glyphs),
+                    f"{_mib(result.report.total_mib)} MiB peak on {result.gpu.name}  ",
+                    _verdict_text(result.report, session.glyphs),
                 ),
             )
         )
@@ -466,8 +625,12 @@ def _cmd_reset(session: _Session, args: list[str]) -> None:
     if args:
         raise _ReplError("reset takes no arguments.")
     session.training = TrainingConfig()
+    session.serving = ServingConfig()
     session.invalidate()
-    _ok(session, "Training flags back to defaults. Model and GPU are unchanged.")
+    _ok(
+        session,
+        "Training and serving flags back to defaults. Model and GPU are unchanged.",
+    )
 
 
 def _cmd_help(session: _Session, args: list[str]) -> None:
@@ -482,6 +645,7 @@ _COMMANDS: dict[str, Callable[[_Session, list[str]], None]] = {
     "model": _cmd_model,
     "gpu": _cmd_gpu,
     "memory": _cmd_memory,
+    "infer": _cmd_infer,
     "explain": _cmd_explain,
     "optimize": _cmd_optimize,
     "compare": _cmd_compare,
@@ -498,6 +662,9 @@ _ALIASES = {
     "?": "help",
     "h": "help",
     "mem": "memory",
+    "serve": "infer",
+    "inference": "infer",
+    "kv": "infer",
     "config": "show",
     "state": "show",
     "list-gpus": "gpus",
@@ -719,22 +886,24 @@ def _bigger_gpu_note(total_mib: float) -> Text:
     )
 
 
-def _render_compare(
-    session: _Session, result: _Result, specs: Sequence[GpuSpec]
+def _compare_panel(
+    session: _Session,
+    title: str,
+    header_line: str,
+    ceiling_header: str,
+    rows: Sequence[tuple[GpuSpec, MemoryReport | InferenceReport, str]],
+    peak_mib: float,
 ) -> Panel:
-    model = _require_model(session)
-    training = result.training
-
+    """One table for both modes: the peak never moves, only the ceiling does."""
     table = Table(box=SIMPLE_HEAD, pad_edge=False, expand=True)
     table.add_column("GPU")
     table.add_column("Usable (MiB)", justify="right")
     table.add_column("Headroom (MiB)", justify="right")
     table.add_column("Used", justify="right")
-    table.add_column(f"Max bs @ {training.seq_len:,}", justify="right")
+    table.add_column(ceiling_header, justify="right")
     table.add_column("Verdict")
 
-    for spec in specs:
-        report = estimate(model, training, spec)
+    for spec, report, ceiling in rows:
         table.add_row(
             spec.name,
             _mib(spec.usable_mib),
@@ -743,39 +912,77 @@ def _render_compare(
                 style="green" if report.fits else "red",
             ),
             _percent(report.total_mib, report.gpu_capacity_mib),
-            str(report.max_batch_size),
+            ceiling,
             _verdict_text(report, session.glyphs),
         )
 
     dash = "-" if session.ascii_only else "—"
     footer = Text.assemble(
         ("Peak is identical on every card: ", "dim"),
-        (f"{_mib(result.report.total_mib)} MiB", "bold"),
+        (f"{_mib(peak_mib)} MiB", "bold"),
         (f" {dash} only the ceiling moves.", "dim"),
     )
 
     return Panel(
-        Group(
-            Text(_config_line(training, session.glyphs)),
-            Text(""),
-            table,
-            footer,
-        ),
-        title="compare",
+        Group(Text(header_line), Text(""), table, footer),
+        title=title,
         title_align="left",
         border_style="dim",
         padding=(1, 2),
     )
 
+
+def _render_compare(
+    session: _Session, result: _Result, specs: Sequence[GpuSpec]
+) -> Panel:
+    model = _require_model(session)
+    training = result.training
+
+    rows: list[tuple[GpuSpec, MemoryReport | InferenceReport, str]] = []
+    for spec in specs:
+        report = estimate(model, training, spec)
+        rows.append((spec, report, str(report.max_batch_size)))
+
+    return _compare_panel(
+        session,
+        "compare",
+        _config_line(training, session.glyphs),
+        f"Max bs @ {training.seq_len:,}",
+        rows,
+        result.report.total_mib,
+    )
+
+
+def _render_infer_compare(
+    session: _Session, result: _InferenceResult, specs: Sequence[GpuSpec]
+) -> Panel:
+    model = _require_model(session)
+    serving = result.serving
+
+    rows: list[tuple[GpuSpec, MemoryReport | InferenceReport, str]] = []
+    for spec in specs:
+        report = _run_inference(model, serving, spec)
+        rows.append((spec, report, str(report.max_concurrent)))
+
+    return _compare_panel(
+        session,
+        "compare infer",
+        _serving_line(serving, session.glyphs),
+        f"Max concurrent @ {serving.seq_len:,}",
+        rows,
+        result.report.total_mib,
+    )
+
 _HELP_ROWS: tuple[tuple[str, str], ...] = (
     ("model <id>", "Fetch a model's config.json from HuggingFace (~2 KB, no weights)"),
     ("gpu <name> [--vram-mib N]", "Set the target GPU"),
-    ("memory [flags]", "Estimate peak VRAM. Same flags as the CLI; they stick"),
+    ("memory [flags]", "Estimate peak training VRAM. Same flags as the CLI; they stick"),
+    ("infer [flags]", "Estimate serving VRAM: weights + KV cache. Flags stick too"),
     ("explain", "Name the largest component, price every toggle"),
     ("optimize", "Largest micro-batch that fits, plus a config worth running"),
-    ("compare <gpu> ...", "The same config across other cards"),
-    ("show", "Current model, GPU, flags, and last estimate"),
-    ("reset", "Training flags back to defaults"),
+    ("compare <gpu> ... [--infer]", "The same config across other cards"),
+    ("show", "Current model, GPU, flags, and the last estimates"),
+    ("reset", "Training and serving flags back to defaults"),
     ("gpus", "Print the GPU database"),
     ("help", "This table"),
     ("exit / quit", "Leave"),
@@ -796,7 +1003,10 @@ def _render_help(session: _Session) -> Panel:
         "--no-flash-attn / --no-grad-checkpoint / --no-double-quant, or `reset` for all "
         "of them. Every report header echoes the flags in force.\n"
         "`memory --help` lists all of them; `memory --verbose` adds the per-layer "
-        "breakdown and `memory --json` prints the machine-readable payload.",
+        "breakdown and `memory --json` prints the machine-readable payload.\n"
+        "`infer` has its own sticky set, because serving computes in fp16 where training "
+        "defaults to bf16: `infer --quant nf4 --seq-len 8192 --concurrent 8`, then "
+        "`compare a100-40 h100 --infer` for the requests each card holds.",
         style="dim",
     )
 

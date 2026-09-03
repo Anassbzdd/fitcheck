@@ -1,13 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import json
+from dataclasses import asdict, replace
 from typing import Any, Callable
 
 import pytest
 
 from fitcheck.config_parser import ModelConfig, fetch_model_config
-from fitcheck.estimator import MemoryReport, TrainingConfig, estimate
+from fitcheck.estimator import (
+    InferenceReport,
+    MemoryReport,
+    ServingConfig,
+    TrainingConfig,
+    estimate,
+    estimate_inference,
+)
 from fitcheck.gpu_db import get_gpu
+from fitcheck.memory.inference import estimate_inference_memory
+from fitcheck.memory.overhead import estimate_overhead
 
 _GOLDEN_PARAMS = 8_030_261_248
 _GOLDEN_W_BASE = 7_753.02
@@ -260,3 +270,166 @@ def test_report_is_json_serializable_for_ci(golden_report: MemoryReport) -> None
     assert payload["total_mib"] == pytest.approx(_GOLDEN_TOTAL, abs=0.01)
     assert payload["fits"] is False
     assert payload["max_batch_size"] == _GOLDEN_MAX_BATCH
+
+
+# --- Inference serving (Component 7 + Component 6), task 6.5 ---
+
+_SERVING_W_BASE_FP16 = 15_316.51
+_SERVING_KV_2048 = 256.0
+_SERVING_C_OVERHEAD = 1_278.63
+_SERVING_TOTAL = 16_851.13
+
+
+@pytest.fixture
+def serving() -> ServingConfig:
+    return ServingConfig(
+        precision="fp16",
+        quantization="none",
+        double_quant=False,
+        seq_len=2048,
+        num_concurrent=1,
+    )
+
+
+@pytest.fixture
+def serving_report(
+    llama_model: ModelConfig, serving: ServingConfig
+) -> InferenceReport:
+    return estimate_inference(llama_model, serving, get_gpu("4090"))
+
+
+def test_serving_reference_breakdown(serving_report: InferenceReport) -> None:
+    assert serving_report.weight_mib == pytest.approx(_SERVING_W_BASE_FP16, abs=0.01)
+    assert serving_report.kv_cache_mib == pytest.approx(_SERVING_KV_2048, abs=0.01)
+    assert serving_report.overhead_mib == pytest.approx(_SERVING_C_OVERHEAD, abs=0.01)
+    assert serving_report.total_mib == pytest.approx(_SERVING_TOTAL, abs=0.01)
+
+
+def test_serving_verdict_includes_overhead(
+    llama_model: ModelConfig, serving: ServingConfig, serving_report: InferenceReport
+) -> None:
+    model_side = estimate_inference_memory(
+        llama_model,
+        serving.precision,
+        serving.seq_len,
+        serving.num_concurrent,
+        serving.quantization,
+        serving.double_quant,
+    )
+
+    assert serving_report.total_mib > model_side.total_mib
+    assert serving_report.total_mib - model_side.total_mib == pytest.approx(
+        estimate_overhead(model_side.weight_mib, model_side.kv_cache_mib), rel=1e-12
+    )
+    assert serving_report.total_mib - model_side.total_mib > 500.0
+
+
+def test_serving_total_is_exactly_the_three_terms(
+    serving_report: InferenceReport,
+) -> None:
+    assert serving_report.total_mib == pytest.approx(
+        serving_report.weight_mib
+        + serving_report.kv_cache_mib
+        + serving_report.overhead_mib,
+        rel=1e-12,
+    )
+
+
+def test_serving_headroom_and_fits_agree(serving_report: InferenceReport) -> None:
+    assert serving_report.gpu_capacity_mib == _RTX_4090_USABLE
+    assert serving_report.headroom_mib == pytest.approx(
+        _RTX_4090_USABLE - serving_report.total_mib, rel=1e-12
+    )
+    assert serving_report.fits is True
+
+
+def test_serving_is_far_cheaper_than_training_the_same_model(
+    golden_report: MemoryReport, serving_report: InferenceReport
+) -> None:
+    """No optimizer states, no gradients, no saved activations."""
+    assert serving_report.total_mib < golden_report.total_mib
+
+
+def test_max_concurrent_is_the_real_ceiling(
+    llama_model: ModelConfig, serving: ServingConfig, serving_report: InferenceReport
+) -> None:
+    at_ceiling = estimate_inference(
+        llama_model,
+        replace(serving, num_concurrent=serving_report.max_concurrent),
+        get_gpu("4090"),
+    )
+    over_ceiling = estimate_inference(
+        llama_model,
+        replace(serving, num_concurrent=serving_report.max_concurrent + 1),
+        get_gpu("4090"),
+    )
+
+    assert at_ceiling.fits is True
+    assert over_ceiling.fits is False
+
+
+def test_max_concurrent_is_not_linear_extrapolation(
+    serving_report: InferenceReport,
+) -> None:
+    """C_overhead grows with the cache, so headroom / kv_per_request over-counts."""
+    naive = serving_report.max_concurrent + int(
+        serving_report.headroom_mib // serving_report.kv_mib_per_request
+    )
+    assert serving_report.max_concurrent < naive
+
+
+def test_max_concurrent_is_zero_when_nothing_fits(
+    llama_model: ModelConfig, serving: ServingConfig
+) -> None:
+    report = estimate_inference(llama_model, serving, get_gpu("3060-12"))
+
+    assert report.fits is False
+    assert report.max_concurrent == 0
+
+
+def test_quantizing_the_base_does_not_shrink_the_cache(
+    llama_model: ModelConfig, serving: ServingConfig, serving_report: InferenceReport
+) -> None:
+    """Gap 2: one precision axis would have under-counted the cache 4x under nf4."""
+    nf4 = estimate_inference(
+        llama_model, replace(serving, quantization="nf4"), get_gpu("4090")
+    )
+
+    assert nf4.kv_cache_mib == pytest.approx(serving_report.kv_cache_mib, rel=1e-12)
+    assert nf4.weight_mib < serving_report.weight_mib
+    assert nf4.max_concurrent > serving_report.max_concurrent
+
+
+def test_seq_len_and_concurrency_trade_one_for_one(
+    llama_model: ModelConfig, serving: ServingConfig
+) -> None:
+    wide = estimate_inference(
+        llama_model, replace(serving, num_concurrent=4), get_gpu("4090")
+    )
+    deep = estimate_inference(
+        llama_model, replace(serving, seq_len=8192), get_gpu("4090")
+    )
+
+    assert wide.total_mib == pytest.approx(deep.total_mib, rel=1e-12)
+
+
+def test_kv_per_token_and_per_request_are_reported(
+    serving_report: InferenceReport,
+) -> None:
+    assert serving_report.kv_mib_per_token == pytest.approx(0.125, rel=1e-9)
+    assert serving_report.kv_mib_per_request == pytest.approx(256.0, rel=1e-9)
+
+
+def test_serving_rejects_a_non_gpu_spec(
+    llama_model: ModelConfig, serving: ServingConfig
+) -> None:
+    with pytest.raises(ValueError, match="gpu_spec must be a GpuSpec"):
+        estimate_inference(llama_model, serving, "4090")
+
+
+def test_serving_report_is_json_serializable_for_ci(
+    serving_report: InferenceReport,
+) -> None:
+    payload = json.dumps(asdict(serving_report))
+
+    assert json.loads(payload)["fits"] is True

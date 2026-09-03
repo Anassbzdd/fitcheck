@@ -27,6 +27,14 @@ class ModelConfig:
     head_dim: int
     tie_word_embeddings: bool
 
+    @property
+    def num_unquantized_params(self) -> int:
+        embedding_params = self.vocab_size * self.hidden_size
+        if not self.tie_word_embeddings:
+            embedding_params *= 2
+        norm_params = self.num_layers * 2 * self.hidden_size + self.hidden_size
+        return embedding_params + norm_params
+
 
 @dataclass(frozen=True)
 class _ParsedFields:

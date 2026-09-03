@@ -10,7 +10,13 @@ from rich.table import Table
 from rich.text import Text
 
 from fitcheck.config_parser import ModelConfig
-from fitcheck.estimator import MemoryReport, TrainingConfig, _count_lora_params
+from fitcheck.estimator import (
+    InferenceReport,
+    MemoryReport,
+    ServingConfig,
+    TrainingConfig,
+    _count_lora_params,
+)
 from fitcheck.gpu_db import GpuSpec, list_gpus
 from fitcheck.memory.activations import estimate_activation_memory
 from fitcheck.utils import precision_to_bytes
@@ -203,14 +209,14 @@ def _component_table(
     return table
 
 
-def _verdict_style(report: MemoryReport) -> str:
+def _verdict_style(report: MemoryReport | InferenceReport) -> str:
     if not report.fits:
         return _STYLE_OOM
     headroom = _fraction(report.headroom_mib, report.gpu_capacity_mib)
     return _STYLE_FITS if headroom > _TIGHT_HEADROOM_FRACTION else _STYLE_TIGHT
 
 
-def _usage_bar(report: MemoryReport, verdict_style: str, glyphs: _Glyphs) -> Text:
+def _usage_bar(report: MemoryReport | InferenceReport, verdict_style: str, glyphs: _Glyphs) -> Text:
     used = _fraction(report.total_mib, report.gpu_capacity_mib)
     filled = min(_BAR_WIDTH, max(1, round(used * _BAR_WIDTH))) if used > 0 else 0
 
@@ -224,7 +230,7 @@ def _usage_bar(report: MemoryReport, verdict_style: str, glyphs: _Glyphs) -> Tex
     return bar
 
 
-def _verdict_line(report: MemoryReport, verdict_style: str, glyphs: _Glyphs) -> Text:
+def _verdict_line(report: MemoryReport | InferenceReport, verdict_style: str, glyphs: _Glyphs) -> Text:
     headroom = _percent(
         _fraction(report.headroom_mib, report.gpu_capacity_mib), decimals=0
     )
@@ -330,6 +336,147 @@ def render_report(
     return Panel(
         Group(*body),
         title="fitcheck",
+        title_align="left",
+        border_style=verdict_style,
+        padding=(1, 2),
+    )
+
+
+def _serving_weights_label(serving: ServingConfig) -> str:
+    if serving.quantization != "none":
+        suffix = " + double quant" if serving.double_quant else ""
+        return (
+            f"Base model weights ({serving.quantization.upper()}{suffix}, "
+            f"{serving.precision} embeddings)"
+        )
+    return f"Base model weights ({serving.precision})"
+
+
+def _serving_line(serving: ServingConfig, glyphs: _Glyphs) -> str:
+    requests = (
+        "1 request"
+        if serving.num_concurrent == 1
+        else f"{serving.num_concurrent} concurrent requests"
+    )
+    base = (
+        serving.quantization.upper() if serving.quantization != "none" else "unquantized"
+    )
+    return glyphs.separator.join(
+        (
+            requests,
+            f"seq {serving.seq_len:,}",
+            f"{serving.precision} compute",
+            f"{base} weights",
+        )
+    )
+
+
+def _inference_component_table(
+    report: InferenceReport, serving: ServingConfig, verdict_style: str
+) -> Table:
+    table = Table(box=SIMPLE_HEAD, pad_edge=False, expand=True)
+    table.add_column("Component")
+    table.add_column("Memory (MiB)", justify="right")
+    table.add_column("% of Total", justify="right")
+
+    rows = (
+        (_serving_weights_label(serving), report.weight_mib),
+        (
+            f"KV cache ({serving.num_concurrent} x {serving.seq_len:,} tokens, "
+            f"{serving.precision})",
+            report.kv_cache_mib,
+        ),
+        ("CUDA context + buffers", report.overhead_mib),
+    )
+    for label, value in rows:
+        table.add_row(label, _mib(value), _percent(_fraction(value, report.total_mib)))
+
+    table.add_section()
+    table.add_row(
+        Text("TOTAL (resident)", style="bold"),
+        Text(_mib(report.total_mib), style=f"bold {verdict_style}"),
+        "",
+    )
+    table.add_row("GPU capacity (usable)", _mib(report.gpu_capacity_mib), "")
+    table.add_row(
+        "Headroom",
+        Text(_mib(report.headroom_mib), style=verdict_style),
+        _percent(_fraction(report.headroom_mib, report.gpu_capacity_mib), decimals=0),
+    )
+    return table
+
+
+def _concurrency_suggestion(report: InferenceReport, serving: ServingConfig) -> str:
+    if report.max_concurrent == 0:
+        return (
+            "Not even one request fits: shorten --seq-len, or quantize the base with "
+            "--quant nf4 / --quant int8."
+        )
+    if report.max_concurrent > serving.num_concurrent:
+        return (
+            f"Room for {report.max_concurrent} concurrent requests at this sequence "
+            "length before the cache runs out."
+        )
+    if report.max_concurrent < serving.num_concurrent:
+        return (
+            f"Drop to {report.max_concurrent} concurrent requests, or shorten "
+            "--seq-len -- the two trade off one for one."
+        )
+    return (
+        f"{serving.num_concurrent} concurrent requests is already the maximum at this "
+        "sequence length."
+    )
+
+
+def _inference_suggestion_grid(
+    report: InferenceReport, serving: ServingConfig, glyphs: _Glyphs
+) -> Table:
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style=_STYLE_LABEL)
+    grid.add_column(style=_STYLE_LABEL, overflow="fold")
+    grid.add_row(glyphs.hint, Text(_concurrency_suggestion(report, serving)))
+    grid.add_row(
+        glyphs.hint,
+        Text(
+            f"Cache costs {report.kv_mib_per_token:,.3f} MiB per token, "
+            f"{_mib(report.kv_mib_per_request)} MiB per request. Every request is "
+            "assumed to hold its full context; a paged engine (vLLM) allocates less "
+            "until it fills up."
+        ),
+    )
+    return grid
+
+
+def render_inference_report(
+    report: InferenceReport,
+    config: ModelConfig,
+    gpu: GpuSpec,
+    serving: ServingConfig,
+    *,
+    ascii_only: bool = False,
+) -> Panel:
+    glyphs = _ASCII_GLYPHS if ascii_only else _UNICODE_GLYPHS
+    verdict_style = _verdict_style(report)
+
+    header = Table.grid(padding=(0, 2))
+    header.add_column(style=_STYLE_LABEL, justify="right")
+    header.add_column()
+    header.add_row("Model", Text(_model_line(config, glyphs)))
+    header.add_row("GPU", Text(_gpu_line(gpu, glyphs)))
+    header.add_row("Serving", Text(_serving_line(serving, glyphs)))
+
+    body: list[RenderableType] = [
+        header,
+        _inference_component_table(report, serving, verdict_style),
+        _usage_bar(report, verdict_style, glyphs),
+        Text(""),
+        _verdict_line(report, verdict_style, glyphs),
+        _inference_suggestion_grid(report, serving, glyphs),
+    ]
+
+    return Panel(
+        Group(*body),
+        title="fitcheck infer",
         title_align="left",
         border_style=verdict_style,
         padding=(1, 2),

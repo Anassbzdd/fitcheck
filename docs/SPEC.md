@@ -49,7 +49,7 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 | Feature | Priority | Notes |
 |:---|:---:|:---|
 | CLI with `click`: `fitcheck <model> [flags]` | P0 | Power-user one-liner mode |
-| Interactive REPL: `fitcheck` (no args) | P0 | Commands: `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `help`, `exit` |
+| Interactive REPL: `fitcheck` (no args) | P0 | Commands: `model`, `gpu`, `memory`, `infer`, `explain`, `optimize`, `compare`, `help`, `exit` |
 | Fetch HuggingFace `config.json` via `huggingface_hub` | P0 | No weight download — config only |
 | Compute all 6 memory components | P0 | Weights, LoRA, optimizer, gradients, activations, overhead |
 | GPU database (hard-coded) | P0 | 22 entries — consumer, older/cloud, workstation, datacenter. Roster in §3.4 |
@@ -68,7 +68,7 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 
 | Feature | Phase | Notes |
 |:---|:---:|:---|
-| `fitcheck infer <model>` — inference mode | 1.5 | KV cache math, concurrent request estimation |
+| `fitcheck infer <model>` — inference mode | 1.5 | KV cache math, concurrent request estimation — **done, v0.2** (§3.1 Component 7, §3.5 Mode C) |
 | `fitcheck advise` — config advisor | 2 | Pareto sweep of (batch_size, lora_r, seq_len) |
 | Calibration mode | 3 | 1 real forward pass → correction factor |
 | HuggingFace Gradio Space | 3 | Web UI for non-CLI users |
@@ -343,7 +343,7 @@ Serving keeps nothing for a backward pass: no optimizer states, no gradients, no
 activations. What is left is the resident weights plus one KV cache entry per layer, per
 concurrent request:
 
-$$M_{infer} = W_{base} + \text{KV}, \qquad \text{KV} = 2 \times L \times n_{kv} \times d_k \times s \times n_{concurrent} \times \gamma$$
+$$M_{infer} = W_{base} + \text{KV} + C_{overhead}, \qquad \text{KV} = 2 \times L \times n_{kv} \times d_k \times s \times n_{concurrent} \times \gamma$$
 
 **Critical implementation details:**
 
@@ -353,25 +353,46 @@ $$M_{infer} = W_{base} + \text{KV}, \qquad \text{KV} = 2 \times L \times n_{kv} 
    are interchangeable multipliers: 4 requests × 2048 tokens costs exactly what 1 × 8192 costs.
 3. **$n_{kv} d_k$, never $h$.** Under GQA the cache is $n_{kv}/n_h$ of the MHA size — a quarter for
    Llama-3.1-8B. Reading $h$ here over-counts by 4×, and $d_k$ comes from `config.json` (§3.3).
-4. **`precision` is the serving dtype, applied to the weights and the cache alike.** A
-   quantized-weights / fp16-cache deployment (bitsandbytes, AWQ, GPTQ) is **not modelled** — it needs
-   a separate compute-dtype axis, the same split the training path draws between `precision` and
-   `quantization`. Likewise absent: the NF4 scale overhead and the unquantized embedding/LM-head slice.
-5. **$C_{overhead}$ is not included.** This is the model-side number; the caller adds Component 6
-   before rendering a fits/doesn't-fit verdict, exactly as `estimator.py` does for training.
-6. **PagedAttention / vLLM block allocation is not modelled.** The formula assumes every request holds
+4. **`precision` and `quantization` are two axes here too, exactly as in training.** `precision` is the
+   COMPUTE dtype (fp32/fp16/bf16): it prices the KV cache and the float slice of the weights.
+   `quantization` (none/nf4/int8) is how the base weights are *stored*. One axis would have made
+   `--precision int4` under-count the cache 4×, because a 4-bit deployment still serves an fp16 cache.
+   `estimate_inference_memory` therefore **rejects a storage dtype as `precision`**.
+5. **The unquantized slice is billed at the COMPUTE dtype, not FP32.** `bitsandbytes` (and GPTQ/AWQ)
+   quantize only the transformer `nn.Linear` weights; `embed_tokens`, `lm_head` and the norms stay
+   float. Training then upcasts that slice to FP32 via peft's `prepare_model_for_kbit_training` —
+   **serving does not**, because nothing calls it. Billing 4 bytes/param here would over-count
+   Llama-3.1-8B by 2,004.5 MiB on the embeddings alone. The count itself is
+   `ModelConfig.num_unquantized_params`, shared with Component 1's training path. NF4 absmax scales
+   are charged on the quantized slice only, FP32 per block of 64, `--double-quant` halving them.
+6. **$C_{overhead}$ is in the total, and `estimate_inference_memory` is not where it is added.** The
+   component function returns the two model-side terms separately, as an `InferenceMemory`;
+   `estimator.estimate_inference` adds `estimate_overhead(weights, kv)` on top. Rendering the
+   model-side figure as a verdict would be ~500 MiB optimistic — the one direction of error this tool
+   exists to avoid — so nothing but the orchestrator's total may reach a fits/doesn't-fit line.
+7. **PagedAttention / vLLM block allocation is not modelled.** The formula assumes every request holds
    its full $s$ tokens of cache. A real vLLM deployment allocates in blocks as generation proceeds, so
    this is a worst-case ceiling for a serving engine that pre-reserves, and an over-estimate otherwise.
+8. **An fp8 or int8 KV cache is not modelled.** `precision` prices the cache and the float weights
+   together; vLLM's `kv_cache_dtype=fp8` would need a third axis.
 
-Reference (Llama-3.1-8B, fp16, $s$ = 2048, 1 request): $W_{base}$ = 15,316.51 MiB, KV = 256.00 MiB,
-$M_{infer}$ = **15,572.51 MiB**. The cache is 0.125 MiB per token.
+Reference (Llama-3.1-8B, fp16, $s$ = 2048, 1 request, unquantized, RTX 4090):
+$W_{base}$ = 15,316.51 MiB, KV = 256.00 MiB, $C_{overhead}$ = 1,278.63 MiB,
+$M_{infer}$ = **16,851.13 MiB** — fits, 6,648.87 MiB headroom, max 25 concurrent requests.
+The cache is 0.125 MiB per token. The model-side subtotal alone is 15,572.51 MiB.
+
+Same model at `--quant nf4 --precision fp16`: $W_{base}$ = 5,748.51 MiB
+(3,328 packed + 416 scales + 2,004.5 fp16 embeddings/norms), cache unchanged at 256.00 MiB.
 
 **Implementation:** `memory/inference.py` — function
-`estimate_inference_memory(config, precision, seq_len, num_concurrent)`.
+`estimate_inference_memory(config, precision, seq_len, num_concurrent, quantization, double_quant)`,
+returning `InferenceMemory(weight_mib, kv_cache_mib)`.
 
-> **Not derived from Components 1–6 and not folded into them.** The master equation is the training
-> equation. Inference is a separate entry point (`fitcheck infer`, task 6.5); `estimator.py` does not
-> call this, and `MemoryReport` does not carry it.
+> **Not derived from Components 1–6 and not folded into them.** The master equation is the TRAINING
+> equation: `estimate()` does not call Component 7 and `MemoryReport` does not carry it. Serving gets
+> its own orchestrator instead — `estimator.estimate_inference(config, ServingConfig, GpuSpec)
+> -> InferenceReport` — which composes Component 7 with Component 6 and checks it against a GPU. The
+> two paths share `estimator.py` and its bisection helper; they share no equation.
 
 ---
 
@@ -384,7 +405,8 @@ fitcheck/
 ├── cli.py                   # click commands & option groups
 ├── repl.py                  # Interactive REPL (Mode B)
 ├── config_parser.py         # HuggingFace config.json → ModelConfig dataclass
-├── estimator.py             # Orchestrator: calls all 6 components, returns MemoryReport
+├── estimator.py             # Orchestrators: estimate() -> MemoryReport (the 6 training
+│                            #   components) and estimate_inference() -> InferenceReport (7 + 6)
 ├── memory/
 │   ├── __init__.py          # re-exports all estimate_* functions
 │   ├── weights.py           # Component 1
@@ -692,21 +714,24 @@ fitcheck --qlora --gpu 4090 # flags without a MODEL_ID seed the session
 Commands:
   model <model_id>          Load a model config from HuggingFace
   gpu <name> [--vram-mib N] Set target GPU
-  memory [OPTIONS]          Compute memory breakdown (same flags as CLI mode)
+  memory [OPTIONS]          Compute training memory breakdown (same flags as CLI)
+  infer [OPTIONS]           Serving breakdown: weights + KV cache (Mode C's flags)
   explain                   Explain the last memory result in plain English
   optimize                  Suggest best config for current model + GPU
-  compare <gpu> [<gpu> ...] Compare the current config across other GPUs
-  show                      Current model, GPU, flags, and last estimate
-  reset                     Training flags back to defaults
+  compare <gpu> [...] [--infer]
+                            Compare the current config across other GPUs;
+                            --infer compares the serving config instead
+  show                      Current model, GPU, both flag sets, last estimates
+  reset                     Training and serving flags back to defaults
   gpus                      Print the GPU database
   help                      Show available commands
   exit / quit               Exit the REPL
 
-Aliases: mem, q, ?, h, config/state, list-gpus.
+Aliases: mem, serve/inference/kv, q, ?, h, config/state, list-gpus.
 ```
 
-**Mode selection is the presence of `MODEL_ID`, not the absence of flags.** `cli.main` takes `MODEL_ID` as
-an optional argument; when it is missing, `main` builds the `TrainingConfig` exactly as it would for a
+**Mode selection is the presence of `MODEL_ID`, not the absence of flags.** `cli.estimate_command` takes
+`MODEL_ID` as an optional argument; when it is missing, it builds the `TrainingConfig` exactly as it would for a
 one-liner and hands it to `run_repl(console, training=..., gpu=...)`. Three consequences:
 
 - **Estimate flags seed the session.** `fitcheck --qlora --lora-r 64` then `model <id>` reaches the same
@@ -730,7 +755,7 @@ from the last computed report — and compute one from the session's state if no
 refusing. Only a missing model or GPU is a hard error ("Run `model <id>` and `gpu <name>` first").
 
 **"Same flags as CLI mode" is enforced structurally, not by hand.** `repl.py` builds its `memory` command
-from `cli.main.params` — the *same* `click.Option` objects — minus the four that make no sense in a session
+from `cli.estimate_command.params` — the *same* `click.Option` objects — minus the four that make no sense in a session
 (`MODEL_ID`, `--list-gpus`, `--no-color`, `--version`). A flag added to Mode A appears in Mode B for free, and
 the two surfaces cannot drift.
 
@@ -745,8 +770,24 @@ and the report header echoes the config in force, so the state is never invisibl
 - `--quant none` silently clears a sticky `--double-quant` instead of failing on a flag set three lines ago.
 - `--gpu` / `--vram-mib` override **one** estimate; only `gpu <name>` moves the session GPU.
 
+**`infer` is Mode C inside the session**, built from `cli.infer_command.params` exactly as `memory` is
+built from `cli.estimate_command.params` — minus `MODEL_ID` and `--no-color`, plus a `--no-double-quant`
+undo. It renders the same `render_inference_report` panel, honours `--json`, and takes `--gpu` /
+`--vram-mib` as a one-shot override. Two things are deliberate:
+
+- **The serving flags are their own sticky set**, held as a `ServingConfig` beside the `TrainingConfig`.
+  They share four names (`--quant`, `--precision`, `--seq-len`, `--double-quant`) but not their values:
+  serving compute defaults to fp16 and training to bf16 (§3.1 Component 7, note 4), so folding one
+  line's `--seq-len` into both would silently move a number the user was not editing. `reset` clears
+  both, `show` prints both, and `model` / `gpu` invalidate both cached reports.
+- **`--quant none` clears a sticky `--double-quant`**, and `--double-quant` under `--quant none` is the
+  same usage error as Mode A — literally the same function, `cli._validate_serving_combination`.
+
 **`compare` takes several GPUs** and leads with the insight: the peak is identical on every card, only the
-ceiling moves. Columns are usable VRAM, headroom, % used, max micro-batch, and the verdict.
+ceiling moves. Columns are usable VRAM, headroom, % used, max micro-batch, and the verdict. With
+`--infer` it is the one table again with the serving config in the header and max concurrent requests
+in place of max micro-batch — the insight holds there too, since the cache does not know what card it
+is on.
 
 **`optimize` recommends, it does not just report the ceiling.** It suggests the largest power-of-two
 micro-batch within ~75% of `max_batch_size`, plus the `--grad-accum` steps that restore an effective batch of
@@ -755,6 +796,70 @@ at least 16 (free, per Component 4) — and says why the ceiling itself is the w
 (`--flash-attn` → `--grad-checkpoint` → `--quant nf4 --double-quant` → halve `--seq-len` →
 `--optimizer adam8bit`), stopping at the first configuration that fits and printing the command to run. If
 the ladder is exhausted it names the smallest card in the database that would hold the result.
+
+#### Mode C: Inference Serving (`fitcheck infer`)
+
+```
+fitcheck infer <model_id> [OPTIONS]
+
+Arguments:
+  MODEL_ID               HuggingFace model ID (e.g., meta-llama/Llama-3.1-8B)
+
+Serving Options:
+  --quant TEXT           none|nf4|int8 — BASE MODEL storage (default: none).
+                         Embeddings, LM head and norms are never quantized.
+  --double-quant         NF4 double quantization (halves scale overhead)
+  --precision TEXT       fp32|fp16|bf16 — COMPUTE dtype: the KV cache and the
+                         unquantized weight slice (default: fp16)
+  --seq-len INT          Context length one request holds (default: 2048)
+  --concurrent INT       Requests in flight (default: 1). Alias --num-concurrent.
+
+GPU Options:
+  --gpu TEXT             GPU name from database (default: 4090)
+  --vram-mib INT         VRAM override for a GPU not in the database
+
+Output Options:
+  --json                 Output as JSON (for CI/CD) — schema below
+  --no-color             Disable colored output
+```
+
+**`fitcheck <model>` still means training.** `infer` is a subcommand; anything whose first token is
+not a registered subcommand name — a model id, a flag, nothing at all — is routed to the training
+command unchanged, so the v0.1 command line and the bare-`fitcheck` REPL are untouched and no usage
+line ever names the internal `estimate` command. A model literally named `infer` is reachable as
+`fitcheck estimate infer`.
+
+**The two axes are not interchangeable, and the flags say so.** `--precision` is the compute dtype and
+`--quant` is base-model storage, exactly as in training (§3.1 Component 7, notes 4–5). `--quant nf4
+--precision fp16` is the real 4-bit deployment: packed linears, fp16 embeddings, fp16 cache. There is
+no way to spell "4-bit cache", because that is not modelled.
+
+**`--double-quant` under `--quant none` is a usage error**, same wording and same reason as Mode A.
+
+#### `fitcheck infer --json` output contract
+
+| Key | Type | Contents |
+|:---|:---|:---|
+| `fitcheck_version` | `str` | Installed package version |
+| `model` | `object` | `ModelConfig` fields verbatim |
+| `gpu` | `object` | `GpuSpec`: `name`, `vram_mib`, `usable_mib` |
+| `serving` | `object` | `ServingConfig` as resolved |
+| `memory_mib` | `object` | `weights`, `kv_cache`, `overhead`, `total` |
+| `kv_cache_mib_per_request` | `float` | Cache one request holds at this `seq_len` |
+| `kv_cache_mib_per_token` | `float` | Cache per token, 6 dp — the number to plan capacity with |
+| `verdict` | `object` | `fits`, `gpu_capacity_mib`, `headroom_mib`, `headroom_pct`, `max_concurrent` |
+
+`memory_mib.total` **includes `overhead`**. It is the only figure a verdict may be drawn from; the
+Component 7 model-side subtotal (`weights + kv_cache`) is ~500 MiB optimistic and is deliberately not
+a key here. Exit codes and the add-only key policy match Mode A.
+
+**Inside the REPL this is the `infer` command** (§3.5 Mode B), with the same flags, its own sticky
+`ServingConfig`, and `compare <gpu> ... --infer` for the max concurrent requests per card.
+
+**`max_concurrent` is found by bisection over the full estimate and floored**, for the same reason
+`max_batch_size` is: $C_{overhead}$ is 5% of a total that itself grows with the cache, so
+`headroom / kv_per_request` over-counts. Both use the one `_largest_fitting` helper in `estimator.py`.
+
 
 ---
 
@@ -1023,7 +1128,7 @@ where all the remaining error lives — see the fragmentation note in Component 
 
 1. **`pip install fitcheck-llm` works** — published to PyPI, installs cleanly on Python 3.10+, `fitcheck --help` runs.
 
-2. **Both interaction modes functional** — Mode A (CLI one-liner) and Mode B (interactive REPL with `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `exit`) produce correct output.
+2. **Both interaction modes functional** — Mode A (CLI one-liner) and Mode B (interactive REPL with `model`, `gpu`, `memory`, `explain`, `optimize`, `compare`, `exit`) produce correct output. v0.2 adds `infer` and `compare --infer` to Mode B.
 
 3. **Estimates are analytical and labelled as such** — every component reproduces its row in the
    Appendix, and the README states exactly what is and is not measured. This was written when nothing

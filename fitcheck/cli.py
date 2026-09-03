@@ -16,12 +16,20 @@ from fitcheck.display import (
     make_console,
     render_explanation,
     render_gpu_table,
+    render_inference_report,
     render_report,
     render_verbose_detail,
     trainable_params,
     use_ascii_glyphs,
 )
-from fitcheck.estimator import MemoryReport, TrainingConfig, estimate
+from fitcheck.estimator import (
+    InferenceReport,
+    MemoryReport,
+    ServingConfig,
+    TrainingConfig,
+    estimate,
+    estimate_inference,
+)
 from fitcheck.gpu_db import GpuSpec, get_gpu
 from fitcheck.memory.lora import (
     LORA_TARGETS_FULL,
@@ -44,8 +52,23 @@ Exit codes: 0 the config fits, 1 it does not fit, 2 the estimate could not be ru
 an error, so `fitcheck ... && accelerate launch ...` guards a training run. The REPL
 always exits 0.
 
+Serving instead of training? `fitcheck infer MODEL [OPTIONS]` prices resident weights
+plus the KV cache. Run `fitcheck infer --help` for its flags.
+
 Every figure is analytical, computed from config.json alone. No GPU is touched and
 no weights are downloaded.
+"""
+
+_INFER_EPILOG = """\
+Exit codes are the same as the training command: 0 means it fits, 1 means it
+does not fit, and 2 means the estimate could not be run. Use `fitcheck --list-gpus`
+to see the supported GPUs.
+
+Inference does not need optimizer states, gradients, or training activations.
+It mainly needs the model weights and the KV cache. Each request is assumed to
+use the full `--seq-len`, so the estimate is a safe upper bound for an engine
+that reserves the KV cache in advance. For paged KV-cache engines such as vLLM,
+the actual memory usage can be lower.
 """
 
 
@@ -95,6 +118,15 @@ def _parse_lora_targets(value: str) -> list[str]:
     return targets
 
 
+def _validate_serving_combination(quant: str, double_quant: bool) -> None:
+    """The one check the training and serving surfaces share, so they cannot drift."""
+    if double_quant and quant == "none":
+        raise click.UsageError(
+            "--double-quant has nothing to quantize under --quant none. It halves the "
+            "NF4/INT8 scale overhead, so pair it with --quant nf4."
+        )
+
+
 def _validate_combination(
     ctx: click.Context,
     quant: str,
@@ -120,11 +152,7 @@ def _validate_combination(
                     "parameter, so there is no adapter to configure."
                 )
 
-    if double_quant and quant == "none":
-        raise click.UsageError(
-            "--double-quant has nothing to quantize under --quant none. It halves the "
-            "NF4/INT8 scale overhead, so pair it with --quant nf4."
-        )
+    _validate_serving_combination(quant, double_quant)
 
     if _explicit(ctx, "optimizer_dtype") and optimizer != "adamw":
         raise click.UsageError(
@@ -221,8 +249,56 @@ def report_to_dict(
     }
 
 
+def inference_report_to_dict(
+    report: InferenceReport,
+    config: ModelConfig,
+    gpu: GpuSpec,
+    serving: ServingConfig,
+) -> dict[str, Any]:
+    def mib(value: float) -> float:
+        return round(value, 2)
+
+    return {
+        "fitcheck_version": _package_version(),
+        "model": asdict(config),
+        "gpu": asdict(gpu),
+        "serving": asdict(serving),
+        "memory_mib": {
+            "weights": mib(report.weight_mib),
+            "kv_cache": mib(report.kv_cache_mib),
+            "overhead": mib(report.overhead_mib),
+            "total": mib(report.total_mib),
+        },
+        "kv_cache_mib_per_request": mib(report.kv_mib_per_request),
+        "kv_cache_mib_per_token": round(report.kv_mib_per_token, 6),
+        "verdict": {
+            "fits": report.fits,
+            "gpu_capacity_mib": mib(report.gpu_capacity_mib),
+            "headroom_mib": mib(report.headroom_mib),
+            "headroom_pct": mib(
+                100.0 * report.headroom_mib / report.gpu_capacity_mib
+                if report.gpu_capacity_mib
+                else 0.0
+            ),
+            "max_concurrent": report.max_concurrent,
+        },
+    }
+
+
+class _DefaultContext(click.Context):
+    @property
+    def command_path(self) -> str:
+        return super().command_path.strip()
+
+
+class _DefaultCommand(click.Command):
+    context_class = _DefaultContext
+
+
 @click.command(
-    context_settings={"help_option_names": ["-h", "--help"]}, epilog=_HELP_EPILOG
+    cls=_DefaultCommand,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    epilog=_HELP_EPILOG,
 )
 @click.argument("model_id", required=False)
 @click.option(
@@ -311,7 +387,7 @@ def report_to_dict(
 )
 @click.version_option(_package_version(), "-V", "--version", prog_name="fitcheck")
 @click.pass_context
-def main(
+def estimate_command(
     ctx: click.Context,
     model_id: str | None,
     quant: str,
@@ -399,3 +475,143 @@ def main(
             )
 
     ctx.exit(0 if report.fits else _EXIT_DOES_NOT_FIT)
+
+
+@click.command(
+    "infer",
+    context_settings={"help_option_names": ["-h", "--help"]},
+    epilog=_INFER_EPILOG,
+    short_help="Estimate VRAM for serving a model (weights + KV cache).",
+)
+@click.argument("model_id")
+@click.option(
+    "--quant",
+    type=click.Choice(["none", "nf4", "int8"]),
+    default="none",
+    show_default=True,
+    help="BASE MODEL storage format. Embeddings, LM head and norms stay unquantized.",
+)
+@click.option(
+    "--double-quant",
+    is_flag=True,
+    help="NF4 double quantization (halves the scale overhead).",
+)
+@click.option(
+    "--precision",
+    type=click.Choice(["fp32", "fp16", "bf16"]),
+    default="fp16",
+    show_default=True,
+    help="COMPUTE dtype: the KV cache and the unquantized weight slice. "
+    "A 4-bit deployment still serves an fp16 cache, so this is NOT --quant.",
+)
+@click.option(
+    "--seq-len",
+    type=click.IntRange(min=1),
+    default=2048,
+    show_default=True,
+    help="Context length one request holds.",
+)
+@click.option(
+    "--concurrent",
+    "--num-concurrent",
+    "num_concurrent",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Requests in flight. Interchangeable with --seq-len: 4 x 2048 costs what "
+    "1 x 8192 costs.",
+)
+@click.option(
+    "--gpu", default=None, help=f"GPU name from the database  [default: {_DEFAULT_GPU}]"
+)
+@click.option(
+    "--vram-mib",
+    type=click.IntRange(min=1),
+    default=None,
+    help="VRAM override for a GPU not in the database (usable is taken as 95%).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for CI/CD).")
+@click.option("--no-color", is_flag=True, help="Disable colored output.")
+@click.pass_context
+def infer_command(
+    ctx: click.Context,
+    model_id: str,
+    quant: str,
+    double_quant: bool,
+    precision: str,
+    seq_len: int,
+    num_concurrent: int,
+    gpu: str | None,
+    vram_mib: int | None,
+    as_json: bool,
+    no_color: bool,
+) -> None:
+    """Estimate VRAM for serving MODEL_ID: resident weights plus the KV cache."""
+    console = make_console(no_color=no_color)
+
+    _validate_serving_combination(quant, double_quant)
+
+    serving = ServingConfig(
+        precision=precision,
+        quantization=quant,
+        double_quant=double_quant,
+        seq_len=seq_len,
+        num_concurrent=num_concurrent,
+    )
+
+    gpu_spec = _resolve_gpu(ctx, gpu, vram_mib)
+    model_config = _load_model_config(model_id)
+
+    try:
+        report = estimate_inference(model_config, serving, gpu_spec)
+    except ValueError as error:
+        raise click.UsageError(str(error)) from error
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                inference_report_to_dict(report, model_config, gpu_spec, serving),
+                indent=2,
+            )
+        )
+    else:
+        console.print(
+            render_inference_report(
+                report,
+                model_config,
+                gpu_spec,
+                serving,
+                ascii_only=use_ascii_glyphs(console),
+            )
+        )
+
+    ctx.exit(0 if report.fits else _EXIT_DOES_NOT_FIT)
+
+
+class _FitcheckGroup(click.Group):
+    _DEFAULT_COMMAND = "estimate"
+    _DEFAULTED = "fitcheck.default_command"
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if not args or args[0] not in self.commands:
+            ctx.meta[self._DEFAULTED] = True
+            args = [self._DEFAULT_COMMAND, *args]
+        return super().parse_args(ctx, args)
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        name, command, rest = super().resolve_command(ctx, args)
+        if ctx.meta.pop(self._DEFAULTED, False):
+            # `fitcheck <model>` is the documented spelling, so usage lines and error
+            # messages must not advertise the injected subcommand name back at the user.
+            return "", command, rest
+        return name, command, rest
+
+
+main = _FitcheckGroup(
+    name="fitcheck",
+    commands={"estimate": estimate_command, "infer": infer_command},
+    no_args_is_help=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)

@@ -1045,6 +1045,12 @@ def _render_banner(session: _Session) -> Panel:
             Text(""),
             quickstart,
             Text(""),
+            Text.assemble(
+                ("Serving, not training? ", "dim"),
+                ("infer --concurrent 8", "cyan"),
+                (" after step 2 prices weights + KV cache.", "dim"),
+            ),
+            Text(""),
             Text("`help` lists every command, `exit` leaves.", style="dim"),
         ),
         title="fitcheck",

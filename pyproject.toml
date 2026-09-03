@@ -48,6 +48,11 @@ Issues = "https://github.com/Anassbzdd/fitcheck/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["fitcheck"]
 
+[tool.hatch.build.targets.sdist]
+# .claude holds local tool settings and a stale worktree snapshot of the whole
+# project; neither belongs in a published release.
+exclude = [".claude"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=fitcheck"

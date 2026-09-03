@@ -88,16 +88,18 @@ optimizer states and no saved activations. What stays resident is the weights pl
 cache, and the cache grows with every request you keep in flight.
 
 ```bash
-fitcheck infer meta-llama/Llama-3.1-8B --gpu 4090
+fitcheck infer NousResearch/Meta-Llama-3.1-8B --gpu 4090
 ```
 
-The same command works in the REPL, on the model and GPU already loaded:
+![fitcheck infer output: Llama-3.1-8B served in fp16 on an RTX 4090 — 15,317 MiB of weights, a 256 MiB KV cache, 16,851 MiB resident, fits with 28% headroom](docs/images/infer-cli.png)
 
-![fitcheck infer output: Llama-3.1-8B served in fp16 on an RTX 4090, 16,851 MiB resident, fits with 28% headroom](docs/images/infer-session.png)
+That is the ungated Llama-3.1-8B mirror, so it runs with no token — see
+[Hugging Face access](#hugging-face-access).
 
-`infer` flags are sticky like `memory`'s, but they are a **separate set** — serving computes
-in fp16 where training defaults to bf16, so the two never share a value. That makes
-re-pricing the same model one short line:
+The same thing is a REPL command, on the model and GPU already loaded. Its flags are sticky
+like `memory`'s, but they are a **separate set** — serving computes in fp16 where training
+defaults to bf16, so the two never share a value. That makes re-pricing the same model one
+short line:
 
 ![fitcheck infer with NF4 double quantization: weights fall to 5,541 MiB and the total to 6,586 MiB, 72% headroom](docs/images/infer-nf4.png)
 

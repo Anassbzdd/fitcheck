@@ -11,6 +11,9 @@ tool runs the same on a laptop as on the machine you're sizing for. You get the 
 per-component breakdown, a fits/doesn't-fit verdict against a specific card, and the largest
 micro-batch that still fits.
 
+`fitcheck infer` prices the other half of the job — serving a trained model, where the
+budget is resident weights plus the KV cache — from the same config and the same math.
+
 > **Accuracy status (v0.1.2, 2026-09-02): measured, and the measurements moved the formulas.**
 > Ten real training runs on a Tesla T4 — three models, three sequence lengths, both attention
 > kernels — put the five physical components within **3.4%** of measured peak (mean 0.8%). The full
@@ -30,9 +33,10 @@ fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 20
 ![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090](docs/images/mode-a-output.png)
 
 > [!NOTE]
-> The screenshots on this page were captured before the v0.1.2 activation fix and show the
-> older totals. The layout is current; the numbers in them are not. The authoritative figures
-> are in [Validation](#validation) and in `docs/SPEC.md`. Regenerating them is an open task.
+> The **training** screenshots on this page were captured before the v0.1.2 activation fix
+> and show the older totals. The layout is current; the numbers in them are not. The
+> authoritative figures are in [Validation](#validation) and in `docs/SPEC.md`. Regenerating
+> them is an open task. The `infer` screenshots further down are current.
 
 Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
 `fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
@@ -54,6 +58,9 @@ prompt stick, so moving one dial doesn't mean retyping the whole line.
 
 ![fitcheck REPL help: the model, gpu, memory, explain, optimize, compare, show, reset, gpus, help and exit commands](docs/images/mode-b-help.png)
 
+(That capture predates `infer`, which now sits in the same list — see
+[Inference](#inference--fitcheck-infer).)
+
 `explain` names the largest component and prices every toggle by re-running the whole estimate with
 one flag flipped — never by hand-summing component deltas, so the 5% that CUDA overhead picks up is
 included automatically. Two lines are load-bearing. Gradient accumulation costs **0 MiB**, because
@@ -71,6 +78,44 @@ one.
 
 Also available: `optimize` (largest micro-batch that fits, plus a config actually worth
 running), `show`, `reset`, and `gpus`.
+
+---
+
+## Inference — `fitcheck infer`
+
+Serving a model is a different budget from training one. There are no gradients, no
+optimizer states and no saved activations. What stays resident is the weights plus the KV
+cache, and the cache grows with every request you keep in flight.
+
+```bash
+fitcheck infer meta-llama/Llama-3.1-8B --gpu 4090
+```
+
+The same command works in the REPL, on the model and GPU already loaded:
+
+![fitcheck infer output: Llama-3.1-8B served in fp16 on an RTX 4090, 16,851 MiB resident, fits with 28% headroom](docs/images/infer-session.png)
+
+`infer` flags are sticky like `memory`'s, but they are a **separate set** — serving computes
+in fp16 where training defaults to bf16, so the two never share a value. That makes
+re-pricing the same model one short line:
+
+![fitcheck infer with NF4 double quantization: weights fall to 5,541 MiB and the total to 6,586 MiB, 72% headroom](docs/images/infer-nf4.png)
+
+4-bit weights take the same 8B model from 16,851 MiB down to 6,586 MiB: the weights line
+falls from 15,317 to 5,541 MiB and the CUDA buffers shrink with it. The KV cache does not
+move at all, because `--quant` is the **weight** format and `--precision` is the **compute**
+dtype — a 4-bit deployment still serves an fp16 cache.
+
+`compare ... --infer` puts one serving config on several cards. The peak is identical on all
+of them, so the interesting column is how many concurrent requests each card can hold:
+
+![fitcheck compare --infer: the same NF4 config on an RTX 4090, A100 40GB and Tesla T4, holding 63, 123 and 33 concurrent requests](docs/images/infer-compare.png)
+
+The cache is the part people under-budget. `fitcheck` prints its price per token and per
+request — 0.125 MiB and 256 MiB for Llama-3.1-8B at 2,048 tokens — and `--seq-len` and
+`--concurrent` are interchangeable: 4 requests of 2,048 tokens cost exactly what 1 request of
+8,192 costs. Every request is assumed to hold its full context, so the number is a worst
+case; a paged engine like vLLM allocates less until the cache fills up.
 
 ---
 
@@ -165,8 +210,33 @@ memory --batch-size 8             # flags are sticky; only the batch size change
 explain                           # largest component + price of every toggle
 optimize                          # a batch size worth running, not just the ceiling
 compare 3090 t4 a100-40           # same config, several cards
+infer --quant nf4 --double-quant  # serving instead of training: weights + KV cache
+compare a100-40 t4 --infer        # the serving config across cards
 reset                             # flags back to defaults
 ```
+
+### Inference
+
+```bash
+# Weights + KV cache for one 2,048-token request
+fitcheck infer meta-llama/Llama-3.1-8B --gpu 4090
+
+# 4-bit serving, with double quantization for the smaller scale overhead
+fitcheck infer meta-llama/Llama-3.1-8B --quant nf4 --double-quant --gpu 4090
+
+# 8 concurrent requests at 8k context -- 14,919 MiB, still fits a 4090
+fitcheck infer meta-llama/Llama-3.1-8B --quant nf4 --double-quant --seq-len 8192 --concurrent 8
+
+# Doesn't fit: fp16 weights alone are 15,317 MiB and a T4 has 15,360 usable. Exits 1.
+fitcheck infer meta-llama/Llama-3.1-8B --gpu t4
+
+# Machine-readable, for CI
+fitcheck infer meta-llama/Llama-3.1-8B --quant nf4 --json
+```
+
+Exit codes are the training command's: `0` fits, `1` doesn't fit, `2` couldn't run. `--gpu`,
+`--vram-mib` and `--no-color` behave the same too. `fitcheck infer --help` has the full flag
+list.
 
 ### Model support
 
@@ -288,6 +358,9 @@ Be as clear about the gaps as about the results:
 - **Gradient checkpointing off.** `L × A_layer + A_logits` is derived, never measured.
 - **`--quant none`, `--quant int8`, full fine-tuning, FP32 compute.** Code paths with no measured row.
 - **Sequences beyond 2048**, where the `9γ` coefficient multiplies an `s²` term.
+- **`fitcheck infer` in full.** Every measured row is a training run. The serving path
+  (resident weights + KV cache) shares the weight formula, which is measured, but the cache
+  term and the serving overhead constant have no measured row of their own.
 - **The T4 entry in `gpu_db.py` is wrong** and wrong in the unsafe direction: it claims 15,360 MiB
   usable of 16,384, but the card reports 14,912 MiB total. Vendor GB was treated as GiB. Every ECC
   datacenter entry needs the same audit.
@@ -332,6 +405,10 @@ v0.1.1 under-predict by up to 36%.
 
 `max_batch_size` is found by bisecting the whole estimator and flooring, never by extrapolating from
 one point: `total(b)` is piecewise linear, with a kink wherever that `max` flips branches.
+
+Serving reuses the same weight term and adds one of its own:
+`2 · L · (n_kv × head_dim) · s · concurrent · bytes` for the KV cache, GQA-narrowed like the
+rest. `max_concurrent` is then just the free space divided by the per-request cache.
 
 See [SPEC.md](docs/SPEC.md) for the full memory model, and
 [Blueprint.md](docs/Blueprint.md) for the derivations.

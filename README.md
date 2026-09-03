@@ -127,16 +127,6 @@ case; a paged engine like vLLM allocates less until the cache fills up.
 pip install fitcheck-llm
 ```
 
-> ⚠️ **PyPI package pending v0.1.0 release.** `fitcheck-llm` is not published yet, so the line
-> above will fail today. Install from source in the meantime:
-
-```bash
-git clone https://github.com/Anassbzdd/fitcheck.git
-cd fitcheck
-pip install -e ".[dev]"
-fitcheck --help
-```
-
 Python 3.10+. Runtime dependencies are `click`, `rich`, and `huggingface-hub` — no torch, no
 CUDA.
 

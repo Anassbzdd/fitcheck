@@ -2,7 +2,7 @@
 
 > **PRD + Technical Design + Definition of Done — One Document**
 >
-> Version: 0.1.0 (MVP) · Author: Anas · Date: August 2026
+> Version: 0.2.0 (MVP) · Author: Anas · Date: August 2026
 
 ---
 

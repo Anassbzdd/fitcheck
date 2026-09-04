@@ -33,10 +33,10 @@ fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 20
 ![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090](docs/images/mode-a-output.png)
 
 > [!NOTE]
-> The **training** screenshots on this page were captured before the v0.1.2 activation fix
-> and show the older totals. The layout is current; the numbers in them are not. The
-> authoritative figures are in [Validation](#validation) and in `docs/SPEC.md`. Regenerating
-> them is an open task. The `infer` screenshots further down are current.
+> One screenshot on this page is still stale: the `compare` capture further down was taken
+> before the v0.1.2 activation fix and shows the older totals. Its layout is current; its
+> numbers are not. Every other capture here is current. The authoritative figures are in
+> [Validation](#validation) and in `docs/SPEC.md`.
 
 Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
 `fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
@@ -56,10 +56,7 @@ prompt stick, so moving one dial doesn't mean retyping the whole line.
 
 `help` lists the command surface:
 
-![fitcheck REPL help: the model, gpu, memory, explain, optimize, compare, show, reset, gpus, help and exit commands](docs/images/mode-b-help.png)
-
-(That capture predates `infer`, which now sits in the same list — see
-[Inference](#inference--fitcheck-infer).)
+![fitcheck REPL help: the model, gpu, memory, infer, explain, optimize, compare, show, reset, gpus, help and exit commands](docs/images/mode-b-help.png)
 
 `explain` names the largest component and prices every toggle by re-running the whole estimate with
 one flag flipped — never by hand-summing component deltas, so the 5% that CUDA overhead picks up is

@@ -1,11 +1,19 @@
-# fitcheck
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/logo.jpg" alt="fitcheck" width="150">
+</p>
 
-[![CI](https://github.com/Anassbzdd/fitcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/Anassbzdd/fitcheck/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/fitcheck-llm.svg)](https://pypi.org/project/fitcheck-llm/)
-[![Python](https://img.shields.io/pypi/pyversions/fitcheck-llm.svg)](https://pypi.org/project/fitcheck-llm/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<h1 align="center">fitcheck</h1>
 
-Predict how much VRAM a LoRA/QLoRA fine-tune will need — before you launch it.
+<p align="center">
+  Predict how much VRAM a LoRA/QLoRA fine-tune will need — before you launch it.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Anassbzdd/fitcheck/actions/workflows/ci.yml"><img src="https://github.com/Anassbzdd/fitcheck/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/fitcheck-llm/"><img src="https://img.shields.io/pypi/v/fitcheck-llm.svg" alt="PyPI"></a>
+  <a href="https://pypi.org/project/fitcheck-llm/"><img src="https://img.shields.io/pypi/pyversions/fitcheck-llm.svg" alt="Python"></a>
+  <a href="https://github.com/Anassbzdd/fitcheck/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
 `fitcheck` reads a model's `config.json` from the Hugging Face Hub (~2 KB, never the weights)
 and computes peak training memory as a sum of six components: base model weights, LoRA adapter

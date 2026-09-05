@@ -90,39 +90,61 @@ $$\boxed{\text{Peak VRAM} = W_{base} + W_{lora} + S_{optim} + G_{grad} + A_{act}
 
 #### Component 1: Base Model Weights ($W_{base}$)
 
-$$W_{base} = P \times \text{bytes\_per\_param} + Q_{overhead}$$
+**Unquantized base:**
+
+$$W_{base} = P \times \text{bytes\_per\_param}$$
+
+**Quantized base (NF4 / INT8) — it splits into two slices, and only one of them is packed:**
+
+$$W_{base} = P_q \times \left(\text{bytes\_per\_param} + \frac{4}{B_q}\right) + P_{skip} \times 4$$
 
 Where:
 - $P$ = total parameter count (computed from `config.json`, not loaded)
-- `bytes_per_param`: FP32→4, FP16/BF16→2, INT8→1, INT4→0.5
-- For QLoRA (NF4 4-bit): bytes_per_param=0.5 bytes (4 bits = 0.5 bytes).
-- $Q_{overhead}$ = quantization scale overhead (QLoRA only)
+- `bytes_per_param`: FP32→4, FP16/BF16→2, INT8→1, INT4/NF4→0.5
+- $P_{skip}$ = the parameters `bitsandbytes` does **not** quantize — `embed_tokens`, `lm_head` and
+  the layernorms — which peft's `prepare_model_for_kbit_training` then upcasts to **FP32**, hence the
+  flat 4 bytes/param on that slice. Available as `ModelConfig.num_unquantized_params`:
+  $P_{skip} = 2Vh$ (or $Vh$ when tied) $+\ 2Lh + h$
+- $P_q = P - P_{skip}$ = the transformer `nn.Linear` weights, the only slice actually packed
+- $B_q$ = quantization block size (default 64)
+
+> **A flat $P \times \text{bytes\_per\_param}$ is wrong for a quantized base, and wrong low.** On
+> Llama-3.1-8B $P_{skip}$ is 1.05B parameters — 4,009 MiB at FP32, where a flat 0.5 B/param charges
+> 501. That is most of the gap between the v0.1 figure of 4,068 MiB and the measured 7,753 MiB.
+> Confirmed to the MiB on a Kaggle T4 (Mistral-7B-v0.3): NF4 linears 3,328 + scales 416 +
+> unquantized 1,129, against a prediction of 3,328 + 416 + 1,129.
 
 **QLoRA quantization overhead:**
 
-$$Q_{overhead} = P \times \frac{2}{B_q} \text{ bytes}$$
+$$Q_{overhead} = P_q \times \frac{4}{B_q} \text{ bytes}$$
 
-Where $B_q$ = quantization block size (default 64). One FP16 scale per block → 2 bytes per 64 weights = 0.03125 bytes/param.
+One **FP32** absmax scale per block of 64 → 4 bytes per 64 weights = 0.0625 bytes/param, charged on
+the **quantized slice only**. This is where the QLoRA paper's 0.5 bits/param figure comes from.
 
 Double Quantization **quantizes the quantization constants themselves**:
 
-1. The first-level scales $c_1$ (one per block of 64 weights) are quantized from **FP16 (16 bits)** down to
+1. The first-level scales $c_1$ (one per block of 64 weights) are quantized from **FP32 (32 bits)** down to
    **8-bit integers**. Note: 8-bit *quantized ints*, not FP8 — the format is an int8 codebook, not a float type.
 2. A second-level scale $c_2$ in **FP32 (32 bits)** is added once every **256 blocks**.
 
-$$ \text{Overhead}^{DQ} = \frac{8\text{ bits}}{64} + \frac{32\text{ bits}}{64 \times 256} = 0.125 + 0.00195 \approx \mathbf{0.127}\text{ bits/param} \approx \mathbf{0.0158}\text{ bytes/param} $$
+$$ \text{Overhead}^{DQ} = \frac{8\text{ bits}}{64} + \frac{32\text{ bits}}{64 \times 256} = 0.125 + 0.00195 \approx \mathbf{0.127}\text{ bits/param} \approx \mathbf{0.0159}\text{ bytes/param} $$
 
-Against the single-quantization $0.03125$ bytes/param that is a factor of $0.5078$, so the implementation
-applies the simpler **$Q_{overhead} \times 0.5$**. That shortcut understates the double-quant overhead by
-1.5% *of that term* — **1.9 MiB** on an 8B model, or 0.05% of $W_{base}$. Far inside the ±10% target.
+Against the single-quantization $0.0625$ bytes/param (0.5 bits/param, FP32 absmax) that is a factor of
+$\mathbf{0.254}$ — double quantization removes about three quarters of the scale overhead, not half.
 
-> **Known simplification — scale dtype.** fitcheck models the first-level NF4 scales as **FP16**
-> (2 bytes per block of 64). `bitsandbytes` keeps `absmax` in **FP32** when double quantization is off —
-> which is where the QLoRA paper's 0.5 bits/param figure comes from — costing $P \times \frac{4}{64}$ =
-> 0.0625 bytes/param, or **479 MiB** instead of 239 MiB on an 8B base. The DQ arithmetic above is
-> internally consistent against its own FP16 baseline, so v0.1 keeps FP16 and the golden number set
-> unchanged. This is the **first formula to revisit** if the Llama-3.1-8B row of the validation matrix
-> measures high (TASKS 6.3) — and it errs low, which is the unsafe direction for an OOM tool.
+> **Known simplification — the double-quant factor is 0.5 in code, 0.254 in this derivation.**
+> `memory/weights.py` applies `_DOUBLE_QUANT_OVERHEAD_FACTOR = 0.5`, which was calibrated when this
+> spec modelled the first-level scales as **FP16**: against a $0.03125$ bytes/param baseline, $0.0159$
+> really is a factor of $0.508 \approx 0.5$. Correcting the baseline to FP32 moved the ratio without
+> moving the constant, so the two now disagree.
+>
+> The cost is confined to `--double-quant`: fitcheck charges $0.03125$ bytes/param where the
+> derivation gives $0.0159$, so the scale term reads **208 MiB instead of 105.6 MiB** on the
+> Llama-3.1-8B quantized slice — a **~102 MiB over-count**, or 1.3% of $W_{base}$. It **over**-counts,
+> which is the safe direction for an OOM tool, and the golden number set does not use `--double-quant`
+> so nothing in the Appendix moves. Unmeasured either way: no ground-truth run has exercised the
+> double-quant path. Resolve it by measuring that path, not by adjusting the constant to match the
+> arithmetic.
 
 **Parameter counting from config** (no weight download):
 
@@ -156,13 +178,26 @@ General formula (works for all 3): $P_{attn} = 2h \cdot n_h \cdot d_k + 2h \cdot
 ---
 
 #### Component 2: LoRA Adapter Weights ($W_{lora}$)
-$$W_{lora} = L \times r \times \gamma \times \sum_{t \in \text{targets}} \left(d_{in}^{(t)} + d_{out}^{(t)}\right)$$
+$$W_{lora} = L \times r \times \gamma_{adapter} \times \sum_{t \in \text{targets}} \left(d_{in}^{(t)} + d_{out}^{(t)}\right)$$
 
-$\gamma = \texttt{precision\_to\_bytes(precision)}$ — adapters are trainable, so they follow the **compute**
-dtype, never the base model's `quantization`. QLoRA's adapters are BF16 on top of an NF4 base.
+$$\gamma_{adapter} = \begin{cases} 4 \text{ bytes (FP32)} & \text{quantization} \ne \text{none} \\ \texttt{precision\_to\_bytes(precision)} & \text{otherwise} \end{cases}$$
+
 For GQA targets, $d_{out}^{(k)} = d_{out}^{(v)} = n_{kv} \cdot d_k$, not $h$.
 
-**Implementation:** `memory/lora.py` — function `estimate_lora_memory(config, rank, targets, precision)`.
+> **The adapters are FP32 whenever the base is quantized, whatever the compute dtype says.**
+> peft's `prepare_model_for_kbit_training` upcasts every trainable parameter to FP32 — that is the
+> same call that upcasts $P_{skip}$ in Component 1, and it does not consult `--precision`. So QLoRA's
+> adapters are **FP32 on top of an NF4 base**, not BF16: 208 MiB for the golden config, not 104.
+> Earlier drafts of this spec taught the BF16 reading and were 104 MiB low, which is the unsafe
+> direction. Only an unquantized base leaves the adapters on the compute dtype.
+>
+> This is one axis, used twice: $\gamma_{adapter}$ prices the adapters here **and** the gradients in
+> Component 4, because a `.grad` matches its parameter's dtype. Activations are unaffected — they
+> follow the compute dtype $\gamma$, which is a separate thing.
+
+**Implementation:** `memory/lora.py` — function
+`estimate_lora_memory(config, rank, targets, precision, adapter_precision=None)`. The orchestrator
+passes `adapter_precision` from `estimator._adapter_precision`, which is where the rule above lives.
 
 ---
 
@@ -210,20 +245,28 @@ mixed-precision SGD too. Do not overload `optimizer_dtype`, which is the state d
 
 #### Component 4: Gradients ($G_{grad}$)
 
-$$G_{grad} = P_{trainable} \times \gamma \qquad \gamma = \texttt{precision\_to\_bytes(precision)}$$
+$$G_{grad} = P_{trainable} \times \gamma_{adapter}$$
 
-| Precision   | Bytes per param |
-| :---------- | :-------------: |
-| FP32        |        4        |
-| FP16 / BF16 |        2        |
+A `.grad` tensor matches its parameter in **shape and dtype**, so this term follows whatever dtype the
+trainable parameters are actually held in — the same $\gamma_{adapter}$ Component 2 defines, not the
+compute dtype:
 
-A `.grad` tensor matches its parameter in shape and dtype, so gradients scale with the **compute**
-precision — 2 bytes is the BF16 case, not a constant. Under `--precision fp32` this term doubles.
+| Trainable params held in | Bytes per param | When |
+| :----------------------- | :-------------: | :--- |
+| FP32                     |        4        | any quantized base (QLoRA), or `--precision fp32` |
+| FP16 / BF16              |        2        | unquantized base at `--precision fp16` / `bf16` |
+
+> **QLoRA gradients are FP32, not BF16.** peft upcasts the adapters to FP32 (Component 2), and the
+> gradients follow them there. The golden config's 208 MiB is $54{,}525{,}952 \times 4$, not
+> $\times 2$. Reading this term off `--precision` alone under-counts by half on every QLoRA run.
 
 Gradient accumulation does **not** increase this — gradients are accumulated in-place into the same
 tensor. `grad_accum_steps` must not appear in this formula.
 
-**Implementation:** `memory/gradients.py` — function `estimate_gradient_memory(trainable_params, precision)`.
+**Implementation:** `memory/gradients.py` — function
+`estimate_gradient_memory(trainable_params, precision, param_precision=None)`. The orchestrator passes
+`param_precision` for LoRA runs and leaves it `None` for full fine-tuning, where the parameters really
+are on the compute dtype.
 
 ---
 
@@ -583,13 +626,19 @@ The database ships 22 entries. `gpu_db.py` is the authority; this is the current
 (usable defaults to 95% of the value given).
 
 > [!WARNING]
-> **The T4 entry is known to be wrong, and wrong in the dangerous direction.** `gpu_db.py` lists the
+> **The T4 entry was wrong in the dangerous direction, and is now fixed.** `gpu_db.py` used to list the
 > Tesla T4 as `vram_mib=16_384, usable_mib=15_360`, but the card in every measurement reports
-> **14,912 MiB total** to `torch.cuda.get_device_properties()` — so the *usable* figure exceeds the
-> card's entire capacity by 448 MiB. The cause is treating a vendor “16 GB” as 16 GiB; a T4 is 16 GB
-> = 15,258 MiB, and less again with ECC on. This is exactly the MiB/MB confusion the units rule at the
-> end of this document warns about, and it can produce a false “fits”. Every ECC datacenter entry
-> (T4, V100, A100, H100, H200, B200) needs the same audit before it is trusted.
+> **14,912 MiB total** to `torch.cuda.get_device_properties()` — so the *usable* figure exceeded the
+> card's entire capacity by 448 MiB and could produce a false “fits”. The cause was treating a vendor
+> “16 GB” as 16 GiB; a T4 is 16 GB = 15,258 MiB, and less again with ECC on. It now reads
+> `vram_mib=14_912, usable_mib=14_000`, the measured total with a normal driver allowance.
+>
+> The same audit was applied to the two entries where the vendor unit is ambiguous: `h200`
+> (“141 GB”) and `b200` (“192 GB”) now take the `usable_mib` that is safe under the **pessimistic**
+> reading — 134,000 and 176,000 — because under-stating capacity costs a conservative estimate while
+> over-stating it costs an OOM. Neither is measured. `t4` is the only row in the table with a
+> measured total; every other value is an estimate, and a measured row for any of them is a useful
+> contribution (see `.github/ISSUE_TEMPLATE/measurement.yml`).
 
 **Usable vs. advertised:** Usable ≈ advertised × 0.91–0.97 (CUDA context, driver overhead, display if desktop
 GPU). This is a rough per-card allowance, not a fixed formula — older/consumer cards (T4, V100, L4, RTX
@@ -885,7 +934,7 @@ a key here. Exit codes and the add-only key policy match Mode A.
 | **MoE models** (Mixtral, DeepSeek) | Not supported in MVP. Active experts × per-expert FFN changes the activation formula. | ❌ v0.3 |
 | **Models with tied embeddings** | Detected via `tie_word_embeddings` in config. Count embedding params once. | ✅ MVP |
 | **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Blueprint.md's note on `intermediate_size`). | ✅ MVP |
-| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$ and LoRA dims are correct; activation rows 3–4 still assume $n_hd_k = h$ (TASKS 3.10). | ⚠️ partial |
+| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$, LoRA dims **and** the activation bracket all use the exact $n_hd_k$ / $n_{kv}d_k$ form (TASKS 3.10, done). Sliding-window attention is still not modelled — see the row below. | ✅ MVP |
 | **`tie_word_embeddings` absent from config** | Architecture default table (Gemma family ties), `False` for unknown `model_type`. | ✅ MVP |
 | **Custom attention patterns** (sliding window, local) | Not modeled. Treated as standard attention. Note Gemma-2 alternates sliding/full layers, so its non-Flash path is approximate even once the two rows above are fixed. | ❌ v0.3 |
 | **FSDP / DeepSpeed ZeRO** | Not supported. Memory is split across GPUs — requires sharding-aware formulas. | ❌ v0.4 |
@@ -896,7 +945,7 @@ a key here. Exit codes and the add-only key policy match Mode A.
 | **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
 | **Offline mode** | If `config.json` is cached locally, works without internet. | ✅ MVP |
 | **`C_overhead` fragmentation model** | Fixed 5% of $(W_{base}+A_{act})$. Measured fragmentation ranged 6%–32% and is larger under eager attention. This is where all the residual error sits (§3.8, Component 6). | ⚠️ Known |
-| **T4 / ECC entries in `gpu_db`** | `usable_mib` for the T4 exceeds the card's real capacity (15,360 vs a measured 14,912). Vendor GB treated as GiB. Can cause a false “fits”. | ❌ Bug |
+| **T4 / ECC entries in `gpu_db`** | Fixed: T4 is now `14_912 / 14_000`, the measured total. `h200` and `b200` take the `usable_mib` that is safe under the pessimistic reading of their vendor GB. Only the T4 is measured; the rest of the table is estimates. | ✅ fixed, rest unmeasured |
 | **No-checkpointing branch** | `L × A_layer + A_logits` is derived, never measured — every ground-truth run so far has checkpointing on. | ⚠️ Unmeasured |
 | **Non-T4 hardware, BF16, real Flash Attention** | All twenty measurements are one Tesla T4 (sm_75) in FP16. BF16 and FA2 need sm_80+; the flash path is validated only via SDPA's memory-efficient backend as a stand-in. | ⚠️ Unmeasured |
 | **Unknown GPU** | Error message listing available GPUs. Flag to pass custom VRAM: `--vram-mib 24000`. | ✅ MVP |
@@ -1184,7 +1233,7 @@ untied Llama-3.1-8B ($V = 128{,}256$). The quantized slice is $P_q = P - P_{skip
 
 | Component      | Formula                                                  | Bytes            | Result (MiB) |
 | :------------- | :------------------------------------------------------- | ---------------: | -----------: |
-| $W_{base}$     | $P_q(0.5 + \frac{4}{64}) + P_{skip} \times 4$            |    8,129,706,496 |     7,753.02 |
+| $W_{base}$     | $P_q(0.5 + \frac{4}{64}) + P_{skip} \times 4$            |    8,129,626,112 |     7,753.02 |
 | $W_{lora}$     | $32 \times 1{,}703{,}936 \times 4$ bytes                 |      218,103,808 |       208.00 |
 | $S_{optim}$    | $54{,}525{,}952 \times 8$ bytes                          |      436,207,616 |       416.00 |
 | $G_{grad}$     | $54{,}525{,}952 \times 4$ bytes                          |      218,103,808 |       208.00 |
@@ -1228,18 +1277,33 @@ string.
 verdict near the boundary. GPU vendors advertise in GB, PyTorch reports in MiB — convert once, at the edge.
 
 **`max_batch_size` is defined by search, not extrapolation:** the largest integer $b$ with
-$\text{total\_mib}(b) \le \text{usable\_mib}$, found by re-running the estimator (bisection). Extrapolating
-from a single point is wrong because $C_{overhead}$ is itself a function of $A_{act}(b)$, so the true slope is
-$784 \times 1.05 = 823.2$ MiB per batch unit, not 784. Here:
+$\text{total\_mib}(b) \le \text{usable\_mib}$, found by re-running the whole estimator (bisection).
+Every activation term is linear in $b$, so *within one branch of the `max`* the total is linear too:
 
-$$\text{total}(b) = 5{,}395.9 + 823.2\,b \le 23{,}500 \;\Rightarrow\; b \le 21.99 \;\Rightarrow\; b_{max} = \mathbf{21}$$
+$$A_{act}(b) = \underbrace{1{,}024b}_{2L\gamma sh} + \underbrace{4{,}008b}_{A_{logits}} = 5{,}032\,b$$
 
-Note $21.99$ — this lands close enough to the boundary that rounding the wrong way silently hands the user a
-config that OOMs. **Always floor, never round.**
+$$\text{total}(b) = \underbrace{8{,}585.02}_{W+W_{lora}+S+G} + 5{,}032b + \underbrace{500 + 0.05(7{,}753.02 + 5{,}032b)}_{C_{overhead}(b)} = 9{,}472.67 + 5{,}283.60\,b$$
 
-**Cross-check (Flash Attention OFF):** the softmax term adds
-$\gamma bn_hs^2 = 2 \cdot 4 \cdot 32 \cdot 2048^2 = 1{,}024$ MiB per layer, so $A_{layer} = 2{,}112$ MiB and
-$A_{act} = 4{,}160$ MiB.
+$$9{,}472.67 + 5{,}283.60\,b \le 23{,}500 \;\Rightarrow\; b \le 2.655 \;\Rightarrow\; b_{max} = \mathbf{2}$$
+
+Note the two slopes: activations grow at 5,032 MiB per batch unit but the **total** grows at 5,283.60,
+the extra 251.60 being $C_{overhead}$ following $A_{act}$ upward. Dividing headroom by the activation
+slope over-estimates how many batches fit — in the optimistic direction.
+
+And note $2.655$: **always floor, never round.** Rounding hands the user a config that OOMs on the
+first step, and an optimistic error is the only kind this tool actually costs anyone.
+
+> **Why bisection rather than this algebra.** Inside one branch the extrapolation above is exact.
+> But $\text{total}(b)$ is *piecewise* linear — it has a kink wherever the `max` flips from the
+> LM-head hump to the layer hump, which happens as $b$ and $s$ grow (the eager $s^2$ term flips it
+> sooner). Extrapolating across that kink gives the wrong answer; re-running the estimator is correct
+> regardless of the curve's shape, and stays correct as components are added.
+
+**Cross-check (Flash Attention OFF):** the eager score matrix adds
+$9\gamma bn_hs^2 = 9 \cdot 2 \cdot 4 \cdot 32 \cdot 2048^2 = 9{,}216$ MiB per layer, taking $A_{layer}$
+from 1,088 to $\mathbf{10{,}304}$ MiB. That is still below $A_{logits} = 16{,}032$, so the `max` picks
+the same branch and $A_{act}$ stays at $\mathbf{20{,}128}$ MiB. **Flash Attention saves 0 MiB at this
+shape** — a property of the 128k vocabulary, not a bug, and the kind of result only a `max` reveals.
 
 Every `memory/*.py` module must reproduce its row in this table for the corresponding inputs, and
 `test_end_to_end.py` must assert the **Total**.

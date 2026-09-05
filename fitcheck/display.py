@@ -18,8 +18,8 @@ from fitcheck.estimator import (
     _count_lora_params,
 )
 from fitcheck.gpu_db import GpuSpec, list_gpus
-from fitcheck.memory.activations import estimate_activation_memory
-from fitcheck.utils import precision_to_bytes
+from fitcheck.memory.activations import _activation_parts
+from fitcheck.utils import bytes_to_mib, precision_to_bytes
 
 _TIGHT_HEADROOM_FRACTION = 0.20
 _BAR_WIDTH = 44
@@ -491,46 +491,29 @@ def use_ascii_glyphs(console: Console) -> bool:
     return "utf" not in (console.encoding or "").casefold()
 
 
-def print_report(
-    report: MemoryReport,
-    config: ModelConfig,
-    gpu: GpuSpec,
-    training: TrainingConfig | None = None,
-    *,
-    console: Console | None = None,
-) -> None:
-    target_console = console if console is not None else make_console()
-    target_console.print(
-        render_report(
-            report, config, gpu, training, ascii_only=use_ascii_glyphs(target_console)
-        )
-    )
-
-
 def activation_breakdown(
     config: ModelConfig, training: TrainingConfig
 ) -> dict[str, float]:
-    def activations(grad_checkpoint: bool, flash_attn: bool) -> float:
-        return estimate_activation_memory(
-            config,
-            training.batch_size,
-            training.seq_len,
-            grad_checkpoint,
-            flash_attn,
-            training.precision,
-        )
+    parts = _activation_parts(
+        config,
+        training.batch_size,
+        training.seq_len,
+        training.flash_attn,
+        precision_to_bytes(training.precision),
+    )
 
-    layers = config.num_layers
-    layer_mib = activations(False, training.flash_attn) / layers
-    checkpointed_mib = activations(True, training.flash_attn)
+    layer_mib = bytes_to_mib(parts.layer_bytes)
+    logits_mib = bytes_to_mib(parts.logits_bytes)
+    store_mib = bytes_to_mib(parts.checkpoint_store_bytes)
 
     return {
         "layer_mib": layer_mib,
-        "attention_matrix_mib": (activations(False, False) - activations(False, True))
-        / layers,
-        "all_layers_mib": layer_mib * layers,
-        "stored_inputs_mib": checkpointed_mib - layer_mib,
-        "checkpointed_mib": checkpointed_mib,
+        "logits_mib": logits_mib,
+        "attention_matrix_mib": bytes_to_mib(parts.attention_matrix_bytes),
+        "checkpoint_store_mib": store_mib,
+        "resident_hump_mib": max(logits_mib, layer_mib),
+        "all_layers_mib": layer_mib * config.num_layers + logits_mib,
+        "checkpointed_mib": store_mib + max(logits_mib, layer_mib),
     }
 
 
@@ -591,29 +574,41 @@ def _activation_detail_table(
     table.add_column("MiB", justify="right")
 
     table.add_row("A_layer, all saved tensors for one layer", _mib(parts["layer_mib"]))
-    attention_note = (
-        "avoided by Flash Attention"
-        if training.flash_attn
-        else "included, no Flash Attention"
-    )
+    if training.flash_attn:
+        attention_note = "avoided by Flash Attention"
+    else:
+        attention_note = "included, no Flash Attention"
     table.add_row(
         f"  attention matrix (b, n_h, s, s): {attention_note}",
         _mib(parts["attention_matrix_mib"]),
+    )
+    table.add_row(
+        "A_logits, four fp32 copies of (b, s, V)", _mib(parts["logits_mib"])
+    )
+    table.add_row(
+        Text("  outside the layer stack: no grad ckpt, no Flash", style=_STYLE_LABEL),
+        "",
     )
 
     table.add_section()
     if training.grad_checkpoint:
         table.add_row(
-            f"x {layers} layers, no checkpointing (what you are NOT paying)",
+            f"L x A_layer + A_logits, no checkpointing (NOT paid)",
             Text(_mib(parts["all_layers_mib"]), style=_STYLE_LABEL),
         )
+        table.add_row(f"Checkpoint store (2L x {gamma_bsh})", _mib(parts["checkpoint_store_mib"]))
+        hump = "A_logits" if parts["logits_mib"] >= parts["layer_mib"] else "A_layer"
         table.add_row(
-            f"Stored layer inputs (L x {gamma_bsh})", _mib(parts["stored_inputs_mib"])
+            f"+ max(A_logits, A_layer) = {hump}, they never overlap",
+            _mib(parts["resident_hump_mib"]),
         )
-        table.add_row("+ one recomputed layer", _mib(parts["layer_mib"]))
         charged_mib = parts["checkpointed_mib"]
     else:
-        table.add_row(f"x {layers} layers, every layer's tensors kept", "")
+        table.add_row(
+            f"x {layers} layers, every layer's tensors kept",
+            _mib(parts["layer_mib"] * layers),
+        )
+        table.add_row("+ A_logits", _mib(parts["logits_mib"]))
         charged_mib = parts["all_layers_mib"]
 
     table.add_row(
@@ -646,15 +641,29 @@ def _why_largest(name: str, config: ModelConfig, training: TrainingConfig) -> st
             "quantization scales. That is close to the floor for a model this size."
         )
     if name == "activations":
+        parts = activation_breakdown(config, training)
+        logits_mib = parts["logits_mib"]
+        layer_mib = parts["layer_mib"]
         if training.grad_checkpoint:
+            if logits_mib >= layer_mib:
+                return (
+                    f"{_mib(logits_mib)} MiB of that is A_logits: four fp32 copies of the "
+                    f"(b, s, V) logits tensor, which a {config.vocab_size:,}-token "
+                    "vocabulary makes enormous. It sits outside the layer stack, so "
+                    "neither --grad-checkpoint nor --flash-attn reduces it -- only a "
+                    "smaller --batch-size or --seq-len does."
+                )
             return (
-                f"{config.num_layers} stored layer inputs plus one recomputed layer, "
-                f"at micro-batch {training.batch_size} x seq {training.seq_len:,}. "
-                "Lowering --batch-size or --seq-len is the lever here."
+                f"a {_mib(parts['checkpoint_store_mib'])} MiB checkpoint store plus one "
+                f"recomputed layer at {_mib(layer_mib)} MiB, at micro-batch "
+                f"{training.batch_size} x seq {training.seq_len:,}. Lowering --batch-size "
+                "or --seq-len is the lever here."
             )
         return (
-            f"all {config.num_layers} layers keep their full set of saved tensors. "
-            "--grad-checkpoint trades compute for most of this."
+            f"all {config.num_layers} layers keep their full set of saved tensors "
+            f"({_mib(layer_mib * config.num_layers)} MiB) plus {_mib(logits_mib)} MiB of "
+            "logits. --grad-checkpoint trades compute for most of the first part, and "
+            "none of the second."
         )
     if name == "optimizer states":
         if training.optimizer.strip().casefold() == "adamw":

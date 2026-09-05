@@ -1,7 +1,11 @@
 from __future__ import annotations
 import pytest
 from fitcheck.config_parser import ModelConfig
-from fitcheck.memory.activations import estimate_activation_memory
+from fitcheck.memory.activations import (
+    _ActivationParts,
+    _activation_parts,
+    estimate_activation_memory,
+)
 
 # Golden set: Llama-3.1-8B, bs=4, seq=2048, bf16 .
 _GOLDEN_BATCH = 4
@@ -278,3 +282,42 @@ def test_rejects_non_boolean_flags_and_unsupported_precision(llama: ModelConfig)
         _estimate(llama, flash_attn=1)
     with pytest.raises(ValueError, match="Unsupported precision"):
         _estimate(llama, precision="fp4")
+
+
+def _parts(config: ModelConfig, *, flash_attn: bool = True) -> _ActivationParts:
+    return _activation_parts(config, _GOLDEN_BATCH, _GOLDEN_SEQ, flash_attn, 2.0)
+
+
+def test_activation_parts_are_the_golden_terms(llama: ModelConfig) -> None:
+    parts = _parts(llama)
+
+    assert parts.layer_bytes / 1024**2 == pytest.approx(_A_LAYER_FLASH, rel=1e-9)
+    assert parts.logits_bytes / 1024**2 == pytest.approx(_LOGITS, rel=1e-9)
+    assert parts.checkpoint_store_bytes / 1024**2 == pytest.approx(_CKPT_STORE, rel=1e-9)
+    assert parts.attention_matrix_bytes / 1024**2 == pytest.approx(9 * 1_024.0, rel=1e-9)
+
+
+def test_attention_matrix_part_is_nine_gamma_and_only_without_flash(
+    llama: ModelConfig,
+) -> None:
+    eager = _parts(llama, flash_attn=False)
+    assert eager.layer_bytes / 1024**2 == pytest.approx(_A_LAYER_NO_FLASH, rel=1e-9)
+    assert _parts(llama).layer_bytes / 1024**2 == pytest.approx(_A_LAYER_FLASH, rel=1e-9)
+    assert eager.logits_bytes == _parts(llama).logits_bytes
+    assert eager.checkpoint_store_bytes == _parts(llama).checkpoint_store_bytes
+
+
+def test_parts_reconstruct_the_public_estimate(llama: ModelConfig) -> None:
+    for flash_attn in (True, False):
+        parts = _parts(llama, flash_attn=flash_attn)
+        checkpointed = parts.checkpoint_store_bytes + max(
+            parts.logits_bytes, parts.layer_bytes
+        )
+        uncheckpointed = llama.num_layers * parts.layer_bytes + parts.logits_bytes
+
+        assert _estimate(llama, flash_attn=flash_attn) == pytest.approx(
+            checkpointed / 1024**2, rel=1e-9
+        )
+        assert _estimate(
+            llama, flash_attn=flash_attn, grad_checkpoint=False
+        ) == pytest.approx(uncheckpointed / 1024**2, rel=1e-9)

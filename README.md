@@ -1,5 +1,10 @@
 # fitcheck
 
+[![CI](https://github.com/Anassbzdd/fitcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/Anassbzdd/fitcheck/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/fitcheck-llm.svg)](https://pypi.org/project/fitcheck-llm/)
+[![Python](https://img.shields.io/pypi/pyversions/fitcheck-llm.svg)](https://pypi.org/project/fitcheck-llm/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Predict how much VRAM a LoRA/QLoRA fine-tune will need — before you launch it.
 
 `fitcheck` reads a model's `config.json` from the Hugging Face Hub (~2 KB, never the weights)
@@ -216,7 +221,7 @@ fitcheck infer meta-llama/Llama-3.1-8B --quant nf4 --double-quant --gpu 4090
 # 8 concurrent requests at 8k context -- 14,919 MiB, still fits a 4090
 fitcheck infer meta-llama/Llama-3.1-8B --quant nf4 --double-quant --seq-len 8192 --concurrent 8
 
-# Doesn't fit: fp16 weights alone are 15,317 MiB and a T4 has 15,360 usable. Exits 1.
+# Doesn't fit: fp16 weights alone are 15,317 MiB and a T4 has 14,000 usable. Exits 1.
 fitcheck infer meta-llama/Llama-3.1-8B --gpu t4
 
 # Machine-readable, for CI
@@ -350,9 +355,11 @@ Be as clear about the gaps as about the results:
 - **`fitcheck infer` in full.** Every measured row is a training run. The serving path
   (resident weights + KV cache) shares the weight formula, which is measured, but the cache
   term and the serving overhead constant have no measured row of their own.
-- **The T4 entry in `gpu_db.py` is wrong** and wrong in the unsafe direction: it claims 15,360 MiB
-  usable of 16,384, but the card reports 14,912 MiB total. Vendor GB was treated as GiB. Every ECC
-  datacenter entry needs the same audit.
+- **Every GPU entry except the T4.** The T4 used to claim 15,360 MiB usable of 16,384 when the card
+  actually reports 14,912 MiB total — vendor GB treated as GiB, unsafe direction — and is now
+  corrected to its measured `14_912 / 14_000`. It is the only row in `gpu_db.py` backed by a
+  measurement. The rest are estimates, and `h200` / `b200` deliberately take the `usable_mib` that
+  is safe under the pessimistic reading of their vendor GB until someone measures them.
 
 Reproducing any of this needs one command:
 
@@ -368,12 +375,19 @@ python scripts/measure.py TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
 ## How it works
 
 Peak VRAM is modelled as `W_base + W_lora + S_optim + G_grad + A_act + C_overhead`, one module
-per term under [`fitcheck/memory/`](fitcheck/memory/): base weights (param count from config ×
-bytes/param, plus NF4 scale overhead), LoRA adapters (`r × (d_in + d_out)` per target, with
+per term under [`fitcheck/memory/`](fitcheck/memory/): base weights (only the transformer linears
+are packed under `--quant` — the embeddings, LM head and norms stay unquantized and get upcast to
+FP32, plus one FP32 NF4 scale per block of 64), LoRA adapters (`r × (d_in + d_out)` per target, with
 `k_proj`/`v_proj` narrowed to `num_kv_heads × head_dim` under GQA), optimizer states (trainable
 params only — 8 bytes/param for AdamW, whose states stay FP32 even when you train in BF16),
 gradients, activations, and CUDA overhead. `estimator.py` orchestrates the six and returns a
 `MemoryReport`.
+
+Two dtype rules catch people out, and both come from the same peft call. On a **quantized** base,
+`prepare_model_for_kbit_training` upcasts everything trainable to FP32 — so QLoRA's adapters are
+FP32, not the bf16 you asked for, and the gradients follow them there. `--precision` is the
+**compute** dtype and drives activations; `--quant` is how the base is **stored**. They are separate
+axes on purpose.
 
 Activations are the hard term and the one worth reading about. `A_layer` sums the twelve tensors
 autograd saves per decoder layer, plus the `(b, n_h, s, s)` attention score matrix when Flash
@@ -397,7 +411,9 @@ one point: `total(b)` is piecewise linear, with a kink wherever that `max` flips
 
 Serving reuses the same weight term and adds one of its own:
 `2 · L · (n_kv × head_dim) · s · concurrent · bytes` for the KV cache, GQA-narrowed like the
-rest. `max_concurrent` is then just the free space divided by the per-request cache.
+rest. `max_concurrent` is found the same way `max_batch_size` is — by bisecting the whole estimate
+and flooring, not by dividing free space by the per-request cache. That shortcut over-counts,
+because `C_overhead` is a percentage of a total that itself grows with the cache.
 
 See [SPEC.md](docs/SPEC.md) for the full memory model, and
 [Blueprint.md](docs/Blueprint.md) for the derivations.
@@ -412,8 +428,8 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 252
-  offline tests, with 100% line coverage on all six `memory/` modules; ≥80% there is the
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 331
+  offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the
   floor. The `-m "not network"` filter is not optional: it skips the one test that fetches the
   gated `meta-llama/Llama-3.1-8B` for real, which fails without an `HF_TOKEN`. The offline
   tests cover the same parsing against a fixture.
@@ -424,14 +440,15 @@ The bar for a merge:
   `float`. Linting and type checking aren't wired up yet; if you want to add `ruff` and `mypy`
   configs, that's a welcome PR on its own.
 
-There's no `CONTRIBUTING.md` yet — one should be added, and it should start by absorbing this
-section.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the full version, including the two non-negotiable
+constraints (no `torch` in the package, `config.json` only).
 
 The most useful thing you can contribute right now is **a measured row on hardware that is not a
 Tesla T4**. Every number in the validation table comes from one card, which means BF16 and real
 FlashAttention-2 (both need sm_80 or newer) have never been exercised, and the 500 MiB CUDA-context
 constant has been checked exactly once. If you have an Ampere or newer GPU, one run of
-`scripts/measure.py` is worth more to this project than any feature.
+`scripts/measure.py` is worth more to this project than any feature — open it with the
+[measurement issue template](.github/ISSUE_TEMPLATE/measurement.yml).
 
 ---
 

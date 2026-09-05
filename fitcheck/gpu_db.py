@@ -7,6 +7,10 @@ class GpuSpec:
     vram_mib: int
     usable_mib: int
 
+# `t4` is the only entry with a measured total (14,912 MiB reported by
+# torch.cuda.get_device_properties across all 20 validation runs, ECC on). Every other row is
+# an estimate. A measured row for any of them is a genuinely useful contribution -- see
+# .github/ISSUE_TEMPLATE/measurement.yml.
 
 GPU_DB: dict[str, GpuSpec] = {
     # Consumer GPUs
@@ -20,7 +24,8 @@ GPU_DB: dict[str, GpuSpec] = {
     "5090": GpuSpec("RTX 5090", 32_768, 31_000),
 
     # Older / cloud GPUs
-    "t4": GpuSpec("Tesla T4", 16_384, 15_360),
+    # Measured: 14,912 MiB total with ECC on, not the 16,384 a "16 GB" label suggests.
+    "t4": GpuSpec("Tesla T4", 14_912, 14_000),
     "v100-16": GpuSpec("Tesla V100 16GB", 16_384, 15_000),
     "l4": GpuSpec("L4 24GB", 24_576, 23_000),
     "a10": GpuSpec("A10 24GB", 24_576, 23_000),
@@ -36,8 +41,8 @@ GPU_DB: dict[str, GpuSpec] = {
     "a100-80": GpuSpec("A100 80GB", 81_920, 79_000),
     "h100": GpuSpec("H100 80GB", 81_920, 79_000),
     "h100-80": GpuSpec("H100 80GB", 81_920, 79_000),
-    "h200": GpuSpec("H200 141GB", 144_384, 140_000),
-    "b200": GpuSpec("B200 192GB", 196_608, 190_000),
+    "h200": GpuSpec("H200 141GB", 144_384, 134_000),
+    "b200": GpuSpec("B200 192GB", 196_608, 176_000),
 }
 
 

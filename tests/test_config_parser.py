@@ -250,9 +250,10 @@ def test_fetch_model_config_missing_intermediate_size_falls_back_to_4h(
     config = fetch_model_config("fake-org/tied-model")
 
     assert config.intermediate_size == 4 * config.hidden_size
-    printed = capsys.readouterr().out
-    assert "'intermediate_size' not in config.json" in printed
-    assert "4 x hidden_size" in printed
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "'intermediate_size' not in config.json" in captured.err
+    assert "4 x hidden_size" in captured.err
 
 
 def test_fetch_model_config_hidden_size_not_divisible_by_heads_raises(

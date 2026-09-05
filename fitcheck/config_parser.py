@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -64,8 +65,9 @@ def _num_kv_heads(raw: Mapping[str, Any], num_attention_heads: int) -> int:
 def _intermediate_size(raw: Mapping[str, Any], hidden_size: int) -> int:
     if raw.get("intermediate_size") is None:
         print(
-            "Warning: 'intermediate_size' not in config.json — "
-            "assuming 4 x hidden_size (can be 10-30% off the model's actual FFN size)."
+            "Warning: 'intermediate_size' not in config.json - "
+            "assuming 4 x hidden_size (can be 10-30% off the model's actual FFN size).",
+            file=sys.stderr,
         )
         return 4 * hidden_size
     return _required_int(raw, "intermediate_size")

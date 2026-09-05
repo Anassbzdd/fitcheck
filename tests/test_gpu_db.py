@@ -6,7 +6,7 @@ from fitcheck.gpu_db import get_gpu
 @pytest.mark.parametrize(
     ("gpu_name", "display_name", "vram_mib", "usable_mib"),
     [
-        ("t4", "Tesla T4", 16_384, 15_360),
+        ("t4", "Tesla T4", 14_912, 14_000),
         ("4090", "RTX 4090", 24_576, 23_500),
         ("a100-80", "A100 80GB", 81_920, 79_000),
         ("3090", "RTX 3090", 24_576, 23_500),

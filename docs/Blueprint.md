@@ -181,9 +181,14 @@ Using the real Llama-3.1-8B count, $P = 8{,}030{,}261{,}248$:
 >
 > Together these take $W_{base}$ from the 4,068 MiB this document used to claim to **7,753 MiB**. The measured Mistral split was NF4 linears 3,328 + scales 416 + unquantized FP32 1,129 MiB, against a formula prediction of 3,328 + 416 + 1,129 — exact.
 >
-> With **double quantization**, the scales themselves are quantized, reducing this overhead by ~50% (to ~120 MiB). `fitcheck` models both modes, but `--qlora` leaves double quant **off** — the `bitsandbytes` recipe usually turns it on, so fitcheck's default is the more expensive of the two readings. Pass `--double-quant` to model it, and note that the estimate only ever moves *down* when you do.
->
-> One assumption worth knowing you are making: the scale is counted as **FP16**. `bitsandbytes` actually keeps `absmax` in FP32 when double quant is off, which would cost 479 MiB rather than 239 MiB here. v0.1 keeps FP16 — see SPEC Component 1, "Known simplification — scale dtype", and TASKS 6.3.
+> With **double quantization**, the scales themselves are quantized, cutting this overhead by roughly
+> three quarters on paper. `fitcheck` models both modes, but `--qlora` leaves double quant **off** —
+> the `bitsandbytes` recipe usually turns it on, so fitcheck's default is the more expensive of the two
+> readings. Pass `--double-quant` to model it, and note that the estimate only ever moves *down* when
+> you do. The implementation currently applies a flat ×0.5 there where the derivation gives ×0.254, so
+> it over-states double-quant scales by ~102 MiB on this model — over-counting, which is the safe
+> direction, and unmeasured either way. See SPEC Component 1, "Known simplification — the double-quant
+> factor".
 
 ### Component 2: LoRA Adapter Weights
 
@@ -199,19 +204,32 @@ $$\text{LoRA params per module} = r \times (d_{in} + d_{out})$$
 > - `v_proj`: $d_{in} = h,\quad d_{out} = n_{kv} \times d_k$ (smaller!)
 > - `o_proj`: $d_{in} = h,\quad d_{out} = h$ (unchanged)
 >
-> For Llama 3.1-8B with 32 Q heads and 8 KV heads: `k_proj` and `v_proj` have $d_{out} = 8 \times 128 = 1024$, not 4096. Failing to account for this **over-estimates LoRA memory by 23%** on that shape — 128 MiB claimed against 104 MiB real, worked through in Step 2 below.
+> For Llama 3.1-8B with 32 Q heads and 8 KV heads: `k_proj` and `v_proj` have $d_{out} = 8 \times 128 = 1024$, not 4096. Failing to account for this **over-estimates LoRA memory by 23%** on that shape — 256 MiB claimed against 208 MiB real, worked through in Step 2 below.
 
 The general formula accounting for GQA:
 
 $$\text{Total LoRA params} = L \times r \times \sum_{m \in \text{targets}} (d_{in}^{(m)} + d_{out}^{(m)})$$
 
-These are stored in the **compute precision** — the same $\gamma$ that drives gradients and
-activations, not a constant:
+These are stored in $\gamma_{adapter}$, the dtype the trainable parameters are actually held in:
 
-$$\text{LoRA Memory} = \text{Total LoRA params} \times \gamma \qquad (\gamma = 2 \text{ for BF16/FP16},\ 4 \text{ for FP32})$$
+$$\text{LoRA Memory} = \text{Total LoRA params} \times \gamma_{adapter}$$
 
-The adapters are trained, so they follow `--precision`, never the base model's `--quant`. In QLoRA the
-base is 4-bit and the adapters are still BF16; that asymmetry is the whole point of the method.
+$$\gamma_{adapter} = \begin{cases} 4 \text{ bytes (FP32)} & \text{the base is quantized} \\ \gamma \text{ (the compute dtype)} & \text{the base is not} \end{cases}$$
+
+> [!WARNING]
+> **On a quantized base the adapters are FP32, whatever `--precision` says.** It is tempting to reason
+> that adapters are trainable, therefore they follow the compute dtype, therefore QLoRA trains BF16
+> adapters on a 4-bit base — and that is the version of the story everyone tells. What actually
+> happens is that peft's `prepare_model_for_kbit_training` upcasts every trainable parameter to FP32,
+> the same call that upcasts the embeddings and LM head in Component 1. It never consults
+> `--precision`.
+>
+> So the golden config's adapters cost **208 MiB, not 104**, and the gradients that follow them cost
+> 208 rather than 104 as well (Component 4). Believing the BF16 version under-counts a QLoRA run by
+> 208 MiB — small next to the activations, but low, and low is the direction that OOMs someone.
+>
+> The 4-bit base with higher-precision adapters is still the asymmetry that makes the method work.
+> The adapters are simply further up than the folklore suggests.
 
 ### Component 3: Optimizer States
 
@@ -236,9 +254,16 @@ $$\text{Optimizer Memory} = \text{trainable\_params} \times \text{bytes\_per\_pa
 
 ### Component 4: Gradients
 
-During backward, PyTorch allocates a `.grad` tensor for each trainable parameter. Same shape, same dtype as the parameter — so this term scales with the **compute** precision, exactly like activations:
+During backward, PyTorch allocates a `.grad` tensor for each trainable parameter. Same shape, **same
+dtype as the parameter** — so this term tracks $\gamma_{adapter}$ from Component 2, not the compute
+dtype:
 
-$$\text{Gradient Memory} = \text{trainable\_params} \times \gamma \qquad (\gamma = 2 \text{ for BF16/FP16},\ 4 \text{ for FP32})$$
+$$\text{Gradient Memory} = \text{trainable\_params} \times \gamma_{adapter}$$
+
+The distinction only bites when the two differ, which is exactly the QLoRA case: bf16 compute, FP32
+adapters, and therefore **FP32 gradients**. Read this term off `--precision` and you halve it on every
+QLoRA run. Under full fine-tuning there is no upcast and $\gamma_{adapter} = \gamma$, so the simpler
+reading is right there.
 
 With gradient accumulation, gradients are **not** multiplied by the accumulation steps — they're accumulated in-place into the same tensor.
 
@@ -484,7 +509,8 @@ fitcheck/
 │   ├── optimizer.py         # Component 3
 │   ├── gradients.py         # Component 4
 │   ├── activations.py       # Component 5
-│   └── overhead.py          # Component 6
+│   ├── overhead.py          # Component 6
+│   └── inference.py         # Component 7 — serving (v0.2), not in the training equation
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Phase 2: parameter sweep (stub in MVP)
@@ -500,6 +526,7 @@ tests/
 ├── test_gradients.py
 ├── test_activations.py
 ├── test_overhead.py
+├── test_inference.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
 scripts/                     # NOT installed with the package
 ├── measure.py               # ground-truth harness: real GPU, real training step
@@ -536,21 +563,36 @@ Let's compute memory for **Llama-3.1-8B + QLoRA on an RTX 4090**:
 
 **Step 1 — Base weights (NF4):**
 
-Work in bytes, convert to MiB exactly once at the end:
+Work in bytes, convert to MiB exactly once at the end. The base splits in two: only the transformer
+`nn.Linear` weights are packed, and the embeddings, LM head and norms are left alone by
+`bitsandbytes` and then upcast to FP32 by peft.
 
-$$P \times 0.5\text{ bytes} = 8{,}030{,}261{,}248 \times 0.5 = 4{,}015{,}130{,}624\text{ bytes} = 3{,}829.13\text{ MiB}$$
+$$P_{skip} = 2Vh + (2Lh + h) = 1{,}050{,}673{,}152 + 266{,}240 = 1{,}050{,}939{,}392$$
 
-$$Q_{overhead} = P \times \tfrac{2}{64}\text{ bytes} = 250{,}945{,}664\text{ bytes} = 239.32\text{ MiB}$$
+$$P_q = P - P_{skip} = 8{,}030{,}261{,}248 - 1{,}050{,}939{,}392 = 6{,}979{,}321{,}856$$
 
-$$W_{base} = 4{,}266{,}076{,}288\text{ bytes} = \mathbf{4{,}068.45\text{ MiB}}$$
+$$P_q \times 0.5\text{ bytes} = 3{,}489{,}660{,}928\text{ bytes} = 3{,}328.00\text{ MiB}$$
 
-(one FP16 scale per block of 64 weights)
+$$Q_{overhead} = P_q \times \tfrac{4}{64}\text{ bytes} = 436{,}207{,}616\text{ bytes} = 416.00\text{ MiB}$$
+
+$$P_{skip} \times 4\text{ bytes} = 4{,}203{,}757{,}568\text{ bytes} = 4{,}009.02\text{ MiB}$$
+
+$$W_{base} = 8{,}129{,}626{,}112\text{ bytes} = \mathbf{7{,}753.02\text{ MiB}}$$
+
+(one **FP32** absmax scale per block of 64 packed weights)
+
+> [!WARNING]
+> **The two mistakes this step exists to prevent.** A flat $P \times 0.5$ over the whole model gives
+> 3,829 MiB and misses the 4,009 MiB FP32 slice entirely; FP16 scales give 239 MiB instead of 416.
+> Together they produce the **4,068.45 MiB** this document published until 2026-08-31 — 47% low, and
+> low is the direction that OOMs the user. Both were confirmed to the MiB against a measured
+> Mistral-7B-v0.3 storage breakdown on a Kaggle T4.
 
 > [!WARNING]
 > **MiB is not MB, and this is exactly where people get burned.** That same number is
-> $4{,}266{,}076{,}288$ bytes $= 4{,}266$ **MB** $= 4{,}068$ **MiB** — a 4.9% gap. GPU vendors advertise in GB
+> $8{,}129{,}626{,}112$ bytes $= 8{,}130$ **MB** $= 7{,}753$ **MiB** — a 4.9% gap. GPU vendors advertise in GB
 > ($10^9$), PyTorch reports in MiB ($1024^2$), and every intermediate step above is tempting to round in the
-> wrong unit. Quoting 4,266 as "MiB" would be enough on its own to flip a fits/doesn't-fit verdict for a
+> wrong unit. Quoting 8,130 as "MiB" would be enough on its own to flip a fits/doesn't-fit verdict for a
 > config sitting near the edge of a 24 GB card. **`fitcheck` reports MiB everywhere; convert once, at the
 > boundary.**
 
@@ -571,7 +613,13 @@ $$\text{LoRA params per layer} = 524{,}288 + 327{,}680 + 327{,}680 + 524{,}288 =
 
 $$\text{Total LoRA params} = 32 \times 1{,}703{,}936 = 54{,}525{,}952 \approx 54.5\text{M params}$$
 
-$$\text{LoRA memory} = 54.5\text{M} \times 2\text{ bytes} = 104\text{ MiB}$$
+The base is NF4 here, so peft's `prepare_model_for_kbit_training` holds the adapters in **FP32**,
+not the bf16 compute dtype:
+
+$$\text{LoRA memory} = 54{,}525{,}952 \times 4\text{ bytes} = 218{,}103{,}808\text{ bytes} = \mathbf{208\text{ MiB}}$$
+
+(On an *unquantized* base the adapters follow `--precision` and this would be 104 MiB. The
+quantization axis decides, not the compute one.)
 
 > [!NOTE]
 > **Compare with the naïve (wrong) calculation:** If you assumed $d_{out} = 4096$ for all projections (ignoring GQA), you'd get $67\text{M}$ params and $128\text{ MiB}$ — **a 23% over-estimate.** This is why `fitcheck` must read the actual weight shapes from `config.json`.
@@ -588,7 +636,10 @@ $$54.5\text{M} \times 8\text{ bytes} = 416\text{ MiB}$$
 
 **Step 4 — Gradients:**
 
-$$54.5\text{M} \times 2\text{ bytes} = 104\text{ MiB}$$
+A `.grad` matches its parameter's dtype, and Step 2 put the adapters in FP32, so the gradients are
+FP32 too — not the 2 bytes the bf16 compute dtype would suggest:
+
+$$54{,}525{,}952 \times 4\text{ bytes} = 218{,}103{,}808\text{ bytes} = \mathbf{208\text{ MiB}}$$
 
 ---
 
@@ -913,9 +964,9 @@ $$\boxed{\text{Peak VRAM} = W_{base} + W_{lora} + S_{optim} + G_{grad} + A_{act}
 
 Where:
 - $W_{base}$ = base model weight memory (function of param count + **storage** precision + quantization overhead)
-- $W_{lora}$ = LoRA adapter memory (function of rank, targets, layers, **GQA head dimensions**, and the **compute** precision — adapters follow `--precision`, never the base model's `--quant`)
+- $W_{lora}$ = LoRA adapter memory (function of rank, targets, layers, **GQA head dimensions**, and $\gamma_{adapter}$ — FP32 whenever the base is quantized, the compute precision otherwise)
 - $S_{optim}$ = optimizer states (function of trainable params + optimizer type + **master weight copy for full FT**)
-- $G_{grad}$ = gradient memory (function of trainable params + **compute** precision)
+- $G_{grad}$ = gradient memory (function of trainable params + $\gamma_{adapter}$ — a `.grad` matches its parameter's dtype, so QLoRA gradients are FP32)
 - $\gamma$ = bytes per activation element, from the **compute** precision (2 for BF16/FP16, 4 for FP32)
 - $A_{act}$ = activation memory — **this is the hard one:**
 

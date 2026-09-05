@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
     branches: [main]
 
@@ -32,10 +32,6 @@ jobs:
       - name: Run tests
         run: pytest --cov=fitcheck --cov-report=term-missing --cov-report=xml -m "not network"
 
-      # One upload per run, not three: the matrix legs produce identical
-      # coverage, so only 3.12 reports. Non-blocking on purpose — a Codecov
-      # outage must not turn a passing test suite red (SPEC 4: a green run
-      # is a v0.1 ship condition).
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v5

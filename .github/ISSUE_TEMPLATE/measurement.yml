@@ -1,0 +1,102 @@
+name: Measured VRAM row
+description: Submit a real predicted-vs-measured run for the validation matrix.
+title: "[measurement] <model> on <gpu>"
+labels: ["measurement", "validation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you — this is the single most useful contribution to the project right now.
+
+        Every number in the validation matrix comes from **one Tesla T4**, which means BF16 and real
+        FlashAttention-2 (both need sm_80 or newer) have never been exercised, and the CUDA-context
+        constant has been checked exactly once. A run on anything Ampere or newer is worth more than
+        any feature.
+
+        Produce a row with one command — it prints everything below, ready to paste:
+
+        ```bash
+        pip install -r scripts/requirements-measure.txt
+        python scripts/measure.py <model_id> --qlora --precision fp16 \
+            --lora-r 32 --batch-size 2 --seq-len 1024 --gpu <gpu>
+        ```
+
+        No GPU handy? `fitcheck.ipynb` runs the same harness on a free Kaggle/Colab T4 — though a
+        second *kind* of card is what the project actually needs.
+
+  - type: textarea
+    id: harness-output
+    attributes:
+      label: Full `scripts/measure.py` output
+      description: Paste it verbatim, including the environment header. Do not trim the tiers.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      description: As reported by `torch.cuda.get_device_name()`, plus total MiB from `get_device_properties`.
+      placeholder: "NVIDIA A100-SXM4-40GB, 40536 MiB total"
+    validations:
+      required: true
+
+  - type: input
+    id: fitcheck-version
+    attributes:
+      label: fitcheck version
+      description: Output of `fitcheck -V`.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: torch / transformers / peft / bitsandbytes versions
+      placeholder: |
+        torch 2.4.1+cu121
+        transformers 4.56.0
+        peft 0.13.0
+        bitsandbytes 0.43.3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: attention
+    attributes:
+      label: Attention kernel
+      options:
+        - eager (materializes the s^2 matrix)
+        - SDPA memory-efficient (no s^2 matrix)
+        - FlashAttention-2
+        - other / not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: gaps
+    attributes:
+      label: Does this run cover a known gap?
+      description: Tick anything that applies — these are the paths with no measured row at all.
+      options:
+        - label: Not a Tesla T4
+        - label: BF16 compute
+        - label: Real FlashAttention-2 (not an SDPA stand-in)
+        - label: Gradient checkpointing OFF
+        - label: "`--quant none` or `--quant int8`"
+        - label: Full fine-tuning (`--no-lora`)
+        - label: "`--double-quant`"
+        - label: Sequence length above 2048
+        - label: "`fitcheck infer` (serving, not training)"
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything surprising?
+      description: >
+        Especially if a tier is off by more than ~10%, or the process tier and the tensors tier
+        disagree in a way the fragmentation note in SPEC Component 6 does not explain.
+    validations:
+      required: false

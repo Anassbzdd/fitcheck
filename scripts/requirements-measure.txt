@@ -1,28 +1,5 @@
-# Dependencies for scripts/measure.py ONLY -- the ground-truth harness.
-#
-# These are deliberately NOT in pyproject.toml. Installing `fitcheck-llm` must stay a
-# few-KB, no-GPU, no-CUDA install (CLAUDE.md, "Hard Constraints"): the whole premise is
-# that an estimate costs a config.json and nothing else. This file is what a contributor
-# installs when they want to produce a *measured* row for the validation matrix.
-#
-#     pip install -r scripts/requirements-measure.txt
-#
-# torch is intentionally unpinned here: install the build that matches your CUDA
-# version first, following https://pytorch.org/get-started/locally/, then install
-# the rest of this file.
-
 torch>=2.1
-# >=4.56 specifically: build_model() passes from_pretrained(dtype=...), which older
-# releases only accept spelled torch_dtype. Kaggle/Colab images often ship an older
-# transformers, so upgrade it there rather than relying on the preinstalled one.
 transformers>=4.56
 peft>=0.11
 accelerate>=0.30
-
-# Required only for --quant nf4 / --quant int8 / --optimizer adam8bit.
-# Linux and WSL are best supported; Windows wheels exist but lag.
 bitsandbytes>=0.43
-
-# Required only for --flash-attn. Needs a CUDA toolchain to build and does not
-# support all architectures -- skip it and run without --flash-attn if it fights you.
-# flash-attn>=2.5

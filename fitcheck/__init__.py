@@ -3,6 +3,14 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
+from fitcheck.advisor import (
+    AdvisorReport,
+    AxisCeiling,
+    AxisPrice,
+    FrontierPoint,
+    SweepSpec,
+    advise,
+)
 from fitcheck.config_parser import ModelConfig, fetch_model_config
 from fitcheck.estimator import (
     InferenceReport,
@@ -21,13 +29,19 @@ except PackageNotFoundError:
 
 __all__ = [
     "GPU_DB",
+    "AdvisorReport",
+    "AxisCeiling",
+    "AxisPrice",
+    "FrontierPoint",
     "GpuSpec",
     "InferenceReport",
     "MemoryReport",
     "ModelConfig",
     "ServingConfig",
+    "SweepSpec",
     "TrainingConfig",
     "__version__",
+    "advise",
     "estimate",
     "estimate_inference",
     "fetch_model_config",

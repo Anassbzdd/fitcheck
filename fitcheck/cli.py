@@ -12,14 +12,12 @@ from rich.console import Console
 
 from fitcheck.config_parser import ModelConfig, fetch_model_config
 from fitcheck.display import (
-    activation_breakdown,
     make_console,
     render_explanation,
     render_gpu_table,
     render_inference_report,
     render_report,
     render_verbose_detail,
-    trainable_params,
     use_ascii_glyphs,
 )
 from fitcheck.estimator import (
@@ -27,8 +25,10 @@ from fitcheck.estimator import (
     MemoryReport,
     ServingConfig,
     TrainingConfig,
+    activation_breakdown,
     estimate,
     estimate_inference,
+    trainable_params,
 )
 from fitcheck.gpu_db import GpuSpec, get_gpu
 from fitcheck.memory.lora import (

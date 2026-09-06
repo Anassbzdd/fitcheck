@@ -15,11 +15,11 @@ from fitcheck.estimator import (
     MemoryReport,
     ServingConfig,
     TrainingConfig,
-    _count_lora_params,
+    activation_breakdown,
+    trainable_params,
 )
 from fitcheck.gpu_db import GpuSpec, list_gpus
-from fitcheck.memory.activations import _activation_parts
-from fitcheck.utils import bytes_to_mib, precision_to_bytes
+from fitcheck.utils import precision_to_bytes
 
 _TIGHT_HEADROOM_FRACTION = 0.20
 _BAR_WIDTH = 44
@@ -489,39 +489,6 @@ def make_console(*, no_color: bool = False) -> Console:
 
 def use_ascii_glyphs(console: Console) -> bool:
     return "utf" not in (console.encoding or "").casefold()
-
-
-def activation_breakdown(
-    config: ModelConfig, training: TrainingConfig
-) -> dict[str, float]:
-    parts = _activation_parts(
-        config,
-        training.batch_size,
-        training.seq_len,
-        training.flash_attn,
-        precision_to_bytes(training.precision),
-    )
-
-    layer_mib = bytes_to_mib(parts.layer_bytes)
-    logits_mib = bytes_to_mib(parts.logits_bytes)
-    store_mib = bytes_to_mib(parts.checkpoint_store_bytes)
-
-    return {
-        "layer_mib": layer_mib,
-        "logits_mib": logits_mib,
-        "attention_matrix_mib": bytes_to_mib(parts.attention_matrix_bytes),
-        "checkpoint_store_mib": store_mib,
-        "resident_hump_mib": max(logits_mib, layer_mib),
-        "all_layers_mib": layer_mib * config.num_layers + logits_mib,
-        "checkpointed_mib": store_mib + max(logits_mib, layer_mib),
-    }
-
-
-def trainable_params(config: ModelConfig, training: TrainingConfig) -> int:
-    """Trainable parameter count: the LoRA adapters, or every parameter for full FT."""
-    if training.lora_rank is None:
-        return config.num_params
-    return _count_lora_params(config, training.lora_rank, training.lora_targets)
 
 
 def _geometry_grid(config: ModelConfig, training: TrainingConfig) -> Table:

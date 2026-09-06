@@ -69,7 +69,7 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 | Feature | Phase | Notes |
 |:---|:---:|:---|
 | `fitcheck infer <model>` — inference mode | 1.5 | KV cache math, concurrent request estimation — **done, v0.2** (§3.1 Component 7, §3.5 Mode C) |
-| `fitcheck advise` — config advisor | 2 | Pareto sweep of (batch_size, lora_r, seq_len) |
+| `fitcheck advise` — config advisor | 2 | Sweep of (batch_size, lora_r, seq_len) → per-axis prices, per-axis ceilings, and the frontier at the edge of what fits. Dominance is over **two** objectives (maximise tokens/step, maximise rank) with `total_mib ≤ usable` as the *constraint*, not a third objective: MiB is a monotone function of the other two, so minimising it filters nothing (measured 60 of 60 fitting points surviving on a 150-point Llama-3.1-8B grid) |
 | Calibration mode | 3 | 1 real forward pass → correction factor |
 | HuggingFace Gradio Space | 3 | Web UI for non-CLI users |
 | Cost estimator (RunPod/Lambda pricing) | 3 | |

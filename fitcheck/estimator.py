@@ -6,7 +6,7 @@ from typing import Callable, Iterable
 
 from fitcheck.config_parser import ModelConfig
 from fitcheck.gpu_db import GpuSpec
-from fitcheck.memory.activations import estimate_activation_memory
+from fitcheck.memory.activations import _activation_parts, estimate_activation_memory
 from fitcheck.memory.gradients import estimate_gradient_memory
 from fitcheck.memory.inference import InferenceMemory, estimate_inference_memory
 from fitcheck.memory.lora import (
@@ -17,6 +17,7 @@ from fitcheck.memory.lora import (
 from fitcheck.memory.optimizer import estimate_optimizer_memory
 from fitcheck.memory.overhead import estimate_overhead
 from fitcheck.memory.weights import QuantizationConfig, estimate_weight_memory
+from fitcheck.utils import bytes_to_mib, precision_to_bytes
 
 _QUANTIZATIONS = ("none", "nf4", "int8")
 _MAX_SEARCH_CEILING = 1 << 20
@@ -142,6 +143,38 @@ def _count_lora_params(config: ModelConfig, rank: int, targets: Iterable[str]) -
         dims_sum += d_in + d_out
 
     return config.num_layers * rank * dims_sum
+
+
+def trainable_params(config: ModelConfig, training: TrainingConfig) -> int:
+    if training.lora_rank is None:
+        return config.num_params
+    return _count_lora_params(config, training.lora_rank, training.lora_targets)
+
+
+def activation_breakdown(
+    config: ModelConfig, training: TrainingConfig
+) -> dict[str, float]:
+    parts = _activation_parts(
+        config,
+        training.batch_size,
+        training.seq_len,
+        training.flash_attn,
+        precision_to_bytes(training.precision),
+    )
+
+    layer_mib = bytes_to_mib(parts.layer_bytes)
+    logits_mib = bytes_to_mib(parts.logits_bytes)
+    store_mib = bytes_to_mib(parts.checkpoint_store_bytes)
+
+    return {
+        "layer_mib": layer_mib,
+        "logits_mib": logits_mib,
+        "attention_matrix_mib": bytes_to_mib(parts.attention_matrix_bytes),
+        "checkpoint_store_mib": store_mib,
+        "resident_hump_mib": max(logits_mib, layer_mib),
+        "all_layers_mib": layer_mib * config.num_layers + logits_mib,
+        "checkpointed_mib": store_mib + max(logits_mib, layer_mib),
+    }
 
 
 def _adapter_precision(training: TrainingConfig) -> str:

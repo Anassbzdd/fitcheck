@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from copy import copy
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
 from shlex import split as shell_split
@@ -15,6 +16,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from fitcheck.advisor import (
+    DEFAULT_BATCH_SIZES,
+    DEFAULT_LORA_RANKS,
+    SweepSpec,
+    advise,
+)
 from fitcheck.config_parser import ModelConfig, fetch_model_config
 from fitcheck.display import (
     _ASCII_GLYPHS,
@@ -24,7 +31,9 @@ from fitcheck.display import (
     _gpu_line,
     _model_line,
     _serving_line,
+    _sweep_line,
     make_console,
+    render_advisor_report,
     render_explanation,
     render_gpu_table,
     render_inference_report,
@@ -54,6 +63,7 @@ _SAFETY_FRACTION = 0.75
 
 _MEMORY_EXCLUDED = frozenset({"model_id", "list_gpus", "no_color", "version"})
 _INFER_EXCLUDED = frozenset({"model_id", "no_color"})
+_ADVISE_EXCLUDED = frozenset({"model_id", "no_color"})
 _COMPARE_INFER_FLAGS = frozenset({"--infer", "--serve", "--serving"})
 
 _OFF_SWITCHES: dict[str, str] = {
@@ -78,6 +88,20 @@ Flags are `fitcheck infer`'s and they persist for the session, in their own set:
 serving compute defaults to fp16 and training to bf16, so `memory` and `infer` never
 share a value. Omit --gpu to use the GPU set by `gpu` (a one-shot override here, not a
 session change). `reset` restores every default.
+"""
+
+
+_ADVISE_HELP = """\
+Sweep batch size, sequence length and LoRA rank: what each axis costs, and where
+the wall is. `optimize` says what to run; `advise` draws the map.
+
+There is no third set of sticky flags. The fixed axes are the session's own training
+config -- the very flags `memory` holds -- so `advise --qlora --flash-attn` sets them
+for `memory` too. Only the sweep bounds are new, and they stick as well: give
+--seq-lens once and every later line can be a bare `advise`. `reset` clears them.
+
+--seq-lens has no default on purpose: nothing in config.json tells fitcheck a model's
+real context length, so any default would sweep past it in silence.
 """
 
 
@@ -113,9 +137,12 @@ class _Session:
     glyphs: _Glyphs
     ascii_only: bool
     model: ModelConfig | None = None
+    model_id: str | None = None
     gpu: GpuSpec | None = None
     training: TrainingConfig = field(default_factory=TrainingConfig)
     serving: ServingConfig = field(default_factory=ServingConfig)
+    sweep: SweepSpec | None = None
+    max_seq_len: int | None = None
     last: _Result | None = None
     last_inference: _InferenceResult | None = None
 
@@ -133,6 +160,14 @@ def _cli_module():
     return cli
 
 
+def _optional(param: click.Parameter) -> click.Parameter:
+    if not param.required:
+        return param
+    relaxed = copy(param)
+    relaxed.required = False
+    return relaxed
+
+
 def _session_command(
     name: str, source: click.Command, excluded: frozenset[str], help_text: str
 ) -> click.Command:
@@ -140,7 +175,9 @@ def _session_command(
     if command is not None:
         return command
 
-    params = [param for param in source.params if param.name not in excluded]
+    params = [
+        _optional(param) for param in source.params if param.name not in excluded
+    ]
     present = {param.name for param in params}
     params.extend(
         click.Option(
@@ -170,6 +207,12 @@ def _memory_command() -> click.Command:
 def _infer_command() -> click.Command:
     return _session_command(
         "infer", _cli_module().infer_command, _INFER_EXCLUDED, _INFER_HELP
+    )
+
+
+def _advise_command() -> click.Command:
+    return _session_command(
+        "advise", _cli_module().advise_command, _ADVISE_EXCLUDED, _ADVISE_HELP
     )
 
 
@@ -229,7 +272,7 @@ def _training_from_args(session: _Session, ctx: click.Context) -> TrainingConfig
     elif _typed(ctx, "lora_r"):
         lora_rank = params["lora_r"]
     elif _typed(ctx, "lora_targets") and current.lora_rank is None:
-        lora_rank = params["lora_r"]
+        lora_rank = params.get("lora_r", current.lora_rank)
     else:
         lora_rank = current.lora_rank
 
@@ -420,6 +463,7 @@ def _cmd_model(session: _Session, args: list[str]) -> None:
         raise _ReplError(f"Could not read config.json for '{model_id}': {error}") from error
 
     session.model = config
+    session.model_id = model_id
     session.invalidate()
     _ok(session, f"Loaded {_model_line(config, session.glyphs)}")
 
@@ -505,6 +549,78 @@ def _cmd_infer(session: _Session, args: list[str]) -> None:
     )
 
 
+def _sweep_from_args(session: _Session, ctx: click.Context) -> SweepSpec:
+    cli = _cli_module()
+    current = session.sweep
+    params = ctx.params
+
+    def axis(name: str, flag: str, fallback: tuple[int, ...]) -> tuple[int, ...]:
+        if _typed(ctx, name):
+            return tuple(cli._parse_int_list(params[name], flag))
+        if current is not None:
+            return getattr(current, name)
+        return fallback
+
+    if _typed(ctx, "seq_lens"):
+        seq_lens = tuple(cli._parse_int_list(params["seq_lens"], "--seq-lens"))
+    elif current is not None:
+        seq_lens = current.seq_lens
+    else:
+        raise _ReplError(
+            "advise needs sequence lengths, and there is no honest default: nothing in "
+            "config.json gives a model's real context length. Try "
+            "`advise --seq-lens 1024,2048` -- they stick after that."
+        )
+
+    return SweepSpec(
+        batch_sizes=axis("batch_sizes", "--batch-sizes", DEFAULT_BATCH_SIZES),
+        seq_lens=seq_lens,
+        lora_ranks=axis("lora_ranks", "--lora-ranks", DEFAULT_LORA_RANKS),
+    )
+
+
+def _cmd_advise(session: _Session, args: list[str]) -> None:
+    ctx = _advise_command().make_context("advise", list(args))
+
+    model = _require_model(session)
+    training = _training_from_args(session, ctx)
+    if training.lora_rank is None:
+        raise _ReplError(
+            "advise sweeps the LoRA rank, so a full fine-tune leaves it nothing to "
+            "sweep. Run `memory --lora-r 16` (or `reset`) first, then `advise`."
+        )
+
+    sweep = _sweep_from_args(session, ctx)
+    max_seq_len = (
+        ctx.params["max_seq_len"] if _typed(ctx, "max_seq_len") else session.max_seq_len
+    )
+    _cli_module().reject_seq_lens_past_max(sweep.seq_lens, max_seq_len)
+
+    gpu = _gpu_from_args(session, ctx)
+
+    try:
+        report = advise(model, training, gpu, sweep, model_id=session.model_id)
+    except ValueError as error:
+        raise _ReplError(str(error)) from error
+
+    if training != session.training:
+        # `memory`'s last report was computed against the flags this line just changed.
+        session.last = None
+    session.training = training
+    session.sweep = sweep
+    session.max_seq_len = max_seq_len
+
+    if ctx.params["as_json"]:
+        session.console.print_json(
+            data=_cli_module().advisor_report_to_dict(report, model)
+        )
+        return
+
+    session.console.print(
+        render_advisor_report(report, model, ascii_only=session.ascii_only)
+    )
+
+
 def _cmd_explain(session: _Session, args: list[str]) -> None:
     if args:
         raise _ReplError(
@@ -564,6 +680,19 @@ def _compare_specs(current: GpuSpec, names: Sequence[str]) -> list[GpuSpec]:
     return specs
 
 
+def _sweep_summary(session: _Session) -> Text:
+    """Which axes `advise` is sweeping, and the guard rail on the longest one."""
+    if session.sweep is None:
+        return Text(
+            "not set. Run `advise --seq-lens 1024,2048`", style="dim"
+        )
+
+    line = _sweep_line(session.sweep, session.glyphs)
+    if session.max_seq_len is not None:
+        line += f"{session.glyphs.separator}max seq {session.max_seq_len:,}"
+    return Text(line)
+
+
 def _cmd_show(session: _Session, args: list[str]) -> None:
     if args:
         raise _ReplError("show takes no arguments.")
@@ -587,6 +716,7 @@ def _cmd_show(session: _Session, args: list[str]) -> None:
     )
     rows.append(("Config", Text(_config_line(session.training, session.glyphs))))
     rows.append(("Serving", Text(_serving_line(session.serving, session.glyphs))))
+    rows.append(("Sweep", _sweep_summary(session)))
 
     for label, result in (
         ("Last memory", session.last),
@@ -626,10 +756,13 @@ def _cmd_reset(session: _Session, args: list[str]) -> None:
         raise _ReplError("reset takes no arguments.")
     session.training = TrainingConfig()
     session.serving = ServingConfig()
+    session.sweep = None
+    session.max_seq_len = None
     session.invalidate()
     _ok(
         session,
-        "Training and serving flags back to defaults. Model and GPU are unchanged.",
+        "Training, serving and sweep flags back to defaults. Model and GPU are "
+        "unchanged.",
     )
 
 
@@ -646,6 +779,7 @@ _COMMANDS: dict[str, Callable[[_Session, list[str]], None]] = {
     "gpu": _cmd_gpu,
     "memory": _cmd_memory,
     "infer": _cmd_infer,
+    "advise": _cmd_advise,
     "explain": _cmd_explain,
     "optimize": _cmd_optimize,
     "compare": _cmd_compare,
@@ -665,6 +799,7 @@ _ALIASES = {
     "serve": "infer",
     "inference": "infer",
     "kv": "infer",
+    "sweep": "advise",
     "config": "show",
     "state": "show",
     "list-gpus": "gpus",
@@ -978,11 +1113,15 @@ _HELP_ROWS: tuple[tuple[str, str], ...] = (
     ("gpu <name> [--vram-mib N]", "Set the target GPU"),
     ("memory [flags]", "Estimate peak training VRAM. Same flags as the CLI; they stick"),
     ("infer [flags]", "Estimate serving VRAM: weights + KV cache. Flags stick too"),
+    (
+        "advise [flags]",
+        "Sweep batch/seq/rank: what each axis costs, and where the wall is",
+    ),
     ("explain", "Name the largest component, price every toggle"),
     ("optimize", "Largest micro-batch that fits, plus a config worth running"),
     ("compare <gpu> ... [--infer]", "The same config across other cards"),
     ("show", "Current model, GPU, flags, and the last estimates"),
-    ("reset", "Training and serving flags back to defaults"),
+    ("reset", "Training, serving and sweep flags back to defaults"),
     ("gpus", "Print the GPU database"),
     ("help", "This table"),
     ("exit / quit", "Leave"),
@@ -1006,7 +1145,10 @@ def _render_help(session: _Session) -> Panel:
         "breakdown and `memory --json` prints the machine-readable payload.\n"
         "`infer` has its own sticky set, because serving computes in fp16 where training "
         "defaults to bf16: `infer --quant nf4 --seq-len 8192 --concurrent 8`, then "
-        "`compare a100-40 h100 --infer` for the requests each card holds.",
+        "`compare a100-40 h100 --infer` for the requests each card holds.\n"
+        "`advise` does not: it sweeps around the same flags `memory` holds, so only its "
+        "bounds are its own -- `advise --seq-lens 1024,2048`, then a bare `advise` after "
+        "that. `show` lists the axes in force.",
         style="dim",
     )
 

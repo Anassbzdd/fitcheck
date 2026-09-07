@@ -765,18 +765,19 @@ Commands:
   gpu <name> [--vram-mib N] Set target GPU
   memory [OPTIONS]          Compute training memory breakdown (same flags as CLI)
   infer [OPTIONS]           Serving breakdown: weights + KV cache (Mode C's flags)
+  advise [OPTIONS]          Sweep batch/seq/rank: axis prices and the wall (Mode D)
   explain                   Explain the last memory result in plain English
   optimize                  Suggest best config for current model + GPU
   compare <gpu> [...] [--infer]
                             Compare the current config across other GPUs;
                             --infer compares the serving config instead
-  show                      Current model, GPU, both flag sets, last estimates
-  reset                     Training and serving flags back to defaults
+  show                      Current model, GPU, both flag sets, swept axes, last estimates
+  reset                     Training, serving and sweep flags back to defaults
   gpus                      Print the GPU database
   help                      Show available commands
   exit / quit               Exit the REPL
 
-Aliases: mem, serve/inference/kv, q, ?, h, config/state, list-gpus.
+Aliases: mem, serve/inference/kv, sweep, q, ?, h, config/state, list-gpus.
 ```
 
 **Mode selection is the presence of `MODEL_ID`, not the absence of flags.** `cli.estimate_command` takes
@@ -831,6 +832,25 @@ undo. It renders the same `render_inference_report` panel, honours `--json`, and
   both, `show` prints both, and `model` / `gpu` invalidate both cached reports.
 - **`--quant none` clears a sticky `--double-quant`**, and `--double-quant` under `--quant none` is the
   same usage error as Mode A — literally the same function, `cli._validate_serving_combination`.
+
+**`advise` is Mode D inside the session**, built from `cli.advise_command.params` the same way, minus
+`MODEL_ID` and `--no-color`, and it renders the same `render_advisor_report` panel. It differs from
+`infer` in one deliberate way:
+
+- **It does not get a third sticky flag set.** The fixed axes of the sweep *are* the session's
+  `TrainingConfig` — the very flags `memory` holds — so `advise --qlora --flash-attn` sets them for
+  `memory` too, and there is no pair of values to keep in sync. `infer` needed its own `ServingConfig`
+  because serving defaults differ (fp16 vs bf16); `advise` has no such conflict. Only the **sweep
+  bounds** are its own state: `batch_sizes`, `seq_lens`, `lora_ranks` and `--max-seq-len`.
+- **The bounds stick too, and `--seq-lens` stops being required.** Mode A demands it on every line
+  because there is nothing to remember it with; a session remembers, so the copied option drops
+  `required` (`repl._optional`, a shallow copy — the Mode A option is untouched and still required
+  there). Give `--seq-lens` once and every later line can be a bare `advise`. Until it is given once,
+  `advise` says so rather than inventing a range.
+- **`show` prints the axes being swept**, or `not set` with the line to type; **`reset` clears the
+  bounds** along with the training and serving flags.
+- A session whose `TrainingConfig` is a full fine-tune (`--no-lora`) has no rank axis to sweep, so
+  `advise` says that and names the fix, rather than passing an impossible config to the advisor.
 
 **`compare` takes several GPUs** and leads with the insight: the peak is identical on every card, only the
 ceiling moves. Columns are usable VRAM, headroom, % used, max micro-batch, and the verdict. With

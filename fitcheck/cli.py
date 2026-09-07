@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Any, Sequence
 
 import click
 from click.core import ParameterSource
@@ -168,6 +168,21 @@ def _parse_int_list(value: str, param_hint: str) -> list[int]:
             "at least one value is required", param_hint=param_hint
         )
     return values
+
+
+def reject_seq_lens_past_max(
+    seq_lens: Sequence[int], max_seq_len: int | None
+) -> None:
+    if max_seq_len is None:
+        return
+
+    too_long = [value for value in seq_lens if value > max_seq_len]
+    if too_long:
+        raise click.UsageError(
+            f"--seq-lens {', '.join(f'{value:,}' for value in too_long)} exceed "
+            f"--max-seq-len {max_seq_len:,}. Pricing a context the model cannot "
+            "serve would recommend a run that cannot be trained."
+        )
 
 
 def _validate_serving_combination(quant: str, double_quant: bool) -> None:
@@ -831,14 +846,7 @@ def advise_command(
     swept_seq_lens = _parse_int_list(seq_lens, "--seq-lens")
     swept_lora_ranks = _parse_int_list(lora_ranks, "--lora-ranks")
 
-    if max_seq_len is not None:
-        too_long = [value for value in swept_seq_lens if value > max_seq_len]
-        if too_long:
-            raise click.UsageError(
-                f"--seq-lens {', '.join(f'{value:,}' for value in too_long)} exceed "
-                f"--max-seq-len {max_seq_len:,}. Pricing a context the model cannot "
-                "serve would recommend a run that cannot be trained."
-            )
+    reject_seq_lens_past_max(swept_seq_lens, max_seq_len)
 
     sweep = SweepSpec(
         batch_sizes=tuple(swept_batch_sizes),

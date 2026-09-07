@@ -4,6 +4,8 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from fitcheck.advisor import (
+    DEFAULT_BATCH_SIZES,
+    DEFAULT_LORA_RANKS,
     AdvisorReport,
     AxisCeiling,
     AxisPrice,
@@ -28,6 +30,8 @@ except PackageNotFoundError:
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "DEFAULT_BATCH_SIZES",
+    "DEFAULT_LORA_RANKS",
     "GPU_DB",
     "AdvisorReport",
     "AxisCeiling",

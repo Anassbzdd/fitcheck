@@ -148,6 +148,7 @@ def _grouped_points(
     base: TrainingConfig,
     gpu: GpuSpec,
     sweep: SweepSpec,
+    model_id: str,
 ) -> tuple[list[FrontierPoint], int, int]:
     usable_mib = float(gpu.usable_mib)
     groups: dict[tuple[int, int], list[tuple[int, int, float]]] = {}
@@ -191,7 +192,7 @@ def _grouped_points(
                 total_mib=cheapest_mib,
                 fits=True,
                 command=_command(
-                    config.name,
+                    model_id,
                     gpu,
                     replace(
                         base,
@@ -358,6 +359,8 @@ def advise(
     training_config: TrainingConfig,
     gpu_spec: GpuSpec,
     sweep: SweepSpec,
+    *,
+    model_id: str | None = None,
 ) -> AdvisorReport:
     if not isinstance(model_config, ModelConfig):
         raise ValueError("model_config must be a ModelConfig")
@@ -382,7 +385,11 @@ def advise(
     )
 
     points, grid_size, fitting_count = _grouped_points(
-        model_config, training_config, gpu_spec, validated_sweep
+        model_config,
+        training_config,
+        gpu_spec,
+        validated_sweep,
+        model_id or model_config.name,
     )
     frontier = _frontier(points)
     recommended = frontier[0] if frontier else None

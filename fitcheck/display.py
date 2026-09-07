@@ -9,12 +9,14 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from fitcheck.advisor import AdvisorReport, FrontierPoint, SweepSpec
 from fitcheck.config_parser import ModelConfig
 from fitcheck.estimator import (
     InferenceReport,
     MemoryReport,
     ServingConfig,
     TrainingConfig,
+    _format_delta,
     activation_breakdown,
     trainable_params,
 )
@@ -735,5 +737,230 @@ def render_verbose_detail(
         title=f"detail {glyphs.arrow} {config.name}",
         title_align="left",
         border_style=_STYLE_LABEL,
+        padding=(1, 2),
+    )
+
+
+_AXIS_LABELS = {
+    "batch_size": "Batch size (at the anchor seq_len)",
+    "tokens_per_step": "Tokens/step (batch x seq)",
+    "lora_rank": "LoRA rank",
+}
+
+
+def _int_list_label(values: tuple[int, ...]) -> str:
+    return ", ".join(f"{value:,}" for value in values)
+
+
+def _previous_power_of_two(value: int) -> int:
+    return 1 << (value.bit_length() - 1) if value > 0 else 0
+
+
+def _fixed_axes_line(training: TrainingConfig, glyphs: _Glyphs) -> str:
+    targets = ",".join(
+        target.removesuffix("_proj") for target in training.lora_targets
+    )
+    base = (
+        f"{training.quantization.upper()} base"
+        if training.quantization != "none"
+        else "unquantized base"
+    )
+    if training.double_quant:
+        base += " + double quant"
+
+    return glyphs.separator.join(
+        (
+            f"LoRA [{targets}]",
+            base,
+            f"{training.precision} compute",
+            _optimizer_label(training),
+            "grad ckpt" if training.grad_checkpoint else "no ckpt",
+            "flash attn" if training.flash_attn else "no flash",
+        )
+    )
+
+
+def _sweep_line(sweep: SweepSpec, glyphs: _Glyphs) -> str:
+    return glyphs.separator.join(
+        (
+            f"batch {_int_list_label(sweep.batch_sizes)}",
+            f"seq {_int_list_label(sweep.seq_lens)}",
+            f"rank {_int_list_label(sweep.lora_ranks)}",
+        )
+    )
+
+
+def _splits_label(point: FrontierPoint) -> str:
+    return ", ".join(
+        f"{batch_size} x {seq_len:,}" for batch_size, seq_len in point.equivalent_splits
+    )
+
+
+def _frontier_table(report: AdvisorReport) -> Table:
+    table = Table(box=SIMPLE_HEAD, pad_edge=False, expand=True)
+    table.add_column("#", justify="right", style=_STYLE_LABEL)
+    table.add_column("Tokens/step", justify="right")
+    table.add_column("LoRA rank", justify="right")
+    table.add_column("Total (MiB)", justify="right")
+    table.add_column("batch x seq splits at the same cost")
+
+    for index, point in enumerate(report.frontier, start=1):
+        table.add_row(
+            str(index),
+            f"{point.tokens_per_step:,}",
+            f"{point.lora_rank:,}",
+            _mib(point.total_mib),
+            _splits_label(point),
+        )
+    return table
+
+
+def _command_grid(report: AdvisorReport) -> Table:
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style=_STYLE_LABEL, justify="right")
+    grid.add_column(style=_STYLE_LABEL, overflow="fold")
+    for index, point in enumerate(report.frontier, start=1):
+        grid.add_row(f"{index}", Text(point.command))
+    return grid
+
+
+def _ceiling_table(report: AdvisorReport) -> Table:
+    table = Table(box=SIMPLE_HEAD, pad_edge=False, expand=True)
+    table.add_column("Axis")
+    table.add_column("Max that fits", justify="right")
+    table.add_column("Nearest 2^n", justify="right")
+    table.add_column("Total there (MiB)", justify="right")
+
+    for ceiling in report.ceilings:
+        power = _previous_power_of_two(ceiling.max_value)
+        total = (
+            _mib(ceiling.total_mib_at_max)
+            if ceiling.max_value
+            else f"{_mib(ceiling.total_mib_at_max)} at 1"
+        )
+        table.add_row(
+            _AXIS_LABELS.get(ceiling.axis, ceiling.axis),
+            f"{ceiling.max_value:,}",
+            f"{power:,}" if power else "-",
+            total,
+        )
+    return table
+
+
+def _price_table(report: AdvisorReport) -> Table:
+    table = Table(box=SIMPLE_HEAD, pad_edge=False, expand=True)
+    table.add_column("Axis")
+    table.add_column("Change", justify="right")
+    table.add_column("Total delta", justify="right")
+
+    for price in report.prices:
+        table.add_row(
+            _AXIS_LABELS.get(price.axis, price.axis),
+            f"{price.from_value:,} -> {price.to_value:,}",
+            _format_delta(price.delta_mib),
+        )
+    return table
+
+
+def _advisor_verdict_line(
+    report: AdvisorReport, verdict_style: str, glyphs: _Glyphs
+) -> Text:
+    counts = f"{report.fitting_count:,} of {report.grid_size:,} swept configs fit"
+
+    if report.recommended is None:
+        message = f"{glyphs.oom} {counts} {glyphs.arrow} nothing here fits {report.gpu.name}"
+    else:
+        best = report.recommended
+        message = (
+            f"{glyphs.fits} {counts} {glyphs.arrow} best: "
+            f"{best.tokens_per_step:,} tokens/step at rank {best.lora_rank}, "
+            f"{_mib(best.total_mib)} MiB"
+        )
+
+    return Text(message, style=f"bold {verdict_style}")
+
+
+def _advisor_suggestion_grid(report: AdvisorReport, glyphs: _Glyphs) -> Table:
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style=_STYLE_LABEL)
+    grid.add_column(style=_STYLE_LABEL, overflow="fold")
+    grid.add_row(
+        glyphs.hint,
+        Text(
+            "tokens/step is batch_size x seq_len: the work done in one optimizer "
+            "step, not a speed. fitcheck has no throughput model."
+        ),
+    )
+
+    if any(len(point.equivalent_splits) > 1 for point in report.frontier):
+        grid.add_row(
+            glyphs.hint,
+            Text(
+                "Splits on one row cost exactly the same MiB, so pick the seq_len "
+                "your data needs."
+            ),
+        )
+
+    if report.recommended is None:
+        grid.add_row(
+            glyphs.hint,
+            Text(
+                "Nothing fits: add --grad-checkpoint / --flash-attn, quantize the "
+                "base with --quant nf4, or sweep shorter --seq-lens."
+            ),
+        )
+    return grid
+
+
+def render_advisor_report(
+    report: AdvisorReport,
+    config: ModelConfig,
+    *,
+    ascii_only: bool = False,
+) -> Panel:
+    glyphs = _ASCII_GLYPHS if ascii_only else _UNICODE_GLYPHS
+    verdict_style = _STYLE_FITS if report.fitting_count else _STYLE_OOM
+    anchor = report.anchor
+
+    header = Table.grid(padding=(0, 2))
+    header.add_column(style=_STYLE_LABEL, justify="right")
+    header.add_column(overflow="fold")
+    header.add_row("Model", Text(_model_line(config, glyphs)))
+    header.add_row("GPU", Text(_gpu_line(report.gpu, glyphs)))
+    header.add_row("Held fixed", Text(_fixed_axes_line(report.base, glyphs)))
+    header.add_row("Swept", Text(_sweep_line(report.sweep, glyphs)))
+
+    body: list[RenderableType] = [header, Text("")]
+
+    if report.frontier:
+        body += [
+            Text("FRONTIER -- the edge of what fits", style="bold"),
+            _frontier_table(report),
+            Text("Run it:", style=_STYLE_LABEL),
+            _command_grid(report),
+            Text(""),
+        ]
+
+    body += [
+        Text("THE WALL -- exact ceilings, by bisection", style="bold"),
+        Text(
+            f"measured at bs {anchor.batch_size} x seq {anchor.seq_len:,}, "
+            f"rank {anchor.lora_rank}",
+            style=_STYLE_LABEL,
+        ),
+        _ceiling_table(report),
+        Text(""),
+        Text("PRICE OF EACH AXIS -- from the same anchor", style="bold"),
+        _price_table(report),
+        Text(""),
+        _advisor_verdict_line(report, verdict_style, glyphs),
+        _advisor_suggestion_grid(report, glyphs),
+    ]
+
+    return Panel(
+        Group(*body),
+        title="fitcheck advise",
+        title_align="left",
+        border_style=verdict_style,
         padding=(1, 2),
     )

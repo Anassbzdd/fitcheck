@@ -910,6 +910,103 @@ a key here. Exit codes and the add-only key policy match Mode A.
 `headroom / kv_per_request` over-counts. Both use the one `_largest_fitting` helper in `estimator.py`.
 
 
+#### Mode D: Config Advisor (`fitcheck advise`)
+
+```
+fitcheck advise <model_id> [OPTIONS]
+
+Arguments:
+  MODEL_ID               HuggingFace model ID (e.g., meta-llama/Llama-3.1-8B)
+
+Sweep Axes (ranges, not one config):
+  --seq-lens TEXT        REQUIRED. Comma-separated lengths, e.g. '1024,2048,4096'
+  --max-seq-len INT      The model's real context length. Any --seq-lens value
+                         above it is rejected instead of priced.
+  --batch-sizes TEXT     Comma-separated micro-batch sizes (default: 1,2,4,8,16)
+  --lora-ranks TEXT      Comma-separated LoRA ranks (default: 8,16,32,64,128,256)
+
+Held Fixed Across the Sweep:
+  --quant TEXT           none|nf4|int8 — BASE MODEL storage (default: none)
+  --double-quant         NF4 double quantization (halves scale overhead)
+  --qlora                Shorthand: --quant nf4 --precision bf16 --grad-checkpoint
+  --precision TEXT       fp32|fp16|bf16 — COMPUTE dtype (default: bf16)
+  --lora-targets TEXT    Preset (minimal | standard | full) or modules (default: standard)
+  --optimizer TEXT       adamw|adam8bit|sgd|sgd-momentum (default: adamw)
+  --optimizer-dtype TEXT fp32|bf16 — AdamW state dtype (default: fp32)
+  --grad-checkpoint      Enable gradient checkpointing
+  --flash-attn           Enable Flash Attention
+
+GPU Options:
+  --gpu TEXT             GPU name from database (default: 4090)
+  --vram-mib INT         VRAM override for a GPU not in the database
+
+Output Options:
+  --json                 Output as JSON (for CI/CD) — schema below
+  --no-color             Disable colored output
+```
+
+**`advise` says what each axis costs and where the wall is; the REPL's `optimize` says what to
+run.** They are deliberately different questions — see `docs/ADVISOR.md` §1. `advise` ignores
+whatever single batch size and rank you are holding, sweeps the grid, and reports three things:
+the **frontier** (the edge of what fits), the **ceilings** (bisected with the same
+`_largest_fitting` that `max_batch_size` uses), and the **price** of each axis around the
+recommended point.
+
+**There is no `--no-lora`.** `advise` sweeps the LoRA rank, so a full fine-tune has no axis to
+sweep; use Mode A for that. There is no `--grad-accum` either, because accumulation costs no
+memory and so cannot move a frontier.
+
+**`--seq-lens` is required, and that is the rule enforced by the type.** `ModelConfig` does not
+carry `max_position_embeddings` (`config_parser.py` does not parse it), so **no default sequence
+range can be honest** — it would sweep past a model's real context length in silence. `advise`
+therefore has `DEFAULT_BATCH_SIZES` and `DEFAULT_LORA_RANKS` but deliberately no
+`DEFAULT_SEQ_LENS`. `--max-seq-len` is the optional guard rail: pass the model's real context
+length and any longer swept value is a usage error, not a priced recommendation.
+
+**Ties are grouped, never hidden.** Under grad checkpointing with `--flash-attn`, `A_act` depends
+only on `b x s`, so `8 x 512`, `4 x 1024`, `2 x 2048` and `1 x 4096` cost exactly the same. One
+frontier row lists every tied split, because `seq_len` is usually fixed by the user's data and is
+not the tool's to trade away.
+
+**`fitcheck <model>` still means training.** `advise` is a subcommand registered on the same
+group as `infer`, so routing is unchanged and no usage line names the internal `estimate`
+command. A model literally named `advise` is reachable as `fitcheck estimate advise`.
+
+#### `fitcheck advise --json` output contract
+
+| Key | Type | Contents |
+|:---|:---|:---|
+| `fitcheck_version` | `str` | Installed package version |
+| `model` | `object` | `ModelConfig` fields verbatim |
+| `gpu` | `object` | `GpuSpec`: `name`, `vram_mib`, `usable_mib` |
+| `sweep` | `object` | `batch_sizes`, `seq_lens`, `lora_ranks` — sorted, deduplicated |
+| `anchor` | `object` | The full `TrainingConfig` the prices and ceilings were measured at: the recommended point, or the smallest grid point when nothing fits. Everything in it that is not a `sweep` key is a held-fixed axis |
+| `grid_size` | `int` | Points evaluated = `len(batch_sizes) x len(seq_lens) x len(lora_ranks)` |
+| `fitting_count` | `int` | How many of them fit |
+| `frontier` | `list[object]` | The edge of what fits, best first — see the row schema below |
+| `recommended` | `object \| null` | The head of the frontier, or `null` when nothing fits |
+| `ceilings` | `list[object]` | `axis` (`batch_size` \| `tokens_per_step` \| `lora_rank`), `max_value` (bisected and floored; `0` when not even 1 fits), `total_mib_at_max` |
+| `prices` | `list[object]` | `axis`, `from_value`, `to_value`, `delta_mib` (positive costs, negative saves) |
+| `verdict` | `object` | `fits` (i.e. `fitting_count > 0`), `gpu_capacity_mib` |
+
+Each `frontier` row, and `recommended`:
+
+| Key | Type | Contents |
+|:---|:---|:---|
+| `batch_size`, `seq_len`, `lora_rank` | `int` | The canonical split — the largest batch among the tied ones |
+| `tokens_per_step` | `int` | `batch_size x seq_len` — **work per optimizer step, not a speed** |
+| `total_mib` | `float` | Predicted peak, 2 dp |
+| `fits` | `bool` | Always `true`: only fitting points reach the frontier |
+| `command` | `str` | A runnable `fitcheck ...` line, written with the MODEL_ID as typed |
+| `equivalent_splits` | `list[[int, int]]` | Every `[batch_size, seq_len]` at the same cost |
+
+**There is no throughput or speed key, and there never will be.** `fitcheck` has no FLOPs count
+and no timing data, so `tokens_per_step` is the honest second axis: the work done before one
+optimizer update. See `docs/ADVISOR.md` §2.
+
+**Exit codes (Mode D):** `0` at least one swept config fits · `1` none of them fits · `2` the
+sweep could not be run. Same contract as Modes A and C, and the same add-only key policy.
+
 ---
 
 ### 3.6 — Key Architecture Decisions

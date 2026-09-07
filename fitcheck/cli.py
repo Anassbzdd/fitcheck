@@ -10,9 +10,18 @@ import click
 from click.core import ParameterSource
 from rich.console import Console
 
+from fitcheck.advisor import (
+    DEFAULT_BATCH_SIZES,
+    DEFAULT_LORA_RANKS,
+    AdvisorReport,
+    FrontierPoint,
+    SweepSpec,
+    advise,
+)
 from fitcheck.config_parser import ModelConfig, fetch_model_config
 from fitcheck.display import (
     make_console,
+    render_advisor_report,
     render_explanation,
     render_gpu_table,
     render_inference_report,
@@ -55,8 +64,25 @@ always exits 0.
 Serving instead of training? `fitcheck infer MODEL [OPTIONS]` prices resident weights
 plus the KV cache. Run `fitcheck infer --help` for its flags.
 
+Not sure what to run? `fitcheck advise MODEL --seq-lens 1024,2048` sweeps batch size
+and LoRA rank instead of pricing one config, and prints what each axis costs and
+where the wall is. Run `fitcheck advise --help` for its flags.
+
 Every figure is analytical, computed from config.json alone. No GPU is touched and
 no weights are downloaded.
+"""
+
+_ADVISE_EPILOG = """\
+Exit codes: 0 at least one swept config fits, 1 none of them fits, 2 the sweep could
+not be run. `advise` says what each axis costs and where the wall is; the REPL's
+`optimize` says what to run with the flags you are already holding.
+
+`--seq-lens` is required on purpose. Nothing in config.json tells fitcheck a model's
+real context length, so any default would sweep past it in silence. Pass
+`--max-seq-len` as well and every swept length above it is rejected instead of priced.
+
+tokens/step is `batch_size x seq_len` -- the work in one optimizer step, NOT a speed.
+fitcheck has no throughput model and will never draw one.
 """
 
 _INFER_EPILOG = """\
@@ -116,6 +142,32 @@ def _parse_lora_targets(value: str) -> list[str]:
             "at least one target module is required", param_hint="--lora-targets"
         )
     return targets
+
+
+def _parse_int_list(value: str, param_hint: str) -> list[int]:
+    values: list[int] = []
+    for token in value.split(","):
+        text = token.strip()
+        if not text:
+            continue
+        try:
+            number = int(text)
+        except ValueError:
+            raise click.BadParameter(
+                f"'{text}' is not a whole number", param_hint=param_hint
+            ) from None
+        if number < 1:
+            raise click.BadParameter(
+                f"{number} is not a positive value", param_hint=param_hint
+            )
+        if number not in values:
+            values.append(number)
+
+    if not values:
+        raise click.BadParameter(
+            "at least one value is required", param_hint=param_hint
+        )
+    return values
 
 
 def _validate_serving_combination(quant: str, double_quant: bool) -> None:
@@ -281,6 +333,69 @@ def inference_report_to_dict(
                 else 0.0
             ),
             "max_concurrent": report.max_concurrent,
+        },
+    }
+
+
+def _frontier_point_to_dict(point: FrontierPoint) -> dict[str, Any]:
+    return {
+        "batch_size": point.batch_size,
+        "seq_len": point.seq_len,
+        "lora_rank": point.lora_rank,
+        "tokens_per_step": point.tokens_per_step,
+        "total_mib": round(point.total_mib, 2),
+        "fits": point.fits,
+        "command": point.command,
+        "equivalent_splits": [
+            [batch_size, seq_len] for batch_size, seq_len in point.equivalent_splits
+        ],
+    }
+
+
+def advisor_report_to_dict(
+    report: AdvisorReport, config: ModelConfig
+) -> dict[str, Any]:
+    def mib(value: float) -> float:
+        return round(value, 2)
+
+    return {
+        "fitcheck_version": _package_version(),
+        "model": asdict(config),
+        "gpu": asdict(report.gpu),
+        "sweep": {
+            "batch_sizes": list(report.sweep.batch_sizes),
+            "seq_lens": list(report.sweep.seq_lens),
+            "lora_ranks": list(report.sweep.lora_ranks),
+        },
+        "anchor": asdict(report.anchor),
+        "grid_size": report.grid_size,
+        "fitting_count": report.fitting_count,
+        "frontier": [_frontier_point_to_dict(point) for point in report.frontier],
+        "recommended": (
+            _frontier_point_to_dict(report.recommended)
+            if report.recommended is not None
+            else None
+        ),
+        "ceilings": [
+            {
+                "axis": ceiling.axis,
+                "max_value": ceiling.max_value,
+                "total_mib_at_max": mib(ceiling.total_mib_at_max),
+            }
+            for ceiling in report.ceilings
+        ],
+        "prices": [
+            {
+                "axis": price.axis,
+                "from_value": price.from_value,
+                "to_value": price.to_value,
+                "delta_mib": mib(price.delta_mib),
+            }
+            for price in report.prices
+        ],
+        "verdict": {
+            "fits": report.fitting_count > 0,
+            "gpu_capacity_mib": mib(float(report.gpu.usable_mib)),
         },
     }
 
@@ -588,6 +703,182 @@ def infer_command(
     ctx.exit(0 if report.fits else _EXIT_DOES_NOT_FIT)
 
 
+@click.command(
+    "advise",
+    context_settings={"help_option_names": ["-h", "--help"]},
+    epilog=_ADVISE_EPILOG,
+    short_help="Sweep batch size and LoRA rank: what each axis costs, and the wall.",
+)
+@click.argument("model_id")
+@click.option(
+    "--seq-lens",
+    required=True,
+    help="REQUIRED. Sequence lengths to sweep, e.g. '1024,2048,4096'. No default: "
+    "config.json does not tell fitcheck a model's real context length.",
+)
+@click.option(
+    "--max-seq-len",
+    type=click.IntRange(min=1),
+    default=None,
+    help="The model's real context length. Any --seq-lens value above it is "
+    "rejected instead of priced.",
+)
+@click.option(
+    "--batch-sizes",
+    default=",".join(str(value) for value in DEFAULT_BATCH_SIZES),
+    show_default=True,
+    help="Micro-batch sizes to sweep.",
+)
+@click.option(
+    "--lora-ranks",
+    default=",".join(str(value) for value in DEFAULT_LORA_RANKS),
+    show_default=True,
+    help="LoRA ranks to sweep.",
+)
+@click.option(
+    "--quant",
+    type=click.Choice(["none", "nf4", "int8"]),
+    default="none",
+    show_default=True,
+    help="BASE MODEL storage format. Held fixed across the sweep.",
+)
+@click.option(
+    "--double-quant",
+    is_flag=True,
+    help="NF4 double quantization (halves the scale overhead).",
+)
+@click.option(
+    "--qlora",
+    is_flag=True,
+    help="Shorthand for --quant nf4 --precision bf16 --grad-checkpoint. "
+    "An explicit flag always wins over it.",
+)
+@click.option(
+    "--precision",
+    type=click.Choice(["fp32", "fp16", "bf16"]),
+    default="bf16",
+    show_default=True,
+    help="COMPUTE dtype: LoRA weights, gradients, activations.",
+)
+@click.option(
+    "--lora-targets",
+    default="standard",
+    show_default=True,
+    help="Preset (minimal | standard | full) or comma-separated modules, "
+    "e.g. 'q,k,v,o' or 'q_proj,v_proj'.",
+)
+@click.option(
+    "--optimizer",
+    type=click.Choice(["adamw", "adam8bit", "sgd", "sgd-momentum"]),
+    default="adamw",
+    show_default=True,
+)
+@click.option(
+    "--optimizer-dtype",
+    type=click.Choice(["fp32", "bf16"]),
+    default="fp32",
+    show_default=True,
+    help="AdamW state dtype. fp32 states cost 8 bytes/param, bf16 states 4.",
+)
+@click.option("--grad-checkpoint", is_flag=True, help="Enable gradient checkpointing.")
+@click.option("--flash-attn", is_flag=True, help="Enable Flash Attention.")
+@click.option(
+    "--gpu", default=None, help=f"GPU name from the database  [default: {_DEFAULT_GPU}]"
+)
+@click.option(
+    "--vram-mib",
+    type=click.IntRange(min=1),
+    default=None,
+    help="VRAM override for a GPU not in the database (usable is taken as 95%).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for CI/CD).")
+@click.option("--no-color", is_flag=True, help="Disable colored output.")
+@click.pass_context
+def advise_command(
+    ctx: click.Context,
+    model_id: str,
+    seq_lens: str,
+    max_seq_len: int | None,
+    batch_sizes: str,
+    lora_ranks: str,
+    quant: str,
+    double_quant: bool,
+    qlora: bool,
+    precision: str,
+    lora_targets: str,
+    optimizer: str,
+    optimizer_dtype: str,
+    grad_checkpoint: bool,
+    flash_attn: bool,
+    gpu: str | None,
+    vram_mib: int | None,
+    as_json: bool,
+    no_color: bool,
+) -> None:
+    console = make_console(no_color=no_color)
+
+    if qlora:
+        if not _explicit(ctx, "quant"):
+            quant = "nf4"
+        if not _explicit(ctx, "precision"):
+            precision = "bf16"
+        if not _explicit(ctx, "grad_checkpoint"):
+            grad_checkpoint = True
+
+    _validate_combination(ctx, quant, double_quant, False, optimizer)
+
+    swept_batch_sizes = _parse_int_list(batch_sizes, "--batch-sizes")
+    swept_seq_lens = _parse_int_list(seq_lens, "--seq-lens")
+    swept_lora_ranks = _parse_int_list(lora_ranks, "--lora-ranks")
+
+    if max_seq_len is not None:
+        too_long = [value for value in swept_seq_lens if value > max_seq_len]
+        if too_long:
+            raise click.UsageError(
+                f"--seq-lens {', '.join(f'{value:,}' for value in too_long)} exceed "
+                f"--max-seq-len {max_seq_len:,}. Pricing a context the model cannot "
+                "serve would recommend a run that cannot be trained."
+            )
+
+    sweep = SweepSpec(
+        batch_sizes=tuple(swept_batch_sizes),
+        seq_lens=tuple(swept_seq_lens),
+        lora_ranks=tuple(swept_lora_ranks),
+    )
+    base = TrainingConfig(
+        precision=precision,
+        quantization=quant,
+        double_quant=double_quant,
+        optimizer=optimizer,
+        optimizer_dtype=optimizer_dtype,
+        batch_size=min(swept_batch_sizes),
+        seq_len=min(swept_seq_lens),
+        lora_rank=min(swept_lora_ranks),
+        lora_targets=_parse_lora_targets(lora_targets),
+        grad_checkpoint=grad_checkpoint,
+        flash_attn=flash_attn,
+    )
+
+    gpu_spec = _resolve_gpu(ctx, gpu, vram_mib)
+    model_config = _load_model_config(model_id)
+
+    try:
+        report = advise(model_config, base, gpu_spec, sweep, model_id=model_id)
+    except ValueError as error:
+        raise click.UsageError(str(error)) from error
+
+    if as_json:
+        click.echo(json.dumps(advisor_report_to_dict(report, model_config), indent=2))
+    else:
+        console.print(
+            render_advisor_report(
+                report, model_config, ascii_only=use_ascii_glyphs(console)
+            )
+        )
+
+    ctx.exit(0 if report.fitting_count else _EXIT_DOES_NOT_FIT)
+
+
 class _FitcheckGroup(click.Group):
     _DEFAULT_COMMAND = "estimate"
     _DEFAULTED = "fitcheck.default_command"
@@ -603,15 +894,17 @@ class _FitcheckGroup(click.Group):
     ) -> tuple[str | None, click.Command | None, list[str]]:
         name, command, rest = super().resolve_command(ctx, args)
         if ctx.meta.pop(self._DEFAULTED, False):
-            # `fitcheck <model>` is the documented spelling, so usage lines and error
-            # messages must not advertise the injected subcommand name back at the user.
             return "", command, rest
         return name, command, rest
 
 
 main = _FitcheckGroup(
     name="fitcheck",
-    commands={"estimate": estimate_command, "infer": infer_command},
+    commands={
+        "estimate": estimate_command,
+        "infer": infer_command,
+        "advise": advise_command,
+    },
     no_args_is_help=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )

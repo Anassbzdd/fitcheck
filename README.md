@@ -47,12 +47,6 @@ fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 20
 
 ![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090](docs/images/mode-a-output.png)
 
-> [!NOTE]
-> One screenshot on this page is still stale: the `compare` capture further down was taken
-> before the v0.1.2 activation fix and shows the older totals. Its layout is current; its
-> numbers are not. Every other capture here is current. The authoritative figures are in
-> [Validation](#validation) and in `docs/SPEC.md`.
-
 Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
 `fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
 

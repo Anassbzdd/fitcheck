@@ -25,7 +25,9 @@ per-component breakdown, a fits/doesn't-fit verdict against a specific card, and
 micro-batch that still fits.
 
 `fitcheck infer` prices the other half of the job — serving a trained model, where the
-budget is resident weights plus the KV cache — from the same config and the same math.
+budget is resident weights plus the KV cache — from the same config and the same math. And
+`fitcheck advise` sweeps the knobs instead of pricing one setting: what each axis costs, how
+far each one goes before it stops fitting, and the configs sitting right at that edge.
 
 > **Accuracy status (v0.1.2, 2026-09-02): measured, and the measurements moved the formulas.**
 > Ten real training runs on a Tesla T4 — three models, three sequence lengths, both attention
@@ -87,7 +89,7 @@ one.
 ![fitcheck REPL compare output: RTX 4090, RTX 3090 and Tesla T4 side by side, all fitting, with max micro-batch 21, 21 and 12](docs/images/mode-b-compare.png)
 
 Also available: `optimize` (largest micro-batch that fits, plus a config actually worth
-running), `show`, `reset`, and `gpus`.
+running), `advise` / `sweep` (the whole map at once — see below), `show`, `reset`, and `gpus`.
 
 ---
 
@@ -128,6 +130,54 @@ request — 0.125 MiB and 256 MiB for Llama-3.1-8B at 2,048 tokens — and `--se
 `--concurrent` are interchangeable: 4 requests of 2,048 tokens cost exactly what 1 request of
 8,192 costs. Every request is assumed to hold its full context, so the number is a worst
 case; a paged engine like vLLM allocates less until the cache fills up.
+
+---
+
+## Config advisor — `fitcheck advise`
+
+A breakdown tells you what one config costs. It does not tell you which dial to turn. `advise`
+sweeps batch size, sequence length and LoRA rank together and answers the two questions that
+actually decide a run: **what does each axis cost**, and **how far can each one go before it
+stops fitting**.
+
+```bash
+fitcheck advise meta-llama/Llama-3.1-8B --gpu 4090 --qlora --flash-attn \
+  --lora-targets q,k,v,o --seq-lens 512,1024,2048,4096,8192
+```
+
+![fitcheck advise output: what is held fixed and what is swept, the frontier with a runnable command per row, the per-axis ceilings, and the price of each axis](docs/images/advise-cli.png)
+
+The screen is four blocks: what is **held fixed** versus what is **swept**, the **frontier**
+(the configs at the edge of what fits, one pasteable command per row), **the wall** (the exact
+ceiling on each axis), and **the price of each axis**.
+
+For Llama-3.1-8B QLoRA on a 4090, the price table settles the argument on its own:
+
+| Change from `batch 2 × seq 2048`, rank 64 | Cost | New total |
+|:---|---:|---:|
+| rank 64 → 32 | **−416 MiB** | 19,623.87 |
+| rank 64 → 128 | **+832 MiB** | 20,871.87 |
+| tokens/step ÷2 (batch 1) | **−5,284 MiB** | 14,756.27 |
+| tokens/step ×2 (batch 4 *or* seq 4096) | **+10,567 MiB** | 30,607.07 — does not fit |
+
+Doubling tokens/step costs about **12.7×** what doubling the rank costs. Rank is not the knob
+stopping you — and the ceiling proves it: at rank 64 the wall is 4,096 tokens/step, and
+dropping all the way to rank 8 does not buy a single extra token. Meanwhile at 4,096
+tokens/step the rank can go up to **330** before the card runs out.
+
+Two details that make the numbers trustworthy. Every ceiling is found by **bisection over the
+full estimator**, not read off the grid — this grid stops at rank 256 while the real wall is
+330, so a grid-only answer would be wrong. And `--seq-lens` is **required**, because there is
+no honest default: sweeping past a model's real context length in silence would be worse than
+asking. `--max-seq-len` is a guard that rejects a too-long swept length, not a generator.
+
+`advise` is also a REPL command (alias `sweep`), and it shares the sticky training flags with
+`memory` — `advise --qlora --flash-attn` sets them for both, so there is no second copy to
+drift. In a session `--seq-lens` stops being required once you have given it, because a
+session remembers.
+
+`advise` says **what each axis costs and where the wall is**; the REPL's `optimize` says
+**what to run**. They are deliberately different questions.
 
 ---
 
@@ -214,6 +264,7 @@ optimize                          # a batch size worth running, not just the cei
 compare 3090 t4 a100-40           # same config, several cards
 infer --quant nf4 --double-quant  # serving instead of training: weights + KV cache
 compare a100-40 t4 --infer        # the serving config across cards
+advise --seq-lens 1024,2048,4096  # sweep the knobs: axis prices, ceilings, frontier
 reset                             # flags back to defaults
 ```
 
@@ -239,6 +290,26 @@ fitcheck infer meta-llama/Llama-3.1-8B --quant nf4 --json
 Exit codes are the training command's: `0` fits, `1` doesn't fit, `2` couldn't run. `--gpu`,
 `--vram-mib` and `--no-color` behave the same too. `fitcheck infer --help` has the full flag
 list.
+
+### Advisor
+
+```bash
+# The full map: axis prices, per-axis ceilings, and the frontier
+fitcheck advise meta-llama/Llama-3.1-8B --gpu 4090 --qlora --flash-attn --seq-lens 512,1024,2048,4096,8192
+
+# Narrow the sweep to the axes you can actually change
+fitcheck advise meta-llama/Llama-3.1-8B --gpu 4090 --qlora --seq-lens 2048 --batch-sizes 1,2,4,8
+
+# Refuse to price a context length the model cannot serve
+fitcheck advise meta-llama/Llama-3.1-8B --gpu 4090 --qlora --seq-lens 8192,16384 --max-seq-len 8192
+
+# Machine-readable, for CI
+fitcheck advise meta-llama/Llama-3.1-8B --gpu 4090 --qlora --seq-lens 2048,4096 --json
+```
+
+`--seq-lens` is required in Mode A and optional in the session. Exit codes: `0` at least one
+swept config fits, `1` none of them does, `2` couldn't run — which includes a `--seq-lens`
+past `--max-seq-len`. `fitcheck advise --help` has the full flag list.
 
 ### Model support
 

@@ -2,7 +2,7 @@
 
 > **PRD + Technical Design + Definition of Done — One Document**
 >
-> Version: 0.2.0 (MVP) · Author: Anas · Date: August 2026
+> Version: 0.3.0 · Author: Anas · Date: September 2026
 
 ---
 
@@ -69,7 +69,7 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 | Feature | Phase | Notes |
 |:---|:---:|:---|
 | `fitcheck infer <model>` — inference mode | 1.5 | KV cache math, concurrent request estimation — **done, v0.2** (§3.1 Component 7, §3.5 Mode C) |
-| `fitcheck advise` — config advisor | 2 | Sweep of (batch_size, lora_r, seq_len) → per-axis prices, per-axis ceilings, and the frontier at the edge of what fits. Dominance is over **two** objectives (maximise tokens/step, maximise rank) with `total_mib ≤ usable` as the *constraint*, not a third objective: MiB is a monotone function of the other two, so minimising it filters nothing (measured 60 of 60 fitting points surviving on a 150-point Llama-3.1-8B grid) |
+| `fitcheck advise` — config advisor | 2 | Sweep of (batch_size, lora_r, seq_len) → per-axis prices, per-axis ceilings, and the frontier at the edge of what fits — **done, v0.3** (§3.5 Mode D for the CLI, §3.5 Mode B for the session command, `docs/ADVISOR.md` for the derivation). Dominance is over **two** objectives (maximise tokens/step, maximise rank) with `total_mib ≤ usable` as the *constraint*, not a third objective: MiB is a monotone function of the other two, so minimising it filters nothing (measured 60 of 60 fitting points surviving on a 150-point Llama-3.1-8B grid) |
 | Calibration mode | 3 | 1 real forward pass → correction factor |
 | HuggingFace Gradio Space | 3 | Web UI for non-CLI users |
 | Cost estimator (RunPod/Lambda pricing) | 3 | |
@@ -1323,6 +1323,37 @@ where all the remaining error lives — see the fragmentation note in Component 
 > 4090. Shipping unvalidated with a loud banner is the honest trade; shipping unvalidated *quietly*,
 > or launching to an audience that checks numbers before the matrix has rows, is not. TASKS 5.5 and
 > 8.1 hold that line.
+
+### v0.3 — the advisor gate
+
+8. **`fitcheck advise` answers the two questions a breakdown cannot** — what each axis costs, and
+   where the wall on each axis is. Done when all four are true:
+
+   a. **Both modes carry it.** Mode D (`fitcheck advise <model> --seq-lens ...`, §3.5) and the
+      session command `advise` / `sweep` (§3.5 Mode B) are built from the same
+      `cli.advise_command.params`, so a flag added to one appears in the other for free. The
+      session drops only the `--seq-lens` requirement, because a session remembers it.
+
+   b. **The wall is bisected, never read off the grid.** The grid gives the shape; each per-axis
+      ceiling comes from re-running the whole estimator (`_largest_fitting`), for the same reason
+      `max_batch_size` does — see the Appendix. A grid that stops at rank 256 hides a real
+      ceiling of 330.
+
+   c. **Every frontier row prints a command you can paste.** It carries the model id the user
+      typed, not `ModelConfig.name` (which is only the last path segment and does not resolve on
+      the Hub).
+
+   d. **The golden sweep reproduces to the digit.** Llama-3.1-8B, QLoRA r=64 [q,k,v,o], 4090,
+      ckpt + flash, seq lens 512–8192: grid 150, fitting 60, frontier `4,096 tok/step r=256 @
+      22,535.87 MiB`, rank ceiling **330** @ 23,497.87 MiB, axis prices −416 / +832 / −5,283.60 /
+      +10,567.20 MiB. The grid size, the bisected rank ceiling and the axis prices are asserted in
+      `tests/test_advisor.py` (`advisor.py` at 100% coverage); the rendered screen is verified by
+      hand in both modes, the way 4.5/4.6 verify `cli.py` and `display.py`.
+
+> **The accuracy gate did not move in v0.3.** `advise` re-runs the same estimator on a grid, so it
+> inherits the v0.2 numbers exactly — 3.4% on the tensors tier, 14.7% on the full total, all of the
+> gap in $C_{overhead}$, all twenty measurements still one Tesla T4. A sweep of an unvalidated
+> heuristic is still unvalidated; `advise` adds reach, not confidence.
 
 ---
 

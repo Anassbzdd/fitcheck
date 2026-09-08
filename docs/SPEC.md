@@ -461,8 +461,8 @@ fitcheck/
 │   └── inference.py         # Component 7 — serving (v0.2), not in the training equation
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── display.py               # rich tables, panels, verdicts, explain text
-├── advisor.py               # Phase 2: parameter sweep (stub in MVP)
-├── calibrate.py             # Phase 3: real measurement (stub in MVP)
+├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
+├── calibrate.py             # Phase 3: real measurement (still an empty stub)
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
@@ -475,6 +475,7 @@ tests/
 ├── test_activations.py
 ├── test_overhead.py
 ├── test_inference.py
+├── test_advisor.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
 scripts/                     # NOT part of the installed package
 ├── measure.py               # ground-truth harness (§3.8) — imports torch/peft/bitsandbytes
@@ -1051,7 +1052,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **MoE models** (Mixtral, DeepSeek) | Not supported in MVP. Active experts × per-expert FFN changes the activation formula. | ❌ v0.3 |
 | **Models with tied embeddings** | Detected via `tie_word_embeddings` in config. Count embedding params once. | ✅ MVP |
 | **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Blueprint.md's note on `intermediate_size`). | ✅ MVP |
-| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$, LoRA dims **and** the activation bracket all use the exact $n_hd_k$ / $n_{kv}d_k$ form (TASKS 3.10, done). Sliding-window attention is still not modelled — see the row below. | ✅ MVP |
+| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$, LoRA dims **and** the activation bracket all use the exact $n_hd_k$ / $n_{kv}d_k$ form. Sliding-window attention is still not modelled — see the row below. | ✅ MVP |
 | **`tie_word_embeddings` absent from config** | Architecture default table (Gemma family ties), `False` for unknown `model_type`. | ✅ MVP |
 | **Custom attention patterns** (sliding window, local) | Not modeled. Treated as standard attention. Note Gemma-2 alternates sliding/full layers, so its non-Flash path is approximate even once the two rows above are fixed. | ❌ v0.3 |
 | **FSDP / DeepSpeed ZeRO** | Not supported. Memory is split across GPUs — requires sharding-aware formulas. | ❌ v0.4 |
@@ -1321,8 +1322,7 @@ where all the remaining error lives — see the fragmentation note in Component 
 
 > **Why the split.** Requiring measured rows before the first publish would block PyPI on owning a
 > 4090. Shipping unvalidated with a loud banner is the honest trade; shipping unvalidated *quietly*,
-> or launching to an audience that checks numbers before the matrix has rows, is not. TASKS 5.5 and
-> 8.1 hold that line.
+> or launching to an audience that checks numbers before the matrix has rows, is not.
 
 ### v0.3 — the advisor gate
 
@@ -1413,9 +1413,9 @@ string.
 > [!IMPORTANT]
 > **This appendix changed on 2026-08-31.** v0.1 published 8,688.67 MiB here and claimed the
 > config fits a 4090 with 63% headroom. The first real measurement — Mistral-7B-v0.3, QLoRA
-> r=32 bs=2 seq=1024 fp16 no-FA on a Kaggle T4 — came back 35.6% above the v0.1 prediction, and
-> the four causes are itemised in docs/TASKS.md 6.3. Three of them ($P_{skip}$, FP32 absmax,
-> FP32 adapters) were confirmed to the MiB against the measured storage breakdown. The fourth,
+> r=32 bs=2 seq=1024 fp16 no-FA on a Kaggle T4 — came back 35.6% above the v0.1 prediction. It had four
+> causes. Three of them ($P_{skip}$, FP32 absmax, FP32 adapters) were confirmed to the MiB
+> against the measured storage breakdown. The fourth,
 > $A_{logits}$, is now confirmed out-of-sample: Qwen2.5-7B and Qwen2.5-1.5B (152k vocabulary,
 > where logits are 85-93% of $A_{act}$) predict to +0.5% and +0.0%. The open item that replaced
 > it is a second GPU -- every measurement so far is one Tesla T4, in FP16, without Flash Attention.

@@ -513,8 +513,8 @@ fitcheck/
 │   └── inference.py         # Component 7 — serving (v0.2), not in the training equation
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── display.py               # rich tables, panels, verdicts, explain text
-├── advisor.py               # Phase 2: parameter sweep (stub in MVP)
-├── calibrate.py             # Phase 3: real measurement (stub in MVP)
+├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
+├── calibrate.py             # Phase 3: real measurement (still an empty stub)
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
@@ -527,6 +527,7 @@ tests/
 ├── test_activations.py
 ├── test_overhead.py
 ├── test_inference.py
+├── test_advisor.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
 scripts/                     # NOT installed with the package
 ├── measure.py               # ground-truth harness: real GPU, real training step

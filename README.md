@@ -24,10 +24,10 @@ tool runs the same on a laptop as on the machine you're sizing for. You get the 
 per-component breakdown, a fits/doesn't-fit verdict against a specific card, and the largest
 micro-batch that still fits.
 
-`fitcheck infer` prices the other half of the job — serving a trained model, where the
-budget is resident weights plus the KV cache — from the same config and the same math. And
-`fitcheck advise` sweeps the knobs instead of pricing one setting: what each axis costs, how
-far each one goes before it stops fitting, and the configs sitting right at that edge.
+`fitcheck infer` does the same for the other half of the job: serving a trained model. There
+the cost is the weights that stay in memory plus the KV cache, from the same config and the
+same math. And `fitcheck advise` tries many settings instead of pricing one — what each knob
+costs, how far each one can go before it stops fitting, and the configs right at that edge.
 
 > **Accuracy status (v0.3.0, 2026-09-02): measured, and the measurements moved the formulas.**
 > Ten real training runs on a Tesla T4 — three models, three sequence lengths, both attention
@@ -39,143 +39,12 @@ far each one goes before it stops fitting, and the configs sitting right at that
 
 ---
 
-## Mode A — one-liner
+## Contents
 
-```bash
-fitcheck meta-llama/Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --optimizer adamw --flash-attn --gpu 4090
-```
-
-![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090](docs/images/mode-a-output.png)
-
-Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
-`fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
-
-> Llama and Gemma are **gated** on the Hub, so that command needs `hf auth login` or an
-> `HF_TOKEN` first — see [Hugging Face access](#hugging-face-access). Public models like
-> `Qwen/Qwen2.5-14B` and `mistralai/Mistral-7B-v0.3` need no token at all.
-
----
-
-## Mode B — interactive REPL
-
-Run `fitcheck` with no model ID and you get a session instead. Flags typed at the `memory`
-prompt stick, so moving one dial doesn't mean retyping the whole line.
-
-![fitcheck Mode B session: banner, then model and gpu commands, then a memory estimate for Llama-3.1-8B QLoRA on an RTX 4090](docs/images/mode-b-session.png)
-
-`help` lists the command surface:
-
-![fitcheck REPL help: the model, gpu, memory, infer, advise, explain, optimize, compare, show, reset, gpus, help and exit commands](docs/images/mode-b-help.png)
-
-`explain` names the largest component and prices every toggle by re-running the whole estimate with
-one flag flipped — never by hand-summing component deltas, so the 5% that CUDA overhead picks up is
-included automatically. Two lines are load-bearing. Gradient accumulation costs **0 MiB**, because
-gradients accumulate in place. And for this config, turning Flash Attention off also costs **0 MiB**:
-under checkpointing the peak is the *larger* of the LM-head hump and one layer's recompute, and with a
-128k vocabulary the LM head wins either way. A tool that promised a saving there would be wrong.
-
-![fitcheck REPL explain output: the largest component named, followed by the cost of flipping each flag](docs/images/mode-b-explain.png)
-
-`compare` puts the same config on several cards, and leads with the point — the peak is
-identical everywhere, only the ceiling moves, so the max micro-batch column is the interesting
-one.
-
-![fitcheck REPL compare output: RTX 4090, RTX 3090 and Tesla T4 side by side, none of them fitting, with max micro-batch 2, 2 and 0](docs/images/mode-b-compare.png)
-
-Also available: `optimize` (largest micro-batch that fits, plus a config actually worth
-running), `advise` / `sweep` (the whole map at once — see below), `show`, `reset`, and `gpus`.
-
----
-
-## Inference — `fitcheck infer`
-
-Serving a model is a different budget from training one. There are no gradients, no
-optimizer states and no saved activations. What stays resident is the weights plus the KV
-cache, and the cache grows with every request you keep in flight.
-
-```bash
-fitcheck infer NousResearch/Meta-Llama-3.1-8B --gpu 4090
-```
-
-![fitcheck infer output: Llama-3.1-8B served in fp16 on an RTX 4090 — 15,317 MiB of weights, a 256 MiB KV cache, 16,851 MiB resident, fits with 28% headroom](docs/images/infer-cli.png)
-
-That is the ungated Llama-3.1-8B mirror, so it runs with no token — see
-[Hugging Face access](#hugging-face-access).
-
-The same thing is a REPL command, on the model and GPU already loaded. Its flags are sticky
-like `memory`'s, but they are a **separate set** — serving computes in fp16 where training
-defaults to bf16, so the two never share a value. That makes re-pricing the same model one
-short line:
-
-![fitcheck infer with NF4 double quantization: weights fall to 5,541 MiB and the total to 6,586 MiB, 72% headroom](docs/images/infer-nf4.png)
-
-4-bit weights take the same 8B model from 16,851 MiB down to 6,586 MiB: the weights line
-falls from 15,317 to 5,541 MiB and the CUDA buffers shrink with it. The KV cache does not
-move at all, because `--quant` is the **weight** format and `--precision` is the **compute**
-dtype — a 4-bit deployment still serves an fp16 cache.
-
-`compare ... --infer` puts one serving config on several cards. The peak is identical on all
-of them, so the interesting column is how many concurrent requests each card can hold:
-
-![fitcheck compare --infer: the same NF4 config on an RTX 4090, A100 40GB and Tesla T4, holding 63, 123 and 28 concurrent requests](docs/images/infer-compare.png)
-
-The cache is the part people under-budget. `fitcheck` prints its price per token and per
-request — 0.125 MiB and 256 MiB for Llama-3.1-8B at 2,048 tokens — and `--seq-len` and
-`--concurrent` are interchangeable: 4 requests of 2,048 tokens cost exactly what 1 request of
-8,192 costs. Every request is assumed to hold its full context, so the number is a worst
-case; a paged engine like vLLM allocates less until the cache fills up.
-
----
-
-## Config advisor — `fitcheck advise`
-
-A breakdown tells you what one config costs. It does not tell you which dial to turn. `advise`
-sweeps batch size, sequence length and LoRA rank together and answers the two questions that
-actually decide a run: **what does each axis cost**, and **how far can each one go before it
-stops fitting**.
-
-```bash
-fitcheck advise meta-llama/Llama-3.1-8B --gpu 4090 --qlora --flash-attn \
-  --lora-targets q,k,v,o --seq-lens 512,1024,2048,4096,8192
-```
-
-![fitcheck advise output: what is held fixed and what is swept, the frontier with a runnable command per row, the per-axis ceilings, and the price of each axis](docs/images/advise-cli.png)
-
-The screen is four blocks: what is **held fixed** versus what is **swept**, the **frontier**
-(the configs at the edge of what fits, one pasteable command per row), **the wall** (the exact
-ceiling on each axis), and **the price of each axis**.
-
-For Llama-3.1-8B QLoRA on a 4090, the price table settles the argument on its own. The
-table below is anchored at **rank 64**; the screenshot above prices the same axes from the
-frontier's own anchor, **rank 256**, so its rank rows are four times larger (−1,664 and
-+3,328 MiB). The tokens/step rows are identical either way.
-
-| Change from `batch 2 × seq 2048`, rank 64 | Cost | New total |
-|:---|---:|---:|
-| rank 64 → 32 | **−416 MiB** | 19,623.87 |
-| rank 64 → 128 | **+832 MiB** | 20,871.87 |
-| tokens/step ÷2 (batch 1) | **−5,284 MiB** | 14,756.27 |
-| tokens/step ×2 (batch 4 *or* seq 4096) | **+10,567 MiB** | 30,607.07 — does not fit |
-
-At rank 64, doubling tokens/step costs about **12.7×** what doubling the rank costs (at rank
-256 it is still 3.2×). Rank is not the knob stopping you — and the ceiling proves it: at rank
-64 the wall is 4,096 tokens/step, and dropping all the way to rank 8 does not buy a single
-extra token. Meanwhile at 4,096 tokens/step the rank can go up to **330** before the card
-runs out.
-
-Two details that make the numbers trustworthy. Every ceiling is found by **bisection over the
-full estimator**, not read off the grid — this grid stops at rank 256 while the real wall is
-330, so a grid-only answer would be wrong. And `--seq-lens` is **required**, because there is
-no honest default: sweeping past a model's real context length in silence would be worse than
-asking. `--max-seq-len` is a guard that rejects a too-long swept length, not a generator.
-
-`advise` is also a REPL command (alias `sweep`), and it shares the sticky training flags with
-`memory` — `advise --qlora --flash-attn` sets them for both, so there is no second copy to
-drift. In a session `--seq-lens` stops being required once you have given it, because a
-session remembers.
-
-`advise` says **what each axis costs and where the wall is**; the REPL's `optimize` says
-**what to run**. They are deliberately different questions.
+- [Installation](#installation) · [Hugging Face access](#hugging-face-access) · [Model support](#model-support)
+- The four commands: [`fitcheck`](#mode-a--one-liner) (estimate) · [REPL](#mode-b--interactive-repl) · [`infer`](#inference--fitcheck-infer) (serving) · [`advise`](#config-advisor--fitcheck-advise) (sweep)
+- [Usage — all the flags and examples](#usage) · [Troubleshooting](#troubleshooting)
+- [How it compares](#how-it-compares) · [Validation — predicted vs measured](#validation) · [How it works](#how-it-works) · [Contributing](#contributing)
 
 ---
 
@@ -217,7 +86,190 @@ Once a `config.json` is in the Hub cache, `fitcheck` runs offline.
 
 ---
 
+## Model support
+
+The parser handles dense decoder-only transformers with a gated (SwiGLU-style) MLP — Llama,
+Mistral, Qwen2/2.5, Gemma-2/3 and anything config-shaped like them. It reads `head_dim` when the
+config declares one rather than assuming `hidden_size / num_attention_heads`, and it never
+assumes `intermediate_size == 4 × hidden_size`; both assumptions are wrong on Gemma-2.
+
+Not modelled: MoE architectures (Mixtral, DeepSeek), encoder-decoder models, sliding-window
+attention, `torch.compile`, and multi-GPU sharding (FSDP / DeepSpeed ZeRO). See
+[SPEC.md § 3.7](https://github.com/Anassbzdd/fitcheck/blob/main/docs/SPEC.md) for the full limitations table.
+
+> **Check this list before you trust a number.** `fitcheck` does not refuse a model it cannot
+> model — it applies the dense-decoder formula anyway and prints a normal-looking verdict. On
+> `mistralai/Mixtral-8x7B-v0.1` it reports 7.24B parameters, because it counts one expert
+> instead of eight; the real model has about 46.7B. The answer is wrong and nothing on screen
+> says so. Detecting these architectures is a known gap, not a design choice.
+
+---
+
+## Mode A — one-liner
+
+One command, one answer. This is a public mirror of Llama-3.1-8B, so it runs with no login:
+
+```bash
+fitcheck NousResearch/Meta-Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --optimizer adamw --flash-attn --gpu 4090
+```
+
+![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-a-output.png)
+
+Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
+`fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
+
+> The screenshot was taken with `meta-llama/Llama-3.1-8B`, the official repo. That one is
+> **gated**, like every Llama and Gemma repo, so it needs `hf auth login` or an `HF_TOKEN`
+> first — see [Hugging Face access](#hugging-face-access). The `NousResearch` mirror in the
+> command above ships the same `config.json`, so every number matches. Public models like
+> `Qwen/Qwen2.5-14B` and `mistralai/Mistral-7B-v0.3` need no token either.
+
+---
+
+## Mode B — interactive REPL
+
+Run `fitcheck` with no model ID and you get a session instead. Flags typed at the `memory`
+prompt stick, so moving one dial doesn't mean retyping the whole line.
+
+![fitcheck Mode B session: banner, then model and gpu commands, then a memory estimate for Llama-3.1-8B QLoRA on an RTX 4090](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-b-session.png)
+
+`help` lists the command surface:
+
+![fitcheck REPL help: the model, gpu, memory, infer, advise, explain, optimize, compare, show, reset, gpus, help and exit commands](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-b-help.png)
+
+`explain` names the largest component and prices every toggle by re-running the whole estimate with
+one flag flipped — never by hand-summing component deltas, so the 5% that CUDA overhead picks up is
+included automatically. Two results here matter most. Gradient accumulation costs **0 MiB**, because
+gradients accumulate in place. And for this config, turning Flash Attention off also costs **0 MiB**:
+under checkpointing the peak is the *larger* of the LM-head hump and one layer's recompute, and with a
+128k vocabulary the LM head wins either way. A tool that promised a saving there would be wrong.
+
+![fitcheck REPL explain output: the largest component named, followed by the cost of flipping each flag](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-b-explain.png)
+
+`compare` puts the same config on several cards, and leads with the point — the peak is
+identical everywhere, only the ceiling moves, so the max micro-batch column is the interesting
+one.
+
+![fitcheck REPL compare output: RTX 4090, RTX 3090 and Tesla T4 side by side, none of them fitting, with max micro-batch 2, 2 and 0](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-b-compare.png)
+
+Also available: `optimize` (largest micro-batch that fits, plus a config actually worth
+running), `advise` / `sweep` (the whole map at once — see below), `show`, `reset`, and `gpus`.
+
+---
+
+## Inference — `fitcheck infer`
+
+Serving a model is a different budget from training one. There are no gradients, no
+optimizer states and no saved activations. What stays resident is the weights plus the KV
+cache, and the cache grows with every request you keep in flight.
+
+```bash
+fitcheck infer NousResearch/Meta-Llama-3.1-8B --gpu 4090
+```
+
+![fitcheck infer output: Llama-3.1-8B served in fp16 on an RTX 4090 — 15,317 MiB of weights, a 256 MiB KV cache, 16,851 MiB resident, fits with 28% headroom](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/infer-cli.png)
+
+That is the ungated Llama-3.1-8B mirror, so it runs with no token — see
+[Hugging Face access](#hugging-face-access).
+
+The same thing is a REPL command, on the model and GPU already loaded. Its flags are sticky
+like `memory`'s, but they are a **separate set** — serving computes in fp16 where training
+defaults to bf16, so the two never share a value. That makes re-pricing the same model one
+short line:
+
+![fitcheck infer with NF4 double quantization: weights fall to 5,541 MiB and the total to 6,586 MiB, 72% headroom](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/infer-nf4.png)
+
+4-bit weights take the same 8B model from 16,851 MiB down to 6,586 MiB: the weights line
+falls from 15,317 to 5,541 MiB and the CUDA buffers shrink with it. The KV cache does not
+move at all, because `--quant` is the **weight** format and `--precision` is the **compute**
+dtype — a 4-bit deployment still serves an fp16 cache.
+
+`compare ... --infer` puts one serving config on several cards. The peak is identical on all
+of them, so the interesting column is how many concurrent requests each card can hold:
+
+![fitcheck compare --infer: the same NF4 config on an RTX 4090, A100 40GB and Tesla T4, holding 63, 123 and 28 concurrent requests](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/infer-compare.png)
+
+The cache is the part people under-budget. `fitcheck` prints its price per token and per
+request — 0.125 MiB and 256 MiB for Llama-3.1-8B at 2,048 tokens — and `--seq-len` and
+`--concurrent` are interchangeable: 4 requests of 2,048 tokens cost exactly what 1 request of
+8,192 costs. Every request is assumed to hold its full context, so the number is a worst
+case; a paged engine like vLLM allocates less until the cache fills up.
+
+---
+
+## Config advisor — `fitcheck advise`
+
+A breakdown tells you what one config costs. It does not tell you which dial to turn. `advise`
+sweeps batch size, sequence length and LoRA rank together and answers the two questions that
+actually decide a run: **what does each axis cost**, and **how far can each one go before it
+stops fitting**.
+
+```bash
+fitcheck advise meta-llama/Llama-3.1-8B --gpu 4090 --qlora --flash-attn \
+  --lora-targets q,k,v,o --seq-lens 512,1024,2048,4096,8192
+```
+
+![fitcheck advise output: what is held fixed and what is swept, the frontier with a runnable command per row, the per-axis ceilings, and the price of each axis](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/advise-cli.png)
+
+The screen is four blocks: what is **held fixed** versus what is **swept**, the **frontier**
+(the configs at the edge of what fits, one pasteable command per row), **the wall** (the exact
+ceiling on each axis), and **the price of each axis**.
+
+For Llama-3.1-8B QLoRA on a 4090, the price table settles the argument on its own. The
+table below is anchored at **rank 64**; the screenshot above prices the same axes from the
+frontier's own anchor, **rank 256**, so its rank rows are four times larger (−1,664 and
++3,328 MiB). The tokens/step rows are identical either way.
+
+| Change from `batch 2 × seq 2048`, rank 64 | Cost | New total |
+|:---|---:|---:|
+| rank 64 → 32 | **−416 MiB** | 19,623.87 |
+| rank 64 → 128 | **+832 MiB** | 20,871.87 |
+| tokens/step ÷2 (batch 1) | **−5,284 MiB** | 14,756.27 |
+| tokens/step ×2 (batch 4 *or* seq 4096) | **+10,567 MiB** | 30,607.07 — does not fit |
+
+At rank 64, doubling tokens/step costs about **12.7×** what doubling the rank costs (at rank
+256 it is still 3.2×). Rank is not the knob stopping you — and the ceiling proves it: at rank
+64 the wall is 4,096 tokens/step, and dropping all the way to rank 8 does not buy a single
+extra token. Meanwhile at 4,096 tokens/step the rank can go up to **330** before the card
+runs out.
+
+Two details that make the numbers trustworthy. Every ceiling is found by **bisection over the
+full estimator**, not read off the grid — this grid stops at rank 256 while the real wall is
+330, so a grid-only answer would be wrong. And `--seq-lens` is **required**, because there is
+no honest default: sweeping past a model's real context length in silence would be worse than
+asking. `--max-seq-len` is a guard that rejects a too-long swept length, not a generator.
+
+`advise` is also a REPL command (alias `sweep`), and it shares the sticky training flags with
+`memory` — `advise --qlora --flash-attn` sets them for both, so there is no second copy to
+drift. In a session `--seq-lens` stops being required once you have given it, because a
+session remembers.
+
+`advise` says **what each axis costs and where the wall is**; the REPL's `optimize` says
+**what to run**. They are deliberately different questions.
+
+---
+
 ## Usage
+
+### The flags you need first
+
+Everything else has a sane default. `fitcheck --help` lists the full set.
+
+| Flag | What it means | Default |
+|:---|:---|:---|
+| `--qlora` | Shorthand for `--quant nf4 --precision bf16 --grad-checkpoint`. The usual starting point. | off |
+| `--quant` | How the base model is **stored** — `none`, `nf4` (4-bit), `int8`. | `none` |
+| `--precision` | The **compute** dtype — LoRA weights, gradients, activations. Not the same axis as `--quant`. | `bf16` |
+| `--lora-r` | LoRA rank. Higher = more trainable weights, more memory. | `16` |
+| `--lora-targets` | Which layers get an adapter: `minimal` (q,v), `standard` (q,k,v,o), `full` (adds gate,up,down), or your own list like `q,k,v,o`. | `standard` |
+| `--batch-size` | **Micro**-batch: what one forward/backward sees. This drives activation memory. | `1` |
+| `--seq-len` | Sequence length in tokens. | `2048` |
+| `--grad-checkpoint` | Recompute activations instead of storing them. Usually the biggest single saving. | off |
+| `--flash-attn` | Skip the attention score matrix. Sometimes saves nothing — see [below](#a-result-worth-knowing). | off |
+| `--gpu` | Target card. `--list-gpus` prints all 22. Use `--vram-mib` for a card not in the list. | `4090` |
+
+`--grad-accum` is display-only: gradient accumulation costs **0 MiB**, because gradients
+accumulate in place.
 
 ### Mode A
 
@@ -309,16 +361,34 @@ fitcheck advise meta-llama/Llama-3.1-8B --gpu 4090 --qlora --seq-lens 2048,4096 
 swept config fits, `1` none of them does, `2` couldn't run — which includes a `--seq-lens`
 past `--max-seq-len`. `fitcheck advise --help` has the full flag list.
 
-### Model support
+---
 
-The parser handles dense decoder-only transformers with a gated (SwiGLU-style) MLP — Llama,
-Mistral, Qwen2/2.5, Gemma-2/3 and anything config-shaped like them. It reads `head_dim` when the
-config declares one rather than assuming `hidden_size / num_attention_heads`, and it never
-assumes `intermediate_size == 4 × hidden_size`; both assumptions are wrong on Gemma-2.
+## Troubleshooting
 
-Not modelled: MoE architectures (Mixtral, DeepSeek), encoder-decoder models, sliding-window
-attention, `torch.compile`, and multi-GPU sharding (FSDP / DeepSpeed ZeRO). See
-[SPEC.md § 3.7](docs/SPEC.md) for the full limitations table.
+**`fitcheck: command not found` after installing.** The package installs a script into your
+Python environment's `bin` / `Scripts` folder. If that folder is not on your `PATH`, run it as a
+module instead: `python -m fitcheck ...`.
+
+**`This model is gated on Hugging Face`.** Accept the licence on the model page, then
+`hf auth login` or set `HF_TOKEN`. See [Hugging Face access](#hugging-face-access).
+
+**`Repository Not Found for url: ...`.** Either the model ID has a typo, or the repo is private.
+The ID must be the full `owner/name`, exactly as it appears on the Hub.
+
+**`Error: Unknown GPU 'x'`.** Run `fitcheck --list-gpus` for the 22 supported names. For a card
+that is not in the list, give the VRAM directly: `--vram-mib 32768`.
+
+**No internet.** `fitcheck` needs the network once per model, to fetch `config.json` (a few KB).
+After that the file is in the Hub cache and the same command works offline.
+
+**The number looks wrong for my model.** First check it is a supported architecture — see
+[Model support](#model-support). `fitcheck` does not reject MoE or encoder models, it just
+returns a wrong answer for them.
+
+**My real run used a different amount.** Expect the total to be within about 15%, and see
+[Validation](#validation) for where that error comes from. Two common causes are outside the
+model: another process on the same card, and a serving engine like vLLM that pre-allocates a
+fixed share of VRAM.
 
 ---
 
@@ -343,8 +413,8 @@ three real bugs, and the gaps that remain are listed rather than hidden.
 
 ## Validation
 
-Ten real training runs, all reproducible from [`fitcheck.ipynb`](fitcheck.ipynb) with
-[`scripts/measure.py`](scripts/measure.py). One Tesla T4 (sm_75), FP16 compute, QLoRA r=32
+Ten real training runs, all reproducible from [`fitcheck.ipynb`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck.ipynb) with
+[`scripts/measure.py`](https://github.com/Anassbzdd/fitcheck/blob/main/scripts/measure.py). One Tesla T4 (sm_75), FP16 compute, QLoRA r=32
 [q,k,v,o], AdamW with FP32 states, gradient checkpointing on. Every run loads the real model,
 applies real LoRA adapters, and runs real training steps.
 
@@ -452,7 +522,7 @@ python scripts/measure.py TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
 ## How it works
 
 Peak VRAM is modelled as `W_base + W_lora + S_optim + G_grad + A_act + C_overhead`, one module
-per term under [`fitcheck/memory/`](fitcheck/memory/): base weights (only the transformer linears
+per term under [`fitcheck/memory/`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck/memory/): base weights (only the transformer linears
 are packed under `--quant` — the embeddings, LM head and norms stay unquantized and get upcast to
 FP32, plus one FP32 NF4 scale per block of 64), LoRA adapters (`r × (d_in + d_out)` per target, with
 `k_proj`/`v_proj` narrowed to `num_kv_heads × head_dim` under GQA), optimizer states (trainable
@@ -489,11 +559,11 @@ one point: `total(b)` is piecewise linear, with a kink wherever that `max` flips
 Serving reuses the same weight term and adds one of its own:
 `2 · L · (n_kv × head_dim) · s · concurrent · bytes` for the KV cache, GQA-narrowed like the
 rest. `max_concurrent` is found the same way `max_batch_size` is — by bisecting the whole estimate
-and flooring, not by dividing free space by the per-request cache. That shortcut over-counts,
-because `C_overhead` is a percentage of a total that itself grows with the cache.
+and flooring, not by dividing free space by the per-request cache. That shortcut gives too high
+a number, because `C_overhead` is a percentage of a total that itself grows with the cache.
 
-See [SPEC.md](docs/SPEC.md) for the full memory model, and
-[Blueprint.md](docs/Blueprint.md) for the derivations.
+See [SPEC.md](https://github.com/Anassbzdd/fitcheck/blob/main/docs/SPEC.md) for the full memory model, and
+[Blueprint.md](https://github.com/Anassbzdd/fitcheck/blob/main/docs/Blueprint.md) for the derivations.
 
 ---
 
@@ -517,7 +587,7 @@ The bar for a merge:
   `float`. Linting and type checking aren't wired up yet; if you want to add `ruff` and `mypy`
   configs, that's a welcome PR on its own.
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the full version, including the two non-negotiable
+[CONTRIBUTING.md](https://github.com/Anassbzdd/fitcheck/blob/main/CONTRIBUTING.md) has the full version, including the two non-negotiable
 constraints (no `torch` in the package, `config.json` only).
 
 The most useful thing you can contribute right now is **a measured row on hardware that is not a
@@ -525,10 +595,10 @@ Tesla T4**. Every number in the validation table comes from one card, which mean
 FlashAttention-2 (both need sm_80 or newer) have never been exercised, and the 500 MiB CUDA-context
 constant has been checked exactly once. If you have an Ampere or newer GPU, one run of
 `scripts/measure.py` is worth more to this project than any feature — open it with the
-[measurement issue template](.github/ISSUE_TEMPLATE/measurement.yml).
+[measurement issue template](https://github.com/Anassbzdd/fitcheck/blob/main/.github/ISSUE_TEMPLATE/measurement.yml).
 
 ---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/Anassbzdd/fitcheck/blob/main/LICENSE).

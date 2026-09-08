@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
  
 [project]
 name = "fitcheck-llm"
-version = "0.1.0"
+version = "0.2.0"
 description = "Predict GPU VRAM requirements for LLM training before you start — model weights, LoRA/QLoRA, optimizer states, gradients, activations, and Flash Attention, checked against real GPUs."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,6 +47,11 @@ Issues = "https://github.com/Anassbzdd/fitcheck/issues"
  
 [tool.hatch.build.targets.wheel]
 packages = ["fitcheck"]
+
+[tool.hatch.build.targets.sdist]
+# .claude holds local tool settings and a stale worktree snapshot of the whole
+# project; neither belongs in a published release.
+exclude = [".claude"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

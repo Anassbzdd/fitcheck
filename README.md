@@ -29,7 +29,7 @@ budget is resident weights plus the KV cache — from the same config and the sa
 `fitcheck advise` sweeps the knobs instead of pricing one setting: what each axis costs, how
 far each one goes before it stops fitting, and the configs sitting right at that edge.
 
-> **Accuracy status (v0.1.2, 2026-09-02): measured, and the measurements moved the formulas.**
+> **Accuracy status (v0.3.0, 2026-09-02): measured, and the measurements moved the formulas.**
 > Ten real training runs on a Tesla T4 — three models, three sequence lengths, both attention
 > kernels — put the five physical components within **3.4%** of measured peak (mean 0.8%). The full
 > total, which includes the CUDA-overhead heuristic and is what the fits/doesn't-fit verdict uses, is
@@ -65,7 +65,7 @@ prompt stick, so moving one dial doesn't mean retyping the whole line.
 
 `help` lists the command surface:
 
-![fitcheck REPL help: the model, gpu, memory, infer, explain, optimize, compare, show, reset, gpus, help and exit commands](docs/images/mode-b-help.png)
+![fitcheck REPL help: the model, gpu, memory, infer, advise, explain, optimize, compare, show, reset, gpus, help and exit commands](docs/images/mode-b-help.png)
 
 `explain` names the largest component and prices every toggle by re-running the whole estimate with
 one flag flipped — never by hand-summing component deltas, so the 5% that CUDA overhead picks up is
@@ -80,7 +80,7 @@ under checkpointing the peak is the *larger* of the LM-head hump and one layer's
 identical everywhere, only the ceiling moves, so the max micro-batch column is the interesting
 one.
 
-![fitcheck REPL compare output: RTX 4090, RTX 3090 and Tesla T4 side by side, all fitting, with max micro-batch 21, 21 and 12](docs/images/mode-b-compare.png)
+![fitcheck REPL compare output: RTX 4090, RTX 3090 and Tesla T4 side by side, none of them fitting, with max micro-batch 2, 2 and 0](docs/images/mode-b-compare.png)
 
 Also available: `optimize` (largest micro-batch that fits, plus a config actually worth
 running), `advise` / `sweep` (the whole map at once — see below), `show`, `reset`, and `gpus`.
@@ -117,7 +117,7 @@ dtype — a 4-bit deployment still serves an fp16 cache.
 `compare ... --infer` puts one serving config on several cards. The peak is identical on all
 of them, so the interesting column is how many concurrent requests each card can hold:
 
-![fitcheck compare --infer: the same NF4 config on an RTX 4090, A100 40GB and Tesla T4, holding 63, 123 and 33 concurrent requests](docs/images/infer-compare.png)
+![fitcheck compare --infer: the same NF4 config on an RTX 4090, A100 40GB and Tesla T4, holding 63, 123 and 28 concurrent requests](docs/images/infer-compare.png)
 
 The cache is the part people under-budget. `fitcheck` prints its price per token and per
 request — 0.125 MiB and 256 MiB for Llama-3.1-8B at 2,048 tokens — and `--seq-len` and
@@ -145,7 +145,10 @@ The screen is four blocks: what is **held fixed** versus what is **swept**, the 
 (the configs at the edge of what fits, one pasteable command per row), **the wall** (the exact
 ceiling on each axis), and **the price of each axis**.
 
-For Llama-3.1-8B QLoRA on a 4090, the price table settles the argument on its own:
+For Llama-3.1-8B QLoRA on a 4090, the price table settles the argument on its own. The
+table below is anchored at **rank 64**; the screenshot above prices the same axes from the
+frontier's own anchor, **rank 256**, so its rank rows are four times larger (−1,664 and
++3,328 MiB). The tokens/step rows are identical either way.
 
 | Change from `batch 2 × seq 2048`, rank 64 | Cost | New total |
 |:---|---:|---:|
@@ -154,10 +157,11 @@ For Llama-3.1-8B QLoRA on a 4090, the price table settles the argument on its ow
 | tokens/step ÷2 (batch 1) | **−5,284 MiB** | 14,756.27 |
 | tokens/step ×2 (batch 4 *or* seq 4096) | **+10,567 MiB** | 30,607.07 — does not fit |
 
-Doubling tokens/step costs about **12.7×** what doubling the rank costs. Rank is not the knob
-stopping you — and the ceiling proves it: at rank 64 the wall is 4,096 tokens/step, and
-dropping all the way to rank 8 does not buy a single extra token. Meanwhile at 4,096
-tokens/step the rank can go up to **330** before the card runs out.
+At rank 64, doubling tokens/step costs about **12.7×** what doubling the rank costs (at rank
+256 it is still 3.2×). Rank is not the knob stopping you — and the ceiling proves it: at rank
+64 the wall is 4,096 tokens/step, and dropping all the way to rank 8 does not buy a single
+extra token. Meanwhile at 4,096 tokens/step the rank can go up to **330** before the card
+runs out.
 
 Two details that make the numbers trustworthy. Every ceiling is found by **bisection over the
 full estimator**, not read off the grid — this grid stops at rank 256 while the real wall is
@@ -501,7 +505,7 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 331
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 371
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the
   floor. The `-m "not network"` filter is not optional: it skips the one test that fetches the
   gated `meta-llama/Llama-3.1-8B` for real, which fails without an `HF_TOKEN`. The offline

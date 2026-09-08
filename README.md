@@ -5,7 +5,7 @@
 <h1 align="center">fitcheck</h1>
 
 <p align="center">
-  Predict how much VRAM a LoRA/QLoRA fine-tune will need — before you launch it.
+  Predict how much VRAM your fine-tuning job will need — LoRA, QLoRA, or full fine-tuning — before you launch it.
 </p>
 
 <p align="center">

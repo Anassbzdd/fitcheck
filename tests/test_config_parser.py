@@ -5,7 +5,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 from huggingface_hub.errors import GatedRepoError
-from fitcheck.config_parser import fetch_model_config
+from fitcheck.config_parser import UnsupportedModelError, fetch_model_config
 
 
 @pytest.mark.network
@@ -401,3 +401,169 @@ _MINIMAL_CONFIG = {
     "vocab_size": 100,
     "tie_word_embeddings": False,
 }
+
+
+_MIXTRAL_8X7B_CONFIG = {
+    "model_type": "mixtral",
+    "hidden_size": 4096,
+    "num_hidden_layers": 32,
+    "num_attention_heads": 32,
+    "num_key_value_heads": 8,
+    "intermediate_size": 14336,
+    "vocab_size": 32000,
+    "num_local_experts": 8,
+    "num_experts_per_tok": 2,
+}
+
+_QWEN3_30B_A3B_CONFIG = {
+    "model_type": "qwen3_moe",
+    "hidden_size": 2048,
+    "num_hidden_layers": 48,
+    "num_attention_heads": 32,
+    "num_key_value_heads": 4,
+    "head_dim": 128,
+    "intermediate_size": 6144,
+    "moe_intermediate_size": 768,
+    "vocab_size": 151936,
+    "num_experts": 128,
+    "num_experts_per_tok": 8,
+}
+
+_GPT_OSS_20B_CONFIG = {
+    "model_type": "gpt_oss",
+    "hidden_size": 2880,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 64,
+    "num_key_value_heads": 8,
+    "head_dim": 64,
+    "intermediate_size": 2880,
+    "vocab_size": 201088,
+    "num_local_experts": 32,
+    "num_experts_per_tok": 4,
+}
+
+_DEEPSEEK_V2_LITE_CONFIG = {
+    "model_type": "deepseek_v2",
+    "hidden_size": 2048,
+    "num_hidden_layers": 27,
+    "num_attention_heads": 16,
+    "num_key_value_heads": 16,
+    "intermediate_size": 10944,
+    "moe_intermediate_size": 1408,
+    "vocab_size": 102400,
+    "n_routed_experts": 64,
+    "num_experts_per_tok": 6,
+}
+
+_SMOLVLM_CONFIG = {
+    "model_type": "idefics3",
+    "text_config": {
+        "model_type": "llama",
+        "hidden_size": 2048,
+        "num_hidden_layers": 24,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 32,
+        "intermediate_size": 8192,
+        "vocab_size": 49280,
+    },
+    "vision_config": {"hidden_size": 1152, "num_hidden_layers": 27},
+}
+
+
+@pytest.mark.parametrize(
+    ("model_id", "config", "expected"),
+    [
+        ("mistralai/Mixtral-8x7B-v0.1", _MIXTRAL_8X7B_CONFIG, "Mixture-of-Experts"),
+        ("Qwen/Qwen3-30B-A3B", _QWEN3_30B_A3B_CONFIG, "Mixture-of-Experts"),
+        ("openai/gpt-oss-20b", _GPT_OSS_20B_CONFIG, "Mixture-of-Experts"),
+        ("deepseek-ai/DeepSeek-V2-Lite", _DEEPSEEK_V2_LITE_CONFIG, "Mixture-of-Experts"),
+        ("HuggingFaceTB/SmolVLM-Instruct", _SMOLVLM_CONFIG, "nests"),
+    ],
+)
+def test_unsupported_architectures_are_refused(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    model_id: str,
+    config: dict[str, Any],
+    expected: str,
+) -> None:
+    fake_config_download(config)
+
+    with pytest.raises(UnsupportedModelError, match=expected) as excinfo:
+        fetch_model_config(model_id)
+
+    message = str(excinfo.value)
+    assert model_id in message
+    assert "OOM" in message
+
+
+@pytest.mark.parametrize(
+    ("model_id", "config", "declared_key"),
+    [
+        ("mistralai/Mixtral-8x7B-v0.1", _MIXTRAL_8X7B_CONFIG, "num_local_experts"),
+        ("Qwen/Qwen3-30B-A3B", _QWEN3_30B_A3B_CONFIG, "num_experts"),
+        ("openai/gpt-oss-20b", _GPT_OSS_20B_CONFIG, "num_local_experts"),
+        ("deepseek-ai/DeepSeek-V2-Lite", _DEEPSEEK_V2_LITE_CONFIG, "n_routed_experts"),
+    ],
+)
+def test_moe_refusal_names_the_key_it_saw(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    model_id: str,
+    config: dict[str, Any],
+    declared_key: str,
+) -> None:
+    fake_config_download(config)
+
+    with pytest.raises(UnsupportedModelError) as excinfo:
+        fetch_model_config(model_id)
+
+    assert declared_key in str(excinfo.value)
+    assert "num_experts_per_tok" in str(excinfo.value)
+
+
+def test_nested_multimodal_refusal_says_nested_not_malformed(
+    fake_config_download: Callable[[dict[str, Any]], None],
+) -> None:
+    fake_config_download(_SMOLVLM_CONFIG)
+
+    with pytest.raises(UnsupportedModelError) as excinfo:
+        fetch_model_config("HuggingFaceTB/SmolVLM-Instruct")
+
+    message = str(excinfo.value)
+    assert "text_config" in message
+    assert "nested, not missing" in message
+    assert "must be a positive integer" not in message
+
+
+def test_unsupported_model_error_is_a_value_error() -> None:
+    assert issubclass(UnsupportedModelError, ValueError)
+
+
+@pytest.mark.parametrize(
+    ("model_id", "config"),
+    [
+        ("meta-llama/Llama-3.1-8B", "llama_31_8b_config"),
+        ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "mqa_config"),
+        ("openai-community/gpt2", "mha_config"),
+        ("google/gemma-2-9b", "gemma_2_9b_config"),
+        ("HuggingFaceTB/SmolLM2-1.7B", "tied_embeddings_config"),
+    ],
+)
+def test_supported_dense_models_are_not_refused(
+    request: pytest.FixtureRequest,
+    fake_config_download: Callable[[dict[str, Any]], None],
+    model_id: str,
+    config: str,
+) -> None:
+    fake_config_download(request.getfixturevalue(config))
+
+    assert fetch_model_config(model_id).num_params > 0
+
+
+def test_a_vision_tower_alongside_top_level_dims_is_not_refused(
+    fake_config_download: Callable[[dict[str, Any]], None],
+    llama_31_8b_config: dict[str, Any],
+) -> None:
+    fake_config_download(
+        dict(llama_31_8b_config, vision_config={"hidden_size": 1280, "depth": 32})
+    )
+    assert fetch_model_config("Qwen/Qwen2.5-VL-7B-Instruct").num_params > 0

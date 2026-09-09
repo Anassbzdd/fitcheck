@@ -15,6 +15,23 @@ _TIES_WORD_EMBEDDINGS_BY_DEFAULT = frozenset(
 )
 
 
+_MOE_KEYS = (
+    "num_experts_per_tok",
+    "num_local_experts",
+    "num_experts",
+    "n_routed_experts",
+)
+
+
+class UnsupportedModelError(ValueError):
+    """The config parsed fine, but its architecture is outside fitcheck's memory model.
+
+    A subclass of `ValueError` so existing callers keep catching it, but a distinct
+    type so the CLI and the REPL can print the message without the "could not read
+    config.json" prefix: the file was read, it is the model that is refused.
+    """
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     name: str
@@ -89,6 +106,28 @@ def _tie_word_embeddings(raw: Mapping[str, Any]) -> bool:
     if declared is not None:
         return bool(declared)
     return str(raw.get("model_type", "")).strip().casefold() in _TIES_WORD_EMBEDDINGS_BY_DEFAULT
+
+
+def _reject_unsupported(raw: Mapping[str, Any], model_id: str) -> None:
+    declared_moe_keys = [key for key in _MOE_KEYS if raw.get(key) is not None]
+    if declared_moe_keys:
+        raise UnsupportedModelError(
+            f"'{model_id}' is a Mixture-of-Experts model (config.json declares "
+            f"{', '.join(declared_moe_keys)}). fitcheck's weight and activation formulas "
+            "assume a dense FFN and would under-count total parameters by 80-90% - in the "
+            "direction that reports a fit where the run would OOM. MoE is not supported; "
+            "see docs/SPEC.md section 3.7."
+        )
+
+    if "text_config" in raw and "hidden_size" not in raw:
+        raise UnsupportedModelError(
+            f"'{model_id}' is a multimodal model that nests its language-model dimensions "
+            "under 'text_config'. The fields are nested, not missing. fitcheck estimates "
+            "text-only decoder models and does not model a vision tower, so any number it "
+            "produced here would leave the vision tower out - an under-count, in the "
+            "direction that reports a fit where the run would OOM. "
+            "See docs/SPEC.md section 3.7."
+        )
 
 
 def _parse_fields(raw: Mapping[str, Any]) -> _ParsedFields:
@@ -188,6 +227,7 @@ def fetch_model_config(model_id: str) -> ModelConfig:
     with Path(config_path).open(encoding="utf-8") as config_file:
         raw: Mapping[str, Any] = json.load(config_file)
 
+    _reject_unsupported(raw, normalized_model_id)
     fields = _parse_fields(raw)
 
     return ModelConfig(

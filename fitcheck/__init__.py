@@ -13,7 +13,11 @@ from fitcheck.advisor import (
     SweepSpec,
     advise,
 )
-from fitcheck.config_parser import ModelConfig, fetch_model_config
+from fitcheck.config_parser import (
+    ModelConfig,
+    UnsupportedModelError,
+    fetch_model_config,
+)
 from fitcheck.estimator import (
     InferenceReport,
     MemoryReport,
@@ -44,6 +48,7 @@ __all__ = [
     "ServingConfig",
     "SweepSpec",
     "TrainingConfig",
+    "UnsupportedModelError",
     "__version__",
     "advise",
     "estimate",

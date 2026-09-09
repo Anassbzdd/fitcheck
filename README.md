@@ -93,15 +93,33 @@ Mistral, Qwen2/2.5, Gemma-2/3 and anything config-shaped like them. It reads `he
 config declares one rather than assuming `hidden_size / num_attention_heads`, and it never
 assumes `intermediate_size == 4 × hidden_size`; both assumptions are wrong on Gemma-2.
 
-Not modelled: MoE architectures (Mixtral, DeepSeek), encoder-decoder models, sliding-window
-attention, `torch.compile`, and multi-GPU sharding (FSDP / DeepSpeed ZeRO). See
+Not modelled: MoE architectures (Mixtral, Qwen3-MoE, gpt-oss, DeepSeek), encoder-decoder models,
+sliding-window attention, `torch.compile`, and multi-GPU sharding (FSDP / DeepSpeed ZeRO). See
 [SPEC.md § 3.7](https://github.com/Anassbzdd/fitcheck/blob/main/docs/SPEC.md) for the full limitations table.
 
-> **Check this list before you trust a number.** `fitcheck` does not refuse a model it cannot
-> model — it applies the dense-decoder formula anyway and prints a normal-looking verdict. On
-> `mistralai/Mixtral-8x7B-v0.1` it reports 7.24B parameters, because it counts one expert
-> instead of eight; the real model has about 46.7B. The answer is wrong and nothing on screen
-> says so. Detecting these architectures is a known gap, not a design choice.
+**Refused, not guessed at.** Two of those shapes are detectable from `config.json` alone, so
+`fitcheck` exits **2** with an explanation instead of printing a plausible number:
+
+| Shape | Detected by | What it would have said |
+|:---|:---|:---|
+| Mixture-of-Experts | `num_experts_per_tok`, `num_local_experts`, `num_experts`, `n_routed_experts` | Mixtral-8x7B as 7.24B instead of 46.7B — it counts one expert out of eight. Under-counts run 80–90% across Mixtral, Qwen3-30B-A3B, gpt-oss-20b and DeepSeek-V2-Lite |
+| Multimodal with nested dimensions (SmolVLM) | `text_config` present, `hidden_size` absent | `'hidden_size' must be a positive integer` — true of the top level, and misleading: the fields are nested, not missing |
+
+```console
+$ fitcheck mistralai/Mixtral-8x7B-v0.1 --gpu 4090 --qlora
+Error: 'mistralai/Mixtral-8x7B-v0.1' is a Mixture-of-Experts model (config.json declares
+num_experts_per_tok, num_local_experts). fitcheck's weight and activation formulas assume a
+dense FFN and would under-count total parameters by 80-90% - in the direction that reports a
+fit where the run would OOM. MoE is not supported; see docs/SPEC.md section 3.7.
+$ echo $?
+2
+```
+
+> **Parsing is not endorsement — still check this list.** The refusal catches what the config
+> file makes obvious. A shape it cannot see is still estimated silently: `Qwen/Qwen2.5-VL-7B-Instruct`
+> keeps its text dimensions at the top level next to `vision_config`, so it parses like a dense
+> decoder and comes out about 8% low, with the vision tower left out and nothing on screen saying
+> so. Encoder-decoder and sliding-window models are the same class of gap.
 
 ---
 
@@ -116,7 +134,8 @@ fitcheck NousResearch/Meta-Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq
 ![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-a-output.png)
 
 Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
-`fitcheck ... && accelerate launch ...` works as a guard in front of a training job.
+`fitcheck ... && accelerate launch ...` works as a guard in front of a training job. An
+architecture `fitcheck` cannot model is a `2`, not a silent `0`, so the guard holds there too.
 
 > The screenshot was taken with `meta-llama/Llama-3.1-8B`, the official repo. That one is
 > **gated**, like every Llama and Gemma repo, so it needs `hf auth login` or an `HF_TOKEN`
@@ -381,9 +400,15 @@ that is not in the list, give the VRAM directly: `--vram-mib 32768`.
 **No internet.** `fitcheck` needs the network once per model, to fetch `config.json` (a few KB).
 After that the file is in the Hub cache and the same command works offline.
 
+**`is a Mixture-of-Experts model` or `nests its language-model dimensions`.** Not a bug and not a
+bad model ID — `fitcheck` refuses these rather than under-count them by 80–90% and tell you a
+doomed run fits. There is no override flag, because the number behind it would be wrong. See
+[Model support](#model-support).
+
 **The number looks wrong for my model.** First check it is a supported architecture — see
-[Model support](#model-support). `fitcheck` does not reject MoE or encoder models, it just
-returns a wrong answer for them.
+[Model support](#model-support). MoE and nested-multimodal configs are refused outright, but
+encoder-decoder, sliding-window and flat multimodal models (Qwen2.5-VL) still parse and return a
+wrong answer with no warning.
 
 **My real run used a different amount.** Expect the total to be within about 15%, and see
 [Validation](#validation) for where that error comes from. Two common causes are outside the

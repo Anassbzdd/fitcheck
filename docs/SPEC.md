@@ -62,7 +62,7 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 | `--explain` + savings hints | P0 | The "where did my VRAM go" teaching path |
 | `pip install fitcheck-llm` | P0 | PyPI published on day 5 |
 | Unit tests with `pytest` | P0 | ≥80% coverage on `memory/` modules |
-| GitHub Actions CI | P0 | pytest on 3.10/3.11/3.12, coverage badge |
+| GitHub Actions CI | P0 | Two jobs: `test` (pytest on 3.10/3.11/3.12, coverage badge) and `floor` (lowest declared dependency versions on 3.10 — see §3.9) |
 
 ### Stretch — v0.2+ (Post-MVP)
 
@@ -1313,6 +1313,47 @@ where all the remaining error lives — see the fragmentation note in Component 
 
 ---
 
+### 3.9 — The dependency contract
+
+Runtime dependencies stay at three. A fourth is a decision, not a detail.
+
+| Dependency | Floor | Why this floor and not a lower one |
+|:---|:---|:---|
+| `click` | `>=8.1` | Option groups and the command style `cli.py` is written in |
+| `rich` | `>=13.0` | Tables, panels and the verdict styling in `display.py` |
+| `huggingface-hub` | `>=0.25` | `config_parser.py` does `from huggingface_hub.errors import GatedRepoError`. That module does not exist before 0.22, and it does not export `GatedRepoError` until 0.25 |
+
+The `dev` extra is `pytest>=7.4`, `pytest-cov>=4.1` and `httpx>=0.27`. `httpx` is there because
+`tests/test_config_parser.py` builds a fake 403 response with it. It used to work undeclared, purely
+because `huggingface-hub` 1.x happens to pull it in; at the declared floor the hub still uses
+`requests`, so without the explicit entry the suite would not even collect.
+
+**A declared floor is a promise, so CI tests it.** Each floor above was found by installing that
+exact version in a clean environment and importing, not by guessing:
+
+| `huggingface-hub` | Result of `from huggingface_hub.errors import GatedRepoError` |
+|:---|:---|
+| `0.20.0` | `ModuleNotFoundError: No module named 'huggingface_hub.errors'` |
+| `0.23.0` | `ImportError: cannot import name 'GatedRepoError'` |
+| `0.24.0` | `ImportError: cannot import name 'GatedRepoError'` |
+| `0.25.0` | works — this is the true floor |
+
+The `test` matrix job cannot catch a wrong floor, because a resolver always picks the newest release
+that satisfies the pin. So a second CI job, `floor`, installs the **lowest** version of every direct
+dependency on Python 3.10 and runs `pytest -m "not network"` against it:
+
+```yaml
+- run: uv pip install --system -e ".[dev]" --resolution lowest-direct
+- run: pytest -m "not network"
+```
+
+`--resolution lowest-direct` is a `uv` flag; `pip` has no equivalent, which is why the job installs
+`uv` first. "Direct" and not "lowest" on purpose: this project's floors are the contract, and
+pinning the floor of every transitive package as well would fail on other people's metadata rather
+than on ours.
+
+---
+
 ## Section 4: Definition of Done
 
 ### v0.1 (MVP) — done when all 6 bullets are true
@@ -1328,7 +1369,7 @@ where all the remaining error lives — see the fragmentation note in Component 
 
 4. **`pytest` passes with ≥80% line coverage** on all `memory/` modules, including at least one end-to-end test (known config → expected MiB ± tolerance).
 
-5. **CI is green** — GitHub Actions runs `pytest --cov` on 3.10 / 3.11 / 3.12 for every push and PR, badge in the README. §2 marks this P0; a red badge on day one costs more trust than a missing feature.
+5. **CI is green** — GitHub Actions runs `pytest --cov` on 3.10 / 3.11 / 3.12 for every push and PR, badge in the README. §2 marks this P0; a red badge on day one costs more trust than a missing feature. A second job, `floor`, resolves every direct dependency to its lowest declared version and runs the offline suite there (§3.9) — the matrix job always resolves to the newest release, so only `floor` can catch a wrong pin.
 
 6. **README is complete** — includes: what it does (with screenshot of terminal output), comparison table vs. existing tools, installation instructions, usage examples (both modes), the validation matrix *with its columns still TBD*, and "how it works" linking to this spec.
 

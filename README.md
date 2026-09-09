@@ -54,8 +54,13 @@ costs, how far each one can go before it stops fitting, and the configs right at
 pip install fitcheck-llm
 ```
 
-Python 3.10+. Runtime dependencies are `click`, `rich`, and `huggingface-hub` — no torch, no
-CUDA.
+Python 3.10+. Runtime dependencies are `click>=8.1`, `rich>=13.0` and `huggingface-hub>=0.25` —
+no torch, no CUDA.
+
+The `huggingface-hub` floor is exact, not cautious: `GatedRepoError` is only exported from
+`huggingface_hub.errors` in 0.25 and later, so any older version crashes `fitcheck` on import. A CI
+job installs the lowest version of every declared dependency on Python 3.10 and runs the test
+suite there, so the floor stays honest.
 
 ### Hugging Face access
 

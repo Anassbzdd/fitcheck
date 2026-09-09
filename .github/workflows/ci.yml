@@ -40,3 +40,34 @@ jobs:
           files: ./coverage.xml
           flags: unittests
           fail_ci_if_error: false
+
+  # The declared floor is a promise: anyone whose resolver lands on the lowest legal
+  # version of a direct dependency must still get a working install. The `test` job
+  # above always resolves to the newest release, so it can never catch a wrong pin.
+  # `--resolution lowest-direct` is a uv flag; pip has no equivalent.
+  floor:
+    name: Lowest declared dependencies (3.10)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install package at the lowest declared versions
+        run: uv pip install --system -e ".[dev]" --resolution lowest-direct
+
+      - name: Show what was resolved
+        run: uv pip list --system
+
+      - name: Import the package
+        run: python -c "import fitcheck; print(fitcheck.__version__)"
+
+      - name: Run tests
+        run: pytest -m "not network"

@@ -22,7 +22,11 @@ from fitcheck.advisor import (
     SweepSpec,
     advise,
 )
-from fitcheck.config_parser import ModelConfig, fetch_model_config
+from fitcheck.config_parser import (
+    ModelConfig,
+    UnsupportedModelError,
+    fetch_model_config,
+)
 from fitcheck.display import (
     _ASCII_GLYPHS,
     _UNICODE_GLYPHS,
@@ -459,6 +463,8 @@ def _cmd_model(session: _Session, args: list[str]) -> None:
     try:
         with session.console.status(f"Fetching config.json for {model_id} ..."):
             config = fetch_model_config(model_id)
+    except UnsupportedModelError as error:
+        raise _ReplError(str(error)) from error
     except (RuntimeError, ValueError, OSError) as error:
         raise _ReplError(f"Could not read config.json for '{model_id}': {error}") from error
 

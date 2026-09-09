@@ -18,7 +18,11 @@ from fitcheck.advisor import (
     SweepSpec,
     advise,
 )
-from fitcheck.config_parser import ModelConfig, fetch_model_config
+from fitcheck.config_parser import (
+    ModelConfig,
+    UnsupportedModelError,
+    fetch_model_config,
+)
 from fitcheck.display import (
     make_console,
     render_advisor_report,
@@ -267,6 +271,8 @@ def _enter_repl(
 def _load_model_config(model_id: str) -> ModelConfig:
     try:
         return fetch_model_config(model_id)
+    except UnsupportedModelError as error:
+        raise _EstimateError(str(error)) from error
     except (RuntimeError, ValueError, OSError) as error:
         raise _EstimateError(
             f"Could not read config.json for '{model_id}': {error}"

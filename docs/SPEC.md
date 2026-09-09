@@ -447,7 +447,7 @@ fitcheck/
 ├── __main__.py              # python -m fitcheck entry point
 ├── cli.py                   # click commands & option groups
 ├── repl.py                  # Interactive REPL (Mode B)
-├── config_parser.py         # HuggingFace config.json → ModelConfig dataclass
+├── config_parser.py         # HuggingFace config.json → ModelConfig; refuses MoE / nested multimodal
 ├── estimator.py             # Orchestrators: estimate() -> MemoryReport (the 6 training
 │                            #   components) and estimate_inference() -> InferenceReport (7 + 6)
 ├── memory/
@@ -461,8 +461,8 @@ fitcheck/
 │   └── inference.py         # Component 7 — serving (v0.2), not in the training equation
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── display.py               # rich tables, panels, verdicts, explain text
-├── advisor.py               # Phase 2: parameter sweep (stub in MVP)
-├── calibrate.py             # Phase 3: real measurement (stub in MVP)
+├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
+├── calibrate.py             # Phase 3: real measurement (still an empty stub)
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
@@ -475,6 +475,7 @@ tests/
 ├── test_activations.py
 ├── test_overhead.py
 ├── test_inference.py
+├── test_advisor.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
 scripts/                     # NOT part of the installed package
 ├── measure.py               # ground-truth harness (§3.8) — imports torch/peft/bitsandbytes
@@ -489,7 +490,7 @@ scripts/                     # NOT part of the installed package
 
 ```mermaid
 graph LR
-    A["CLI / REPL<br/>(user input)"] --> B["config_parser<br/>fetch config.json"]
+    A["CLI / REPL<br/>(user input)"] --> B["config_parser<br/>fetch config.json<br/>refuse unsupported"]
     B --> C["estimator.py<br/>orchestrator"]
     C --> D["memory/*.py<br/>6 components"]
     C --> E["gpu_db.py<br/>GPU specs"]
@@ -566,6 +567,8 @@ def fetch_model_config(model_id: str) -> ModelConfig:
     with open(path) as f:
         raw = json.load(f)
 
+    _reject_unsupported(raw, model_id)   # architectures the formulas cannot estimate
+
     return ModelConfig(
         name=model_id.split("/")[-1],
         num_params=_count_params(raw),   # computed, not from a field
@@ -583,6 +586,26 @@ def fetch_model_config(model_id: str) -> ModelConfig:
 ```
 
 This downloads only `config.json` (~2KB), never the model weights (~4–140GB).
+
+**The refusal gate runs before any field is parsed.** `_reject_unsupported(raw, model_id)` raises
+`UnsupportedModelError` — a `ValueError` subclass, so every existing caller still catches it, and a
+distinct type so `cli.py` and `repl.py` print the message without the "could not read config.json"
+prefix. The file read fine; it is the architecture that is refused. Both refusals exit **2**.
+
+| Trigger | Keys | Why refusing beats estimating |
+|:---|:---|:---|
+| Mixture-of-Experts | any of `num_experts_per_tok`, `num_local_experts`, `num_experts`, `n_routed_experts` — the expert-count key varies by family (Mixtral and gpt-oss use `num_local_experts`, Qwen3-MoE `num_experts`, DeepSeek-V2 `n_routed_experts`), while `num_experts_per_tok` is common to all four | The dense-FFN count sees one expert out of 8–128: Mixtral-8x7B reads as 7.24B against a true 46.70B (−84.5%), Qwen3-30B-A3B −89.1%, gpt-oss-20b −88.6%, DeepSeek-V2-Lite −82.9%. Every one of those is in the direction that says "fits" for a run that OOMs |
+| Nested multimodal | `text_config` present **and** `hidden_size` absent | Previously raised `config.json field 'hidden_size' must be a positive integer`, which is true of the top level and misleading about the file. The dimensions are nested, and the vision tower is not modelled |
+
+**Error text must name the direction of the error,** not just the fact of it. "Would under-count by
+80-90%, in the direction that reports a fit where the run would OOM" is the sentence that stops
+someone trusting a number the tool printed before this gate existed. A refusal a user reads as a
+mere inconvenience gets worked around; a refusal that explains the failure mode does not.
+
+**A model that parses is not thereby endorsed.** The gate catches shapes that are *detectable* from
+`config.json` keys. Qwen2.5-VL keeps its text dimensions at the top level beside `vision_config`, so
+it parses and is estimated — with the vision tower silently omitted. That is §3.7's "flat
+multimodal" row, and it needs the Hub parameter cross-check, not this gate.
 
 **Two fields that are not what they look like.** Both are silent, both are wrong on the same model
 family, and Gemma-2-9B is a row in the validation matrix:
@@ -713,8 +736,8 @@ Every `*_mib` value is a float rounded to 2 dp; `fits` and `max_batch_size` are 
 job should actually branch on. Keys may be **added** in a minor version, never renamed or removed.
 
 **Exit codes (Mode A):** `0` the config fits · `1` it does not fit · `2` the estimate could not be run
-(bad flags, unknown GPU, unreachable config). A CI job can therefore gate on the exit status alone and
-never parse the JSON. The REPL is the exception and **always exits 0** — inside a session a
+(bad flags, unknown GPU, unreachable config, **or a model the memory model refuses** — §3.3).
+A CI job can therefore gate on the exit status alone and never parse the JSON. The REPL is the exception and **always exits 0** — inside a session a
 doesn't-fit is a verdict on screen, not the status of the shell you came from.
 
 **Validation:** reject `--quant nf4 --no-lora` — **a `fitcheck` scope limitation, not a universal claim.**
@@ -1048,10 +1071,12 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 
 | Edge Case | How `fitcheck` Handles It | Status |
 |:---|:---|:---:|
-| **MoE models** (Mixtral, DeepSeek) | Not supported in MVP. Active experts × per-expert FFN changes the activation formula. | ❌ v0.3 |
+| **MoE models** (Mixtral, Qwen3-MoE, gpt-oss, DeepSeek) | **Refused at parse time, exit 2.** Active experts × per-expert FFN changes both the parameter count and the activation formula; estimating anyway under-counts by 80–90% and reports a fit for a run that OOMs. `_reject_unsupported` fires on `num_experts_per_tok` / `num_local_experts` / `num_experts` / `n_routed_experts` — see §3.3. | ❌ refused |
+| **Nested multimodal configs** (SmolVLM / Idefics3, Llama-4) | **Refused at parse time, exit 2.** `text_config` present and `hidden_size` absent means the decoder dimensions are *nested*, not missing, and the vision tower is unmodelled either way. The message says nested, so the user is not sent looking for a broken file. | ❌ refused |
+| **Flat multimodal configs** (Qwen2.5-VL) | Text dimensions sit at the top level next to `vision_config`, so the config parses and the estimate runs — silently omitting the vision tower (−8.2% on Qwen2.5-VL-7B). Not caught by the §3.3 refusal; the Hub parameter cross-check is what closes it. | ⚠️ Known |
 | **Models with tied embeddings** | Detected via `tie_word_embeddings` in config. Count embedding params once. | ✅ MVP |
 | **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Blueprint.md's note on `intermediate_size`). | ✅ MVP |
-| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$, LoRA dims **and** the activation bracket all use the exact $n_hd_k$ / $n_{kv}d_k$ form (TASKS 3.10, done). Sliding-window attention is still not modelled — see the row below. | ✅ MVP |
+| **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$, LoRA dims **and** the activation bracket all use the exact $n_hd_k$ / $n_{kv}d_k$ form. Sliding-window attention is still not modelled — see the row below. | ✅ MVP |
 | **`tie_word_embeddings` absent from config** | Architecture default table (Gemma family ties), `False` for unknown `model_type`. | ✅ MVP |
 | **Custom attention patterns** (sliding window, local) | Not modeled. Treated as standard attention. Note Gemma-2 alternates sliding/full layers, so its non-Flash path is approximate even once the two rows above are fixed. | ❌ v0.3 |
 | **FSDP / DeepSpeed ZeRO** | Not supported. Memory is split across GPUs — requires sharding-aware formulas. | ❌ v0.4 |
@@ -1321,8 +1346,7 @@ where all the remaining error lives — see the fragmentation note in Component 
 
 > **Why the split.** Requiring measured rows before the first publish would block PyPI on owning a
 > 4090. Shipping unvalidated with a loud banner is the honest trade; shipping unvalidated *quietly*,
-> or launching to an audience that checks numbers before the matrix has rows, is not. TASKS 5.5 and
-> 8.1 hold that line.
+> or launching to an audience that checks numbers before the matrix has rows, is not.
 
 ### v0.3 — the advisor gate
 
@@ -1413,9 +1437,9 @@ string.
 > [!IMPORTANT]
 > **This appendix changed on 2026-08-31.** v0.1 published 8,688.67 MiB here and claimed the
 > config fits a 4090 with 63% headroom. The first real measurement — Mistral-7B-v0.3, QLoRA
-> r=32 bs=2 seq=1024 fp16 no-FA on a Kaggle T4 — came back 35.6% above the v0.1 prediction, and
-> the four causes are itemised in docs/TASKS.md 6.3. Three of them ($P_{skip}$, FP32 absmax,
-> FP32 adapters) were confirmed to the MiB against the measured storage breakdown. The fourth,
+> r=32 bs=2 seq=1024 fp16 no-FA on a Kaggle T4 — came back 35.6% above the v0.1 prediction. It had four
+> causes. Three of them ($P_{skip}$, FP32 absmax, FP32 adapters) were confirmed to the MiB
+> against the measured storage breakdown. The fourth,
 > $A_{logits}$, is now confirmed out-of-sample: Qwen2.5-7B and Qwen2.5-1.5B (152k vocabulary,
 > where logits are 85-93% of $A_{act}$) predict to +0.5% and +0.0%. The open item that replaced
 > it is a second GPU -- every measurement so far is one Tesla T4, in FP16, without Flash Attention.

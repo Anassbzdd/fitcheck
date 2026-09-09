@@ -116,7 +116,7 @@ Before building, it's critical to understand the competitive landscape and **cle
 1. **Component-level breakdown** — not just "it fits" or "it doesn't", but *why* and *where* the memory goes
 2. **LoRA/QLoRA-native** — models adapter memory, reduced optimizer states, and quantization overhead correctly
 3. **GQA-aware** — properly accounts for reduced KV heads in modern models (Llama 3, Mistral, Qwen, Gemma)
-4. **Architecture-specific** — reads `config.json` directly, uses actual `intermediate_size` instead of assuming `4h`
+4. **Architecture-specific** — reads `config.json` directly, uses actual `intermediate_size` instead of assuming `4h`, and **refuses** the architectures its formulas do not cover (MoE, nested multimodal) rather than printing a confident wrong number
 5. **Actionable advice** — "you can increase batch_size to X" or "switch to 8-bit optimizer to save Y MiB"
 6. **CLI-first** — designed for the terminal workflow where ML engineers actually work, and
    `--json` + an exit code (0 fits / 1 doesn't / 2 error) so CI can gate a training job on it
@@ -189,6 +189,25 @@ Using the real Llama-3.1-8B count, $P = 8{,}030{,}261{,}248$:
 > it over-states double-quant scales by ~102 MiB on this model — over-counting, which is the safe
 > direction, and unmeasured either way. See SPEC Component 1, "Known simplification — the double-quant
 > factor".
+
+> [!WARNING]
+> **The count above only works if every layer has one FFN.** A Mixture-of-Experts model stores 8, 32
+> or 128 expert FFNs per layer and routes each token to two or four of them. The dense formula sees
+> one, so it reads Mixtral-8x7B as 7.24B parameters against a true 46.70B — an 84.5% under-count, and
+> the same story on Qwen3-30B-A3B (−89.1%), gpt-oss-20b (−88.6%) and DeepSeek-V2-Lite (−82.9%).
+>
+> **Why `fitcheck` refuses these instead of estimating them.** Error direction is not symmetric here.
+> An over-count costs the user a smaller batch size; an under-count costs them a crashed run, an hour
+> of queue time, and their trust in the tool. A wrong number that looks exactly like a right number is
+> worse than no number — especially for a tool whose whole output is one word, "fits". So the parser
+> checks for the expert keys before it parses anything and exits 2 with a message that names the
+> direction of the error. The same rule applies to a multimodal config that nests its decoder
+> dimensions under `text_config`: the vision tower is unmodelled, so the total would be low.
+>
+> The limit of that defence is worth stating: it catches what `config.json` makes *visible*. Qwen2.5-VL
+> keeps its text dimensions at the top level beside `vision_config` and parses like a dense decoder,
+> coming out about 8% low with no warning. Detecting that one needs the Hub's own parameter count as a
+> cross-check, not a key lookup.
 
 ### Component 2: LoRA Adapter Weights
 
@@ -500,7 +519,7 @@ fitcheck/
 ├── __main__.py              # python -m fitcheck entry point
 ├── cli.py                   # click commands & option groups
 ├── repl.py                  # Interactive REPL (Mode B)
-├── config_parser.py         # HuggingFace config.json → ModelConfig dataclass
+├── config_parser.py         # HuggingFace config.json → ModelConfig; refuses MoE / nested multimodal
 ├── estimator.py             # Orchestrator: calls all 6 components, returns MemoryReport
 ├── memory/
 │   ├── __init__.py          # re-exports all estimate_* functions
@@ -513,8 +532,8 @@ fitcheck/
 │   └── inference.py         # Component 7 — serving (v0.2), not in the training equation
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── display.py               # rich tables, panels, verdicts, explain text
-├── advisor.py               # Phase 2: parameter sweep (stub in MVP)
-├── calibrate.py             # Phase 3: real measurement (stub in MVP)
+├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
+├── calibrate.py             # Phase 3: real measurement (still an empty stub)
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
@@ -527,6 +546,7 @@ tests/
 ├── test_activations.py
 ├── test_overhead.py
 ├── test_inference.py
+├── test_advisor.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
 scripts/                     # NOT installed with the package
 ├── measure.py               # ground-truth harness: real GPU, real training step

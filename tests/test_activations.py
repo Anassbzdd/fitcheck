@@ -4,6 +4,7 @@ from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.activations import (
     _ActivationParts,
     _activation_parts,
+    _derived_branch_warning,
     estimate_activation_memory,
 )
 
@@ -321,3 +322,35 @@ def test_parts_reconstruct_the_public_estimate(llama: ModelConfig) -> None:
         assert _estimate(
             llama, flash_attn=flash_attn, grad_checkpoint=False
         ) == pytest.approx(uncheckpointed / 1024**2, rel=1e-9)
+
+
+def test_no_warning_when_checkpointing_is_on(llama: ModelConfig) -> None:
+    for flash_attn in (True, False):
+        assert _derived_branch_warning(grad_checkpoint=True, flash_attn=flash_attn) is None
+
+
+@pytest.mark.parametrize("flash_attn", [True, False])
+def test_no_checkpointing_warns_that_the_branch_is_derived(flash_attn: bool) -> None:
+    warning = _derived_branch_warning(grad_checkpoint=False, flash_attn=flash_attn)
+
+    assert warning is not None
+    assert "derived, not measured" in warning
+    assert "docs/SPEC.md" in warning
+
+
+def test_eager_no_checkpointing_names_the_over_estimate() -> None:
+    warning = _derived_branch_warning(grad_checkpoint=False, flash_attn=False)
+
+    assert warning is not None
+    assert "over-estimate" in warning
+    assert "9" in warning
+    assert warning != _derived_branch_warning(grad_checkpoint=False, flash_attn=True)
+
+
+def test_warning_does_not_change_the_number(llama: ModelConfig) -> None:
+    assert _estimate(llama, flash_attn=False, grad_checkpoint=False) == pytest.approx(
+        _A_ACT_NO_CKPT_NO_FLASH, rel=1e-9
+    )
+    assert _estimate(llama, flash_attn=True, grad_checkpoint=False) == pytest.approx(
+        _A_ACT_NO_CKPT_FLASH, rel=1e-9
+    )

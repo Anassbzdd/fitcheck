@@ -14,8 +14,10 @@ from fitcheck.estimator import (
     TrainingConfig,
     estimate,
     estimate_inference,
+    estimate_warnings,
 )
 from fitcheck.gpu_db import get_gpu
+from fitcheck.memory.activations import estimate_activation_memory
 from fitcheck.memory.inference import estimate_inference_memory
 from fitcheck.memory.overhead import estimate_overhead
 
@@ -259,6 +261,51 @@ def test_savings_hints_price_each_toggle_as_a_total_delta(
     assert "--flash-attn OFF: costs 0 MiB (currently ON)" in hints
     assert "--grad-checkpoint OFF: costs +32,256 MiB (currently ON)" in hints
     assert "--grad-accum 8: costs 0 MiB (accumulation is free)" in hints
+
+
+def test_golden_report_carries_no_warning(golden_report: MemoryReport) -> None:
+    assert golden_report.warnings == ()
+
+
+def test_report_warns_when_checkpointing_is_off(
+    llama_model: ModelConfig, qlora_training: TrainingConfig
+) -> None:
+    report = estimate(
+        llama_model,
+        replace(qlora_training, grad_checkpoint=False),
+        get_gpu("4090"),
+    )
+
+    assert len(report.warnings) == 1
+    assert "derived, not measured" in report.warnings[0]
+
+    eager = estimate(
+        llama_model,
+        replace(qlora_training, grad_checkpoint=False, flash_attn=False),
+        get_gpu("4090"),
+    )
+
+    assert "over-estimate" in eager.warnings[0]
+    assert eager.warnings != report.warnings
+
+
+def test_warning_is_attached_without_moving_the_estimate(
+    llama_model: ModelConfig, qlora_training: TrainingConfig
+) -> None:
+    off = replace(qlora_training, grad_checkpoint=False)
+
+    warned = estimate(llama_model, off, get_gpu("4090"))
+    expected = estimate_activation_memory(
+        llama_model, off.batch_size, off.seq_len, False, off.flash_attn, off.precision
+    )
+
+    assert warned.activation_mib == pytest.approx(expected, rel=1e-9)
+    assert warned.warnings
+
+
+def test_estimate_warnings_matches_the_report(qlora_training: TrainingConfig) -> None:
+    assert estimate_warnings(qlora_training) == ()
+    assert estimate_warnings(replace(qlora_training, grad_checkpoint=False))
 
 
 def test_report_is_json_serializable_for_ci(golden_report: MemoryReport) -> None:

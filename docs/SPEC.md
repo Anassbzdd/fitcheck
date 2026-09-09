@@ -340,6 +340,27 @@ worst-case error and **3** gives 9.8%, against **4.8%** for **2**.
 > Llama-3.1-8B config it saves exactly 0 MiB. Measured: SmolLM2 eager vs SDPA differed by 16 MiB out of
 > 5,297. Flash only starts paying once the sequence is long enough for $A_{layer}$ to overtake $A_{logits}$.
 
+> [!WARNING]
+> **The $9\gamma$ is regime-specific, and the no-checkpointing row uses it outside its regime.**
+> The nine materializations derived above are all *within one layer* — they are what peaks while that
+> layer is being differentiated, and the coefficient was fitted with checkpointing **on**, where
+> exactly one layer is ever live. The `no checkpointing` row multiplies the whole of $A_{layer}$,
+> score matrix included, by $L$, which charges all nine copies in all $L$ layers simultaneously. That
+> cannot happen. For TinyLlama at $b{=}1,\ s{=}2048$ it is 50,688 MiB of a 54,240 MiB estimate.
+>
+> The real fix is to split the constant into a **retained** part (the softmax output, saved for
+> backward in every layer) and a **transient** part (the rest, peaking in the one layer being
+> differentiated):
+>
+> $$A_{act} = L \times \left(A_{layer} - 9\gamma bn_hs^2 + r\gamma bn_hs^2\right) + t\gamma bn_hs^2 + A_{logits}$$
+>
+> **$r$ and $t$ are not shipped, because they have not been measured.** Component 1 refuses to ship a
+> derived double-quant constant for exactly this reason, and this project has already been wrong by
+> 36% once by trusting a derivation over a measurement. Until a no-checkpointing ground-truth row
+> exists (task 9.2), the formula stays as-is and `estimate_warnings` attaches a caveat saying the
+> branch is derived and over-estimates — see §3.7. **A wrong number the user knows is wrong is a
+> different failure from a wrong number presented as fact.**
+
 **Critical implementation details:**
 
 1. **Flash Attention** removes the $O(s^2)$ -> $\gamma bn_hs²$ attention matrix term — two code paths required.
@@ -547,7 +568,13 @@ class MemoryReport:
     max_batch_size: int
     effective_batch_size: int    # batch_size × grad_accum_steps — DISPLAY ONLY, costs no memory
     savings_hints: list[str]     # see §3.5 --explain
+    warnings: tuple[str, ...] = ()   # caveats that apply to this config — see §3.7
 ```
+
+> **`warnings` carries the caveats, it does not change the number.** Empty means every formula the
+> estimate used has a measured row behind it. Today the only entry comes from the no-checkpointing
+> activation branch (§3.7); `estimate_warnings(training)` computes it and is public, so the REPL and
+> the advisor can ask the same question without building a full report.
 
 > **`precision` is the compute dtype only.** Base-model storage precision is a separate axis
 > (`quantization`), because they genuinely vary independently: QLoRA is a 4-bit base with BF16 compute.
@@ -731,6 +758,7 @@ happens to hold — the framework-developer persona in §1 gates CI on it. Top-l
 | `activations_per_layer_mib` | `float` | $A_{layer}$ — the per-layer figure `--verbose` renders |
 | `verdict` | `object` | `fits`, `gpu_capacity_mib`, `headroom_mib`, `headroom_pct`, `max_batch_size`, `effective_batch_size` |
 | `savings_hints` | `list[str]` | The §3.5 hint lines, unformatted |
+| `warnings` | `list[str]` | Caveats that apply to this configuration — empty when every formula used is measured. A CI job can branch on it being non-empty to refuse an estimate that rests on a derived branch |
 
 Every `*_mib` value is a float rounded to 2 dp; `fits` and `max_batch_size` are the two fields a CI
 job should actually branch on. Keys may be **added** in a minor version, never renamed or removed.
@@ -1088,7 +1116,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Offline mode** | If `config.json` is cached locally, works without internet. | ✅ MVP |
 | **`C_overhead` fragmentation model** | Fixed 5% of $(W_{base}+A_{act})$. Measured fragmentation ranged 6%–32% and is larger under eager attention. This is where all the residual error sits (§3.8, Component 6). | ⚠️ Known |
 | **T4 / ECC entries in `gpu_db`** | Fixed: T4 is now `14_912 / 14_000`, the measured total. `h200` and `b200` take the `usable_mib` that is safe under the pessimistic reading of their vendor GB. Only the T4 is measured; the rest of the table is estimates. | ✅ fixed, rest unmeasured |
-| **No-checkpointing branch** | `L × A_layer + A_logits` is derived, never measured — every ground-truth run so far has checkpointing on. | ⚠️ Unmeasured |
+| **No-checkpointing branch** | `L × A_layer + A_logits` is derived, never measured — every ground-truth run so far has checkpointing on. **This is also the default**, so the estimate carries a warning instead of being presented as fact: `estimate_warnings` returns a caveat whenever `grad_checkpoint` is off, and a stronger one naming the over-estimate when Flash Attention is off too (the $9\gamma$ score matrix charged in every layer at once — see Component 5). It surfaces in the panel, in `--explain`, in `fitcheck advise`, and as the `warnings` key in `--json`. | ⚠️ Unmeasured, warned |
 | **Non-T4 hardware, BF16, real Flash Attention** | All twenty measurements are one Tesla T4 (sm_75) in FP16. BF16 and FA2 need sm_80+; the flash path is validated only via SDPA's memory-efficient backend as a stand-in. | ⚠️ Unmeasured |
 | **Unknown GPU** | Error message listing available GPUs. Flag to pass custom VRAM: `--vram-mib 24000`. | ✅ MVP |
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from rich.box import SIMPLE_HEAD
@@ -18,6 +19,7 @@ from fitcheck.estimator import (
     TrainingConfig,
     _format_delta,
     activation_breakdown,
+    estimate_warnings,
     trainable_params,
 )
 from fitcheck.gpu_db import GpuSpec, list_gpus
@@ -301,6 +303,15 @@ def _best_savings_hint(report: MemoryReport, glyphs: _Glyphs) -> str | None:
     return best_hint.replace("->", glyphs.arrow)
 
 
+def _warning_grid(warnings: Sequence[str], glyphs: _Glyphs) -> Table:
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style=_STYLE_TIGHT)
+    grid.add_column(style=_STYLE_TIGHT, overflow="fold")
+    for warning in warnings:
+        grid.add_row(glyphs.tight, Text(warning))
+    return grid
+
+
 def _suggestion_grid(
     report: MemoryReport, training: TrainingConfig | None, glyphs: _Glyphs
 ) -> Table:
@@ -334,6 +345,9 @@ def render_report(
         _verdict_line(report, verdict_style, glyphs),
         _suggestion_grid(report, training, glyphs),
     ]
+
+    if report.warnings:
+        body += [Text(""), _warning_grid(report.warnings, glyphs)]
 
     return Panel(
         Group(*body),
@@ -695,8 +709,12 @@ def render_explanation(
         _why_largest(name, config, training),
     )
 
+    body: list[RenderableType] = [headline, Text(""), _toggle_table(report, glyphs)]
+    if report.warnings:
+        body += [Text(""), _warning_grid(report.warnings, glyphs)]
+
     return Panel(
-        Group(headline, Text(""), _toggle_table(report, glyphs)),
+        Group(*body),
         title="explain",
         title_align="left",
         border_style=_STYLE_LABEL,
@@ -931,6 +949,10 @@ def render_advisor_report(
     header.add_row("Swept", Text(_sweep_line(report.sweep, glyphs)))
 
     body: list[RenderableType] = [header, Text("")]
+
+    sweep_warnings = estimate_warnings(report.base)
+    if sweep_warnings:
+        body += [_warning_grid(sweep_warnings, glyphs), Text("")]
 
     if report.frontier:
         body += [

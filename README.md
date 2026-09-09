@@ -526,7 +526,13 @@ Be as clear about the gaps as about the results:
 
 - **Any GPU other than this T4.** No Ampere or newer card, so no BF16 and no real FlashAttention-2 —
   the flash code path is validated only through SDPA's memory-efficient backend as a stand-in.
-- **Gradient checkpointing off.** `L × A_layer + A_logits` is derived, never measured.
+- **Gradient checkpointing off.** `L × A_layer + A_logits` is derived, never measured — and it is
+  the default, so **fitcheck prints a warning on this path** rather than presenting it with the same
+  confidence as the checkpointed one. With eager attention it is expected to over-estimate: the `9γ`
+  score matrix was fitted with checkpointing on, where exactly one layer is live, and this branch
+  charges all nine copies in every layer at once. Read the number as an upper bound. Splitting `9γ`
+  into a retained part and a transient part is the real fix, and it needs a measured row first —
+  inventing the split is how the estimate was wrong by 36% once already.
 - **`--quant none`, `--quant int8`, full fine-tuning, FP32 compute.** Code paths with no measured row.
 - **Sequences beyond 2048**, where the `9γ` coefficient multiplies an `s²` term.
 - **`fitcheck infer` in full.** Every measured row is a training run. The serving path

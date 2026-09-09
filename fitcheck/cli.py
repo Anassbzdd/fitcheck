@@ -319,6 +319,7 @@ def report_to_dict(
             "effective_batch_size": report.effective_batch_size,
         },
         "savings_hints": list(report.savings_hints),
+        "warnings": list(report.warnings),
     }
 
 

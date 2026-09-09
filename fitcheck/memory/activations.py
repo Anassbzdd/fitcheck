@@ -10,6 +10,25 @@ _LOGITS_BYTES = 4.0
 _CHECKPOINT_TENSORS_PER_LAYER = 2
 _EAGER_ATTENTION_COPIES = 9
 
+_WARNING_NO_CHECKPOINT = (
+    "Gradient checkpointing is OFF. This activation branch is derived, not measured -- "
+    "every ground-truth run so far had checkpointing on. Treat the activation figure as "
+    "an upper bound. See docs/SPEC.md 3.7."
+)
+_WARNING_NO_CHECKPOINT_EAGER = (
+    "Gradient checkpointing and Flash Attention are both OFF. This activation branch is "
+    "derived, not measured, and is expected to over-estimate: the 9-copy eager score "
+    "matrix was fitted with checkpointing on, where only one layer is live, and this "
+    "branch charges all 9 copies in every layer at once. Treat the activation figure as "
+    "a loose upper bound. See docs/SPEC.md 3.7."
+)
+
+
+def _derived_branch_warning(grad_checkpoint: bool, flash_attn: bool) -> str | None:
+    if grad_checkpoint:
+        return None
+    return _WARNING_NO_CHECKPOINT if flash_attn else _WARNING_NO_CHECKPOINT_EAGER
+
 
 @dataclass(frozen=True)
 class _ActivationParts:

@@ -6,7 +6,11 @@ from typing import Callable, Iterable
 
 from fitcheck.config_parser import ModelConfig
 from fitcheck.gpu_db import GpuSpec
-from fitcheck.memory.activations import _activation_parts, estimate_activation_memory
+from fitcheck.memory.activations import (
+    _activation_parts,
+    _derived_branch_warning,
+    estimate_activation_memory,
+)
 from fitcheck.memory.gradients import estimate_gradient_memory
 from fitcheck.memory.inference import InferenceMemory, estimate_inference_memory
 from fitcheck.memory.lora import (
@@ -57,6 +61,7 @@ class MemoryReport:
     max_batch_size: int
     effective_batch_size: int
     savings_hints: list[str]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -326,6 +331,11 @@ def _savings_hints(
     return hints
 
 
+def estimate_warnings(training: TrainingConfig) -> tuple[str, ...]:
+    warning = _derived_branch_warning(training.grad_checkpoint, training.flash_attn)
+    return (warning,) if warning is not None else ()
+
+
 def estimate(
     model_config: ModelConfig,
     training_config: TrainingConfig,
@@ -356,6 +366,7 @@ def estimate(
         max_batch_size=_max_batch_size(model_config, training_config, capacity_mib),
         effective_batch_size=training_config.batch_size * grad_accum_steps,
         savings_hints=_savings_hints(model_config, training_config, total_mib),
+        warnings=estimate_warnings(training_config),
     )
 
 

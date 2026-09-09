@@ -317,7 +317,7 @@ x  = x + down_proj(silu(g) * u)           #     SAVED ×1 — down_proj's input
 |   | **subtotal**                    |                       | $\mathbf{\gamma bs(4h + 2n_hd_k)}$   | $= \gamma bs \cdot 6h$ when $n_hd_k = h$ |
 | 7 | K projection output             | $(b, n_{kv}, s, d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA**                    |
 | 8 | V projection output             | $(b, n_{kv}, s, d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA**                    |
-| 9 | Attention score matrix          | $(b, n_h, s, s)$      | $\mathbf{9\gamma bn_hs^2}$           | **Removed by Flash Attention** — nine copies, not one |
+| 9 | Attention score matrix          | $(b, n_h, s, s)$      | $\mathbf{9\gamma bn_hs^2}$           | **Removed by Flash Attention** — nine copies, not one, and all nine live *within one layer* |
 | 10| Gate proj output (pre-SiLU)     | $(b, s, d_{ff})$      | $\gamma bs \cdot d_{ff}$             | Saved for SiLU backward                |
 | 11| Up proj output                  | $(b, s, d_{ff})$      | $\gamma bs \cdot d_{ff}$             | Saved for element-wise multiply        |
 | 12| Down proj input (SiLU(gate)×up) | $(b, s, d_{ff})$      | $\gamma bs \cdot d_{ff}$             | Saved for down_proj backward           |
@@ -455,6 +455,22 @@ $$A_{act} = 2L\gamma bsh + \max\left(A_{logits},\ A_{layer}\right)$$
 
 For the golden config the stack costs $2 \times 32 \times 64 = 4{,}096$ MiB, and the max picks
 $A_{logits} = 16{,}032$ over $A_{layer} = 1{,}088$, giving $A_{act} = 20{,}128$ MiB.
+
+> [!WARNING]
+> **The same mistake, one level down — and it is still in the code.** The $9\gamma$ score matrix is a
+> transient *inside one layer*, and the coefficient was fitted with checkpointing on, where only one
+> layer is ever live. The no-checkpointing branch multiplies all of $A_{layer}$ by $L$, so it charges
+> nine copies of the score matrix in every layer at the same time — twenty-two rooms of chairs for
+> people who are never all in the building at once. For TinyLlama at $b{=}1,\ s{=}2048$ that is
+> 50,688 MiB of a 54,240 MiB estimate.
+>
+> Fixing it means splitting the nine into a **retained** part (the softmax output really is saved in
+> every layer) and a **transient** part (the other copies peak only where backward currently is).
+> The tempting move is to reason out the split and ship it. Do not: this document has been wrong
+> three times about exactly these constants, and every correction came from a measurement, not from
+> harder thinking. Until a no-checkpointing run exists, `fitcheck` keeps the formula and **prints a
+> warning** that the branch is derived and over-estimates. An estimate that announces its own
+> weakness is honest; one that hides it is the P1 bug wearing different clothes.
 
 #### Component 5b: The logits — the term this document originally forgot
 
@@ -815,7 +831,9 @@ Worst-case error across the wider development set of twenty runs fell from **36.
 
 - **Any GPU other than this T4.** No Ampere or newer card, so no BF16 and no real Flash Attention 2 —
   the flash path is validated only through SDPA's memory-efficient backend as a stand-in.
-- **The no-checkpointing branch.** $L \times A_{layer} + A_{logits}$ is derived, never measured.
+- **The no-checkpointing branch.** $L \times A_{layer} + A_{logits}$ is derived, never measured — and
+  it is the **default**, so `fitcheck` warns on this path instead of letting it pass as measured. With
+  eager attention it is expected to over-estimate; see the warning under Component 5.
 - **`--quant none`, `--quant int8`, full fine-tuning, FP32 compute.** All are code paths with no
   ground-truth row.
 - **Sequences beyond 2048.** The $9\gamma$ coefficient multiplies an $s^2$ term, so extrapolation

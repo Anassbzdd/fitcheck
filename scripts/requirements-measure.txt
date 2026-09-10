@@ -3,3 +3,4 @@ transformers>=4.56
 peft>=0.11
 accelerate>=0.30
 bitsandbytes>=0.43
+torchao>=0.16.0

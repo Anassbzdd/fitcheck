@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import GatedRepoError
 
 _TIES_WORD_EMBEDDINGS_BY_DEFAULT = frozenset(
@@ -21,6 +21,9 @@ _MOE_KEYS = (
     "num_experts",
     "n_routed_experts",
 )
+
+
+_PARAM_COUNT_TOLERANCE = 0.02
 
 
 class UnsupportedModelError(ValueError):
@@ -185,14 +188,49 @@ def _count_params(fields: _ParsedFields) -> int:
     )
 
 
-def _hub_token() -> str | None:
-    """Token from the environment, if the caller set one.
+def _reported_param_count(model_id: str, token: str | None) -> int | None:
+    try:
+        info = HfApi(token=token).model_info(model_id, expand=["safetensors"])
+    except Exception: 
+        return None
+    total = getattr(getattr(info, "safetensors", None), "total", None)
+    if isinstance(total, bool) or not isinstance(total, int) or total <= 0:
+        return None
+    return total
 
-    `hf_hub_download` already falls back to a cached CLI login, but hosted notebooks
-    (Kaggle, Colab) have no cached login and instead export the token. Reading it here
-    makes an explicitly-exported token work without an `hf auth login` step. The value
-    is passed straight to the Hub client and is never logged or echoed.
-    """
+
+def _reconcile_param_count(model_id: str, reported: int | None, derived: int) -> int:
+    if reported is None:
+        print(
+            f"Warning: could not read the Hub's parameter count for '{model_id}' - "
+            "using the count derived from config.json, which assumes a dense 3-matrix "
+            "SwiGLU MLP and no biases (exact for Llama-shaped models, off by tens of "
+            "percent for others).",
+            file=sys.stderr,
+        )
+        return derived
+
+    disagreement = (derived - reported) / reported
+    if abs(disagreement) > _PARAM_COUNT_TOLERANCE:
+        direction = (
+            "over-counts, which over-states the memory needed"
+            if disagreement > 0
+            else "under-counts - the direction that reports a fit where the run would OOM"
+        )
+        raise UnsupportedModelError(
+            f"'{model_id}' has {reported:,} parameters according to the Hub, but "
+            f"fitcheck's config.json formula derives {derived:,} - a disagreement of "
+            f"{disagreement:+.1%}, past the {_PARAM_COUNT_TOLERANCE:.0%} tolerance "
+            f"({direction}). That formula assumes a dense decoder with a 3-matrix "
+            "SwiGLU MLP and no biases, and the activation and LoRA formulas assume the "
+            "same shape, so a gap this large means the whole memory model is off, not "
+            "just the parameter count. fitcheck refuses instead of averaging the two. "
+            "See docs/SPEC.md section 3.3."
+        )
+    return reported
+
+
+def _hub_token() -> str | None:
     for variable in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
         token = os.environ.get(variable, "").strip()
         if token:
@@ -229,10 +267,15 @@ def fetch_model_config(model_id: str) -> ModelConfig:
 
     _reject_unsupported(raw, normalized_model_id)
     fields = _parse_fields(raw)
+    num_params = _reconcile_param_count(
+        normalized_model_id,
+        _reported_param_count(normalized_model_id, token),
+        _count_params(fields),
+    )
 
     return ModelConfig(
         name=normalized_model_id.rstrip("/").split("/")[-1],
-        num_params=_count_params(fields),
+        num_params=num_params,
         hidden_size=fields.hidden_size,
         num_layers=fields.num_layers,
         num_attention_heads=fields.num_attention_heads,

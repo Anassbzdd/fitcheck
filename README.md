@@ -15,8 +15,9 @@
   <a href="https://github.com/Anassbzdd/fitcheck/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-`fitcheck` reads a model's `config.json` from the Hugging Face Hub (~2 KB, never the weights)
-and computes peak training memory as a sum of six components: base model weights, LoRA adapter
+`fitcheck` reads a model's `config.json` from the Hugging Face Hub (~2 KB, never the weights) and
+its parameter count from the Hub's metadata (also never the weights), then computes peak training
+memory as a sum of six components: base model weights, LoRA adapter
 weights, optimizer states, gradients, activations, and CUDA runtime overhead. Every number is
 arithmetic over `hidden_size`, `num_hidden_layers`, `intermediate_size`, `num_key_value_heads`
 and your training flags, so no GPU, no CUDA install, and no model download is involved — the
@@ -87,7 +88,9 @@ Error: Could not read config.json for 'meta-llama/Llama-3.1-8B': This model is g
 Hugging Face. Accept its license on the model page, then run: hf auth login
 ```
 
-Once a `config.json` is in the Hub cache, `fitcheck` runs offline.
+Once a `config.json` is in the Hub cache, `fitcheck` runs offline. The one thing it loses offline
+is the Hub parameter count (see [Model support](#model-support)); it falls back to the count
+derived from `config.json` and warns on stderr that it did.
 
 ---
 
@@ -98,17 +101,20 @@ Mistral, Qwen2/2.5, Gemma-2/3 and anything config-shaped like them. It reads `he
 config declares one rather than assuming `hidden_size / num_attention_heads`, and it never
 assumes `intermediate_size == 4 × hidden_size`; both assumptions are wrong on Gemma-2.
 
-Not modelled: MoE architectures (Mixtral, Qwen3-MoE, gpt-oss, DeepSeek), encoder-decoder models,
-sliding-window attention, `torch.compile`, and multi-GPU sharding (FSDP / DeepSpeed ZeRO). See
+Not modelled: MoE architectures (Mixtral, Qwen3-MoE, gpt-oss, DeepSeek), non-gated 2-matrix MLPs
+(phi-2), multimodal models, encoder-decoder models, sliding-window attention, `torch.compile`, and
+multi-GPU sharding (FSDP / DeepSpeed ZeRO). See
 [SPEC.md § 3.7](https://github.com/Anassbzdd/fitcheck/blob/main/docs/SPEC.md) for the full limitations table.
 
-**Refused, not guessed at.** Two of those shapes are detectable from `config.json` alone, so
-`fitcheck` exits **2** with an explanation instead of printing a plausible number:
+**Refused, not guessed at.** When a model is outside what the formulas cover, `fitcheck` exits **2**
+with an explanation instead of printing a plausible number. Two shapes are caught from
+`config.json` keys; a third is caught by checking the parameter count against the Hub:
 
 | Shape | Detected by | What it would have said |
 |:---|:---|:---|
 | Mixture-of-Experts | `num_experts_per_tok`, `num_local_experts`, `num_experts`, `n_routed_experts` | Mixtral-8x7B as 7.24B instead of 46.7B — it counts one expert out of eight. Under-counts run 80–90% across Mixtral, Qwen3-30B-A3B, gpt-oss-20b and DeepSeek-V2-Lite |
 | Multimodal with nested dimensions (SmolVLM) | `text_config` present, `hidden_size` absent | `'hidden_size' must be a positive integer` — true of the top level, and misleading: the fields are nested, not missing |
+| Anything whose real parameter count is >2% from the formula | the Hub's `safetensors.total`, compared against the count derived from `config.json` | `microsoft/phi-2` **+30.1%** (a 2-matrix `fc1`/`fc2` MLP charged as 3-matrix SwiGLU) and `Qwen/Qwen2.5-VL-7B-Instruct` **−8.2%** (vision tower left out) |
 
 ```console
 $ fitcheck mistralai/Mixtral-8x7B-v0.1 --gpu 4090 --qlora
@@ -120,11 +126,29 @@ $ echo $?
 2
 ```
 
-> **Parsing is not endorsement — still check this list.** The refusal catches what the config
-> file makes obvious. A shape it cannot see is still estimated silently: `Qwen/Qwen2.5-VL-7B-Instruct`
-> keeps its text dimensions at the top level next to `vision_config`, so it parses like a dense
-> decoder and comes out about 8% low, with the vision tower left out and nothing on screen saying
-> so. Encoder-decoder and sliding-window models are the same class of gap.
+**Where the parameter count comes from.** `fitcheck` asks the Hub for the model's real parameter
+count (`safetensors.total` — one metadata call, still no weights) and uses that. The count derived
+from `config.json` is kept as the cross-check: the derivation assumes a 3-matrix SwiGLU MLP with no
+biases, so when the two disagree by more than 2%, the architecture is outside what the *activation*
+and *LoRA* formulas assume as well. That is refused, not averaged and not quietly patched with the
+Hub's number — a correct weight term next to a wrong activation term is still a wrong answer.
+
+```console
+$ fitcheck microsoft/phi-2 --gpu 4090 --qlora
+Error: 'microsoft/phi-2' has 2,779,683,840 parameters according to the Hub, but fitcheck's
+config.json formula derives 3,617,753,600 - a disagreement of +30.1%, past the 2% tolerance
+(over-counts, which over-states the memory needed). [...] fitcheck refuses instead of
+averaging the two. See docs/SPEC.md section 3.3.
+$ echo $?
+2
+```
+
+> **Parsing is not endorsement — still check this list.** The two checks catch what the config file
+> makes obvious and what the parameter count gives away. A shape that shows up in neither is still
+> estimated silently: encoder-decoder models, and sliding-window attention (Gemma-2 alternates
+> sliding and full layers, and the parameter count is identical either way). Offline the parameter
+> cross-check cannot run at all — `fitcheck` falls back to the derived count, says so on stderr, and
+> phi-2 and Qwen2.5-VL are estimated instead of refused.
 
 ---
 
@@ -402,18 +426,27 @@ The ID must be the full `owner/name`, exactly as it appears on the Hub.
 **`Error: Unknown GPU 'x'`.** Run `fitcheck --list-gpus` for the 22 supported names. For a card
 that is not in the list, give the VRAM directly: `--vram-mib 32768`.
 
-**No internet.** `fitcheck` needs the network once per model, to fetch `config.json` (a few KB).
-After that the file is in the Hub cache and the same command works offline.
+**No internet.** `fitcheck` needs the network once per model, to fetch `config.json` (a few KB)
+and to read the model's parameter count from the Hub's metadata (no weights, either way). After
+that the file is in the Hub cache and the same command works offline, with the parameter count
+falling back to the `config.json` formula and a warning saying so.
 
 **`is a Mixture-of-Experts model` or `nests its language-model dimensions`.** Not a bug and not a
 bad model ID — `fitcheck` refuses these rather than under-count them by 80–90% and tell you a
 doomed run fits. There is no override flag, because the number behind it would be wrong. See
 [Model support](#model-support).
 
+**`parameters according to the Hub, but fitcheck's config.json formula derives ...`.** Same idea,
+one level deeper. The parameter count the Hub reports and the one the formula derives are more
+than 2% apart, which means the model's MLP or its components are not the shape the activation and
+LoRA formulas assume. `fitcheck` refuses instead of adopting the Hub's number, because only the
+weight term would be fixed by that. No override flag, for the same reason.
+
 **The number looks wrong for my model.** First check it is a supported architecture — see
-[Model support](#model-support). MoE and nested-multimodal configs are refused outright, but
-encoder-decoder, sliding-window and flat multimodal models (Qwen2.5-VL) still parse and return a
-wrong answer with no warning.
+[Model support](#model-support). MoE and nested-multimodal configs are refused outright, and so is
+anything whose parameter count disagrees with the Hub by more than 2% (phi-2, Qwen2.5-VL). What
+still parses and returns a wrong answer with no warning is the class the count does not give
+away: encoder-decoder and sliding-window models.
 
 **My real run used a different amount.** Expect the total to be within about 15%, and see
 [Validation](#validation) for where that error comes from. Two common causes are outside the
@@ -556,6 +589,10 @@ python scripts/measure.py TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
 ---
 
 ## How it works
+
+`P`, the parameter count every weight-side term starts from, is the Hub's own `safetensors.total`.
+A count derived from `config.json` runs alongside it as a cross-check, and a disagreement past 2%
+is refused rather than reconciled — see [Model support](#model-support).
 
 Peak VRAM is modelled as `W_base + W_lora + S_optim + G_grad + A_act + C_overhead`, one module
 per term under [`fitcheck/memory/`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck/memory/): base weights (only the transformer linears

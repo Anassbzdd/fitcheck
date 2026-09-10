@@ -116,7 +116,7 @@ Before building, it's critical to understand the competitive landscape and **cle
 1. **Component-level breakdown** — not just "it fits" or "it doesn't", but *why* and *where* the memory goes
 2. **LoRA/QLoRA-native** — models adapter memory, reduced optimizer states, and quantization overhead correctly
 3. **GQA-aware** — properly accounts for reduced KV heads in modern models (Llama 3, Mistral, Qwen, Gemma)
-4. **Architecture-specific** — reads `config.json` directly, uses actual `intermediate_size` instead of assuming `4h`, and **refuses** the architectures its formulas do not cover (MoE, nested multimodal) rather than printing a confident wrong number
+4. **Architecture-specific** — reads `config.json` directly, uses actual `intermediate_size` instead of assuming `4h`, takes the parameter count from the Hub and grades its own formula against it, and **refuses** the architectures its formulas do not cover (MoE, nested multimodal, and anything whose parameter count disagrees by more than 2%) rather than printing a confident wrong number
 5. **Actionable advice** — "you can increase batch_size to X" or "switch to 8-bit optimizer to save Y MiB"
 6. **CLI-first** — designed for the terminal workflow where ML engineers actually work, and
    `--json` + an exit code (0 fits / 1 doesn't / 2 error) so CI can gate a training job on it
@@ -205,9 +205,36 @@ Using the real Llama-3.1-8B count, $P = 8{,}030{,}261{,}248$:
 > dimensions under `text_config`: the vision tower is unmodelled, so the total would be low.
 >
 > The limit of that defence is worth stating: it catches what `config.json` makes *visible*. Qwen2.5-VL
-> keeps its text dimensions at the top level beside `vision_config` and parses like a dense decoder,
-> coming out about 8% low with no warning. Detecting that one needs the Hub's own parameter count as a
-> cross-check, not a key lookup.
+> keeps its text dimensions at the top level beside `vision_config` and parses like a dense decoder.
+> Detecting that one needs the Hub's own parameter count as a cross-check, not a key lookup — which is
+> the next note.
+
+> [!IMPORTANT]
+> **Where $P$ actually comes from: ask, then check.** Everything above derives $P$ from `config.json`
+> with a formula that assumes a 3-matrix SwiGLU MLP (`gate`/`up`/`down`) and no biases. That is exactly
+> right for Llama-3.1-8B and SmolLM2-1.7B — both come out to the parameter — and it drifts silently for
+> anything shaped differently. `microsoft/phi-2` has a 2-matrix `fc1`/`fc2` MLP plus biases and comes out
+> **+30.1%**; Qwen2.5-VL comes out **−8.2%** because a vision tower is not in the file at all.
+>
+> The Hub already knows the real number, in `model_info(..., expand=["safetensors"]).safetensors.total`
+> — one metadata call, no weight bytes, so the "a few KB and no GPU" promise survives. So `fitcheck`
+> **takes $P$ from the Hub** and keeps the derivation as a **cross-check**.
+>
+> **The interesting part is what happens when the two disagree.** The tempting move is to shrug and use
+> the Hub number, since it is the truth. That would be a trap. The parameter formula is not a standalone
+> utility — Component 5 charges $3d_{ff}$ for that same 3-matrix MLP, and Component 2 sizes the LoRA
+> adapters from the same assumed projections. A 30% gap in $P$ is not a counting bug; it is the model
+> telling you the architecture is not the one the *whole memory model* was written for. Patching only
+> $P$ would buy a correct $W_{base}$ sitting next to a wrong $A_{act}$ — the same silently-wrong failure,
+> just harder to spot. So past a **2% relative tolerance**, `fitcheck` refuses and exits 2. It does not
+> average, and it does not quietly adopt one side.
+>
+> The tolerance is relative and generous on purpose. `Qwen/Qwen2.5-1.5B` misses by 57,344 params
+> (−0.004%) because the formula ignores its q/k/v biases; gpt-oss-20b misses by 704 (0.000003%) on
+> tied-tensor accounting. Those are noise about a model the formulas do cover. +30.1% is not.
+>
+> Offline there is nothing to check against, so the derived count is used and a warning says so. Being
+> unable to run the check is a different thing from passing it, and the tool should not blur them.
 
 ### Component 2: LoRA Adapter Weights
 
@@ -535,7 +562,8 @@ fitcheck/
 ├── __main__.py              # python -m fitcheck entry point
 ├── cli.py                   # click commands & option groups
 ├── repl.py                  # Interactive REPL (Mode B)
-├── config_parser.py         # HuggingFace config.json → ModelConfig; refuses MoE / nested multimodal
+├── config_parser.py         # HuggingFace config.json + Hub param count → ModelConfig;
+│                            #   refuses MoE / nested multimodal / >2% count disagreement
 ├── estimator.py             # Orchestrator: calls all 6 components, returns MemoryReport
 ├── memory/
 │   ├── __init__.py          # re-exports all estimate_* functions
@@ -903,7 +931,7 @@ ready to paste into the README matrix. The three traps it exists to avoid:
 
 | # | Topic | What to know | Why it matters for `fitcheck` |
 |:--|:------|:------------|:------------------------------|
-| 10 | **Parameter counting from config** | Given a HuggingFace `config.json` (with `hidden_size`, `num_hidden_layers`, `intermediate_size`, `num_attention_heads`, `vocab_size`), compute the exact parameter count. Know the formula for each sub-module (embedding, attention, MLP, LayerNorm, LM head). | This is the input to your weight memory calculation. You can't just trust `model.num_parameters()` because you're not loading the model. |
+| 10 | **Parameter counting from config** | Given a HuggingFace `config.json` (with `hidden_size`, `num_hidden_layers`, `intermediate_size`, `num_attention_heads`, `vocab_size`), compute the exact parameter count. Know the formula for each sub-module (embedding, attention, MLP, LayerNorm, LM head), **and know which architecture it assumes** — a 3-matrix gated MLP and no biases. | This is the input to your weight memory calculation, and you can't call `model.num_parameters()` because you're not loading the model. The Hub reports the real count in its safetensors metadata, so `fitcheck` uses that and keeps this derivation as the check on it — the derivation is what tells you whether the *rest* of the memory model fits the architecture. |
 | 11 | **Multi-Head Attention (MHA) memory** | The shapes of Q, K, V, attention weights, and output tensors. How `(b, n_h, s, d_k)` tensors are formed and stored. | Each of these is a saved tensor for backward. You need their exact sizes. |
 | 12 | **Grouped Query Attention (GQA)** | How GQA reduces KV heads (e.g., Llama 3.1: 32 Q heads, 8 KV heads). How this changes the shapes of K and V tensors **and** the dimensions of `k_proj`/`v_proj` linear layers. | GQA models save less K/V activation memory **and** have smaller LoRA adapters on K/V projections. Your formulas must account for `num_kv_heads ≠ num_attention_heads`. |
 | 13 | **Flash Attention memory model** | Why standard attention is $O(s^2)$ in memory (materializes the full attention matrix) and Flash Attention is $O(s)$ (computes attention tile-by-tile in SRAM, never writes the full matrix to HBM). | This changes your activation estimate **dramatically** for long sequences. You need two code paths: flash vs. non-flash. |
@@ -951,7 +979,7 @@ ready to paste into the README matrix. The three traps it exists to avoid:
 
 | # | Topic | What to know | Why it matters for `fitcheck` |
 |:--|:------|:------------|:------------------------------|
-| 28 | **`huggingface_hub` API** | `hf_hub_download()`, `model_info()`, how to fetch a model's `config.json` without downloading the full weights. | You need to read model architecture params without loading the model (that would require a GPU). |
+| 28 | **`huggingface_hub` API** | `hf_hub_download()` for `config.json`, and `model_info(repo_id, expand=["safetensors"])` for `safetensors.total` — both metadata-only, neither downloads weights. | You need to read model architecture params **and** the real parameter count without loading the model (that would require a GPU). |
 | 29 | **`click` (CLI framework)** | Decorators for commands, options, arguments, help text, option groups. | The user-facing interface. Clean CLI UX is critical for adoption. |
 | 30 | **`rich` (terminal formatting)** | Tables, panels, colored text, progress bars, live displays. | The output needs to look beautiful in the terminal. This is what makes people screenshot it and share it on Twitter. |
 | 31 | **PyPI packaging and dependency floors** | `pyproject.toml`, `setup.cfg`, versioning, building wheels, publishing with `twine` or `flit`. Also: a version pin like `huggingface-hub>=0.25` is a claim you have to test. Your own CI never checks it, because a resolver always installs the newest version that fits the pin, so only a job that forces the *lowest* declared version (`uv pip install --resolution lowest-direct`) can tell you the floor is real. | `pip install fitcheck-llm` must work on day one. It once did not: the declared floor was `huggingface-hub>=0.20`, but `config_parser.py` imports `GatedRepoError`, which only exists from 0.25 — so any user whose resolver landed lower crashed on the very first command. SPEC §3.9 has the version table and the CI job that now stops it recurring. |

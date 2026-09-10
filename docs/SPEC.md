@@ -99,7 +99,8 @@ $$W_{base} = P \times \text{bytes\_per\_param}$$
 $$W_{base} = P_q \times \left(\text{bytes\_per\_param} + \frac{4}{B_q}\right) + P_{skip} \times 4$$
 
 Where:
-- $P$ = total parameter count (computed from `config.json`, not loaded)
+- $P$ = total parameter count (read from the Hub's safetensors metadata, cross-checked
+  against a count derived from `config.json`; no weights are loaded either way — §3.3)
 - `bytes_per_param`: FP32→4, FP16/BF16→2, INT8→1, INT4/NF4→0.5
 - $P_{skip}$ = the parameters `bitsandbytes` does **not** quantize — `embed_tokens`, `lm_head` and
   the layernorms — which peft's `prepare_model_for_kbit_training` then upcasts to **FP32**, hence the
@@ -586,7 +587,7 @@ class MemoryReport:
 ### 3.3 — How Config Fetching Works (No Weight Download)
 
 ```python
-from huggingface_hub import hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 import json
 
 def fetch_model_config(model_id: str) -> ModelConfig:
@@ -595,10 +596,14 @@ def fetch_model_config(model_id: str) -> ModelConfig:
         raw = json.load(f)
 
     _reject_unsupported(raw, model_id)   # architectures the formulas cannot estimate
+    fields = _parse_fields(raw)
 
     return ModelConfig(
         name=model_id.split("/")[-1],
-        num_params=_count_params(raw),   # computed, not from a field
+        # the Hub's own count, with _count_params(fields) as cross-check and fallback
+        num_params=_reconcile_param_count(
+            model_id, _reported_param_count(model_id, token), _count_params(fields)
+        ),
         hidden_size=raw["hidden_size"],
         num_layers=raw["num_hidden_layers"],
         num_attention_heads=raw["num_attention_heads"],
@@ -630,9 +635,69 @@ someone trusting a number the tool printed before this gate existed. A refusal a
 mere inconvenience gets worked around; a refusal that explains the failure mode does not.
 
 **A model that parses is not thereby endorsed.** The gate catches shapes that are *detectable* from
-`config.json` keys. Qwen2.5-VL keeps its text dimensions at the top level beside `vision_config`, so
-it parses and is estimated — with the vision tower silently omitted. That is §3.7's "flat
-multimodal" row, and it needs the Hub parameter cross-check, not this gate.
+`config.json` keys, and that is not the same as the shapes the formulas cover. Qwen2.5-VL keeps its
+text dimensions at the top level beside `vision_config`, so nothing in the file marks it as
+multimodal. What catches it is the parameter cross-check below, not this gate.
+
+#### The parameter count comes from the Hub, and the formula grades it
+
+`_count_params` is a Llama-shaped formula: a 3-matrix SwiGLU MLP (`gate`/`up`/`down`) and no biases
+anywhere. It is exact for the family it was derived on and drifts silently for everything else —
+`microsoft/phi-2` has a 2-matrix `fc1`/`fc2` MLP plus biases and comes out **+30.1%**, and any model
+with a component `config.json` does not describe (a vision tower) comes out low. Deriving a number
+the Hub already knows is the wrong trade.
+
+```python
+def _reported_param_count(model_id: str, token: str | None) -> int | None:
+    """Exact parameter count from the Hub's safetensors metadata, or None."""
+    try:
+        info = HfApi(token=token).model_info(model_id, expand=["safetensors"])
+    except Exception:            # any Hub failure means "fall back", never "crash"
+        return None
+    total = getattr(getattr(info, "safetensors", None), "total", None)
+    return total if isinstance(total, int) and not isinstance(total, bool) and total > 0 else None
+```
+
+One metadata call, no weight bytes, so §3.8's "an estimate costs a few KB and no GPU" still
+holds. `expand=` and
+`ModelInfo.safetensors.total` both exist at the declared floor of `huggingface-hub==0.25.0`
+(§3.9), so this needs no dependency change.
+
+**Precedence and tolerance.** The Hub count wins whenever it is available — including inside the
+tolerance band, where it is the truth and the formula is the approximation. `_PARAM_COUNT_TOLERANCE`
+is **2%**, relative and not absolute, because exact equality is the wrong test:
+
+| Model | Derived | Hub | Relative gap | Cause | Outcome |
+|:---|---:|---:|---:|:---|:---|
+| `meta-llama/Llama-3.1-8B` | 8,030,261,248 | 8,030,261,248 | 0% | — | ✅ Hub count used |
+| `HuggingFaceTB/SmolLM2-1.7B` | 1,711,376,384 | 1,711,376,384 | 0% | — | ✅ |
+| `TinyLlama/TinyLlama-1.1B` | 1,100,048,384 | 1,100,048,384 | 0% | — | ✅ |
+| `Qwen/Qwen2.5-1.5B` | 1,543,656,960 | 1,543,714,304 | −0.004% | q/k/v biases the formula ignores | ✅ |
+| `microsoft/phi-2` | 3,617,753,600 | 2,779,683,840 | **+30.1%** | 2-matrix MLP charged as 3-matrix | ❌ refused, exit 2 |
+| `Qwen/Qwen2.5-VL-7B-Instruct` | 7,615,487,488 | 8,292,166,656 | **−8.2%** | vision tower not modelled | ❌ refused, exit 2 |
+
+A relative tolerance is what makes the harmless rows harmless. Absolute equality would reject
+Qwen2.5-1.5B over 57,344 bias parameters, and gpt-oss-20b differs from its own safetensors count by
+704 params (0.000003%) purely on tied-tensor accounting. Neither says anything about the memory
+model; +30.1% does.
+
+**A disagreement past the tolerance is refused, not averaged, and not silently corrected.** This is
+the point of the whole check. The parameter count is not an isolated number: $A_{act}$ charges
+$3 d_{ff}$ for a 3-matrix MLP (Component 5) and the LoRA target dimensions assume the same shape
+(Component 2). If $P$ is 30% out, those are out too — so taking the Hub's $P$ and keeping the rest
+would buy a correct $W_{base}$ sitting next to a wrong $A_{act}$, which is the "silently wrong"
+failure this document refuses everywhere else. The error text names both numbers, the signed gap,
+and the direction: an over-count over-states the memory needed, an under-count is the direction
+that reports a fit where the run would OOM.
+
+**The formula stays as the offline fallback.** When the Hub cannot answer — no network, a repo with
+no safetensors weights, a cached `config.json` in an air-gapped run — `_reconcile_param_count`
+returns the derived count and prints a warning to **stderr** naming it as derived and naming the
+assumption behind it. That keeps §3.8's offline promise without pretending the fallback is exact.
+Note what the fallback costs: with no Hub count there is nothing to grade against, so phi-2 and
+Qwen2.5-VL are estimated rather than refused when offline.
+
+**The refusal gate runs first**, so a MoE or nested-multimodal model costs no metadata call.
 
 **Two fields that are not what they look like.** Both are silent, both are wrong on the same model
 family, and Gemma-2-9B is a row in the validation matrix:
@@ -750,7 +815,7 @@ happens to hold — the framework-developer persona in §1 gates CI on it. Top-l
 | Key | Type | Contents |
 |:---|:---|:---|
 | `fitcheck_version` | `str` | Installed package version — pin CI assertions against it |
-| `model` | `object` | `ModelConfig` fields verbatim (incl. the derived `num_params`) |
+| `model` | `object` | `ModelConfig` fields verbatim (incl. `num_params`, from the Hub when reachable — §3.3) |
 | `gpu` | `object` | `GpuSpec`: `name`, `vram_mib`, `usable_mib` |
 | `training` | `object` | `TrainingConfig` as resolved — after `--qlora` expansion and preset lookup |
 | `trainable_params` | `int` | LoRA param count, or `num_params` under `--no-lora` |
@@ -1101,7 +1166,8 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 |:---|:---|:---:|
 | **MoE models** (Mixtral, Qwen3-MoE, gpt-oss, DeepSeek) | **Refused at parse time, exit 2.** Active experts × per-expert FFN changes both the parameter count and the activation formula; estimating anyway under-counts by 80–90% and reports a fit for a run that OOMs. `_reject_unsupported` fires on `num_experts_per_tok` / `num_local_experts` / `num_experts` / `n_routed_experts` — see §3.3. | ❌ refused |
 | **Nested multimodal configs** (SmolVLM / Idefics3, Llama-4) | **Refused at parse time, exit 2.** `text_config` present and `hidden_size` absent means the decoder dimensions are *nested*, not missing, and the vision tower is unmodelled either way. The message says nested, so the user is not sent looking for a broken file. | ❌ refused |
-| **Flat multimodal configs** (Qwen2.5-VL) | Text dimensions sit at the top level next to `vision_config`, so the config parses and the estimate runs — silently omitting the vision tower (−8.2% on Qwen2.5-VL-7B). Not caught by the §3.3 refusal; the Hub parameter cross-check is what closes it. | ⚠️ Known |
+| **Flat multimodal configs** (Qwen2.5-VL) | **Refused, exit 2 — by the parameter cross-check, not the key gate.** Text dimensions sit at the top level next to `vision_config`, so `_reject_unsupported` sees nothing wrong. The Hub reports 8,292,166,656 params against the formula's 7,615,487,488, a −8.2% gap past the 2% tolerance, and the omitted vision tower is refused there — see §3.3. Offline, with no Hub count to grade against, it is estimated 8% low instead. | ❌ refused (online) |
+| **Non-SwiGLU MLPs** (phi-2 `fc1`/`fc2`, models with biases) | **Refused, exit 2.** `_count_params` assumes a 3-matrix gated MLP and no biases; phi-2 comes out +30.1%. The Hub cross-check (§3.3) catches the gap, and refuses rather than adopting the Hub count, because $A_{act}$'s $3d_{ff}$ and the LoRA target dimensions assume that same shape. Bias-only gaps (Qwen2.5's q/k/v biases, −0.004%) sit far inside the tolerance and are unaffected. | ❌ refused (online) |
 | **Models with tied embeddings** | Detected via `tie_word_embeddings` in config. Count embedding params once. | ✅ MVP |
 | **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Blueprint.md's note on `intermediate_size`). | ✅ MVP |
 | **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$, LoRA dims **and** the activation bracket all use the exact $n_hd_k$ / $n_{kv}d_k$ form. Sliding-window attention is still not modelled — see the row below. | ✅ MVP |
@@ -1113,7 +1179,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Very long sequences** ($s > 8192$) | The $9\gamma$ eager coefficient is measured at $s \le 2048$ only. It is the term that grows as $s^2$, so extrapolation error grows with it. | ⚠️ Known |
 | **Gated linear units** (GLU variants: SiLU, GELU) | Treated uniformly — all save same intermediate shapes. | ✅ MVP |
 | **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
-| **Offline mode** | If `config.json` is cached locally, works without internet. | ✅ MVP |
+| **Offline mode** | If `config.json` is cached locally, works without internet. The Hub parameter count is unavailable, so `num_params` falls back to the `config.json` formula with a warning on stderr — and the architectures that only the cross-check catches (phi-2, Qwen2.5-VL) are estimated rather than refused. | ✅ MVP |
 | **`C_overhead` fragmentation model** | Fixed 5% of $(W_{base}+A_{act})$. Measured fragmentation ranged 6%–32% and is larger under eager attention. This is where all the residual error sits (§3.8, Component 6). | ⚠️ Known |
 | **T4 / ECC entries in `gpu_db`** | Fixed: T4 is now `14_912 / 14_000`, the measured total. `h200` and `b200` take the `usable_mib` that is safe under the pessimistic reading of their vendor GB. Only the T4 is measured; the rest of the table is estimates. | ✅ fixed, rest unmeasured |
 | **No-checkpointing branch** | `L × A_layer + A_logits` is derived, never measured — every ground-truth run so far has checkpointing on. **This is also the default**, so the estimate carries a warning instead of being presented as fact: `estimate_warnings` returns a caveat whenever `grad_checkpoint` is off, and a stronger one naming the over-estimate when Flash Attention is off too (the $9\gamma$ score matrix charged in every layer at once — see Component 5). It surfaces in the panel, in `--explain`, in `fitcheck advise`, and as the `warnings` key in `--json`. | ⚠️ Unmeasured, warned |
@@ -1132,7 +1198,8 @@ the spec even though it ships no user-facing feature.
 
 `scripts/measure.py` imports `torch`, `peft`, `transformers` and `bitsandbytes`. The `fitcheck`
 package must never import any of them — that is the hard constraint the whole product rests on (an
-estimate costs a few KB of `config.json` and no GPU). So the dependency runs **one way only**:
+estimate costs a few KB of `config.json`, one Hub metadata call for the parameter count, and no
+GPU). So the dependency runs **one way only**:
 
 ```
 scripts/measure.py  ──imports──>  fitcheck        ✅
@@ -1349,7 +1416,7 @@ Runtime dependencies stay at three. A fourth is a decision, not a detail.
 |:---|:---|:---|
 | `click` | `>=8.1` | Option groups and the command style `cli.py` is written in |
 | `rich` | `>=13.0` | Tables, panels and the verdict styling in `display.py` |
-| `huggingface-hub` | `>=0.25` | `config_parser.py` does `from huggingface_hub.errors import GatedRepoError`. That module does not exist before 0.22, and it does not export `GatedRepoError` until 0.25 |
+| `huggingface-hub` | `>=0.25` | `config_parser.py` does `from huggingface_hub.errors import GatedRepoError`. That module does not exist before 0.22, and it does not export `GatedRepoError` until 0.25. The Hub parameter count (§3.3) needs `HfApi.model_info(..., expand=[...])` and `ModelInfo.safetensors.total`; both are present in 0.25.0, so it does not raise the floor |
 
 The `dev` extra is `pytest>=7.4`, `pytest-cov>=4.1` and `httpx>=0.27`. `httpx` is there because
 `tests/test_config_parser.py` builds a fake 403 response with it. It used to work undeclared, purely

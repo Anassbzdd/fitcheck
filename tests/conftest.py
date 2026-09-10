@@ -6,6 +6,19 @@ from typing import Any, Callable
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def offline_hub_param_count(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if request.node.get_closest_marker("network") is not None:
+        return
+
+    def _no_hub_count(model_id: str, token: str | None) -> int | None:
+        return None
+
+    monkeypatch.setattr("fitcheck.config_parser._reported_param_count", _no_hub_count)
+
+
 @pytest.fixture
 def llama_31_8b_config() -> dict[str, Any]:
     return {
@@ -77,8 +90,8 @@ def tied_embeddings_config() -> dict[str, Any]:
 @pytest.fixture
 def fake_config_download(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Callable[[dict[str, Any]], None]:
-    def _install(config: dict[str, Any]) -> None:
+) -> Callable[..., None]:
+    def _install(config: dict[str, Any], hub_param_count: int | None = None) -> None:
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
 
@@ -87,6 +100,12 @@ def fake_config_download(
         ) -> str:
             return str(config_path)
 
+        def _fake_reported_param_count(model_id: str, token: str | None) -> int | None:
+            return hub_param_count
+
         monkeypatch.setattr("fitcheck.config_parser.hf_hub_download", _fake_hf_hub_download)
+        monkeypatch.setattr(
+            "fitcheck.config_parser._reported_param_count", _fake_reported_param_count
+        )
 
     return _install

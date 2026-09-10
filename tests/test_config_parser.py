@@ -5,7 +5,12 @@ from typing import Any, Callable
 import httpx
 import pytest
 from huggingface_hub.errors import GatedRepoError
-from fitcheck.config_parser import UnsupportedModelError, fetch_model_config
+from fitcheck import config_parser
+from fitcheck.config_parser import (
+    UnsupportedModelError,
+    _reported_param_count,
+    fetch_model_config,
+)
 
 
 @pytest.mark.network
@@ -559,11 +564,282 @@ def test_supported_dense_models_are_not_refused(
     assert fetch_model_config(model_id).num_params > 0
 
 
-def test_a_vision_tower_alongside_top_level_dims_is_not_refused(
-    fake_config_download: Callable[[dict[str, Any]], None],
+def test_a_vision_tower_alongside_top_level_dims_passes_the_parse_gate(
+    fake_config_download: Callable[..., None],
     llama_31_8b_config: dict[str, Any],
 ) -> None:
     fake_config_download(
         dict(llama_31_8b_config, vision_config={"hidden_size": 1280, "depth": 32})
     )
     assert fetch_model_config("Qwen/Qwen2.5-VL-7B-Instruct").num_params > 0
+
+
+
+_LLAMA_31_8B_PARAMS = 8_030_261_248
+
+_PHI_2_CONFIG = {
+    "model_type": "phi",
+    "hidden_size": 2560,
+    "num_hidden_layers": 32,
+    "num_attention_heads": 32,
+    "intermediate_size": 10240,
+    "vocab_size": 51200,
+    "tie_word_embeddings": False,
+}
+_PHI_2_DERIVED = 3_617_753_600
+_PHI_2_HUB = 2_779_683_840
+
+
+def test_hub_count_is_preferred_over_the_derived_one(
+    fake_config_download: Callable[..., None],
+    llama_31_8b_config: dict[str, Any],
+) -> None:
+    hub_count = _LLAMA_31_8B_PARAMS + 57_344 
+
+    fake_config_download(llama_31_8b_config, hub_param_count=hub_count)
+
+    assert fetch_model_config("meta-llama/Llama-3.1-8B").num_params == hub_count
+
+
+def test_hub_count_agreeing_exactly_leaves_the_golden_number_alone(
+    fake_config_download: Callable[..., None],
+    llama_31_8b_config: dict[str, Any],
+) -> None:
+    fake_config_download(llama_31_8b_config, hub_param_count=_LLAMA_31_8B_PARAMS)
+
+    assert fetch_model_config("meta-llama/Llama-3.1-8B").num_params == _LLAMA_31_8B_PARAMS
+
+
+def test_offline_fallback_keeps_the_derived_count(
+    fake_config_download: Callable[..., None],
+    llama_31_8b_config: dict[str, Any],
+) -> None:
+    fake_config_download(llama_31_8b_config, hub_param_count=None)
+
+    assert fetch_model_config("meta-llama/Llama-3.1-8B").num_params == _LLAMA_31_8B_PARAMS
+
+
+def test_offline_fallback_warns_that_the_count_is_derived(
+    fake_config_download: Callable[..., None],
+    llama_31_8b_config: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_config_download(llama_31_8b_config, hub_param_count=None)
+
+    fetch_model_config("meta-llama/Llama-3.1-8B")
+
+    stderr = capsys.readouterr().err
+    assert "derived from config.json" in stderr
+    assert "SwiGLU" in stderr
+
+
+def test_phi_2_style_over_count_is_refused(
+    fake_config_download: Callable[..., None],
+) -> None:
+    fake_config_download(_PHI_2_CONFIG, hub_param_count=_PHI_2_HUB)
+
+    with pytest.raises(UnsupportedModelError) as excinfo:
+        fetch_model_config("microsoft/phi-2")
+
+    message = str(excinfo.value)
+    assert "microsoft/phi-2" in message
+    assert f"{_PHI_2_HUB:,}" in message
+    assert f"{_PHI_2_DERIVED:,}" in message
+    assert "+30.1%" in message
+    assert "over-counts" in message
+
+
+_QWEN2_5_VL_7B_CONFIG = {
+    "model_type": "qwen2_5_vl",
+    "hidden_size": 3584,
+    "num_hidden_layers": 28,
+    "num_attention_heads": 28,
+    "num_key_value_heads": 4,
+    "intermediate_size": 18944,
+    "vocab_size": 152064,
+    "tie_word_embeddings": False,
+    "vision_config": {"hidden_size": 1280, "depth": 32, "intermediate_size": 3420},
+}
+_QWEN2_5_VL_7B_DERIVED = 7_615_487_488
+_QWEN2_5_VL_7B_HUB = 8_292_166_656
+
+
+def test_flat_multimodal_is_refused_by_the_hub_cross_check(
+    fake_config_download: Callable[..., None],
+) -> None:
+    fake_config_download(
+        _QWEN2_5_VL_7B_CONFIG, hub_param_count=_QWEN2_5_VL_7B_HUB
+    )
+
+    with pytest.raises(UnsupportedModelError) as excinfo:
+        fetch_model_config("Qwen/Qwen2.5-VL-7B-Instruct")
+
+    message = str(excinfo.value)
+    assert f"{_QWEN2_5_VL_7B_DERIVED:,}" in message
+    assert "-8.2%" in message
+    assert "OOM" in message
+
+
+def test_disagreement_refusal_does_not_average_the_two(
+    fake_config_download: Callable[..., None],
+) -> None:
+    fake_config_download(_PHI_2_CONFIG, hub_param_count=_PHI_2_HUB)
+
+    with pytest.raises(UnsupportedModelError, match="refuses instead of averaging"):
+        fetch_model_config("microsoft/phi-2")
+
+
+@pytest.mark.parametrize(
+    ("hub_count", "refused"),
+    [
+        (int(_LLAMA_31_8B_PARAMS / 1.02) + 1, False),  # just inside the 2% edge
+        (int(_LLAMA_31_8B_PARAMS / 1.021), True),      # just past it
+        (int(_LLAMA_31_8B_PARAMS / 0.98) - 1, False),
+        (int(_LLAMA_31_8B_PARAMS / 0.979), True),
+    ],
+)
+def test_two_percent_is_the_boundary(
+    fake_config_download: Callable[..., None],
+    llama_31_8b_config: dict[str, Any],
+    hub_count: int,
+    refused: bool,
+) -> None:
+    fake_config_download(llama_31_8b_config, hub_param_count=hub_count)
+
+    if refused:
+        with pytest.raises(UnsupportedModelError):
+            fetch_model_config("meta-llama/Llama-3.1-8B")
+    else:
+        assert fetch_model_config("meta-llama/Llama-3.1-8B").num_params == hub_count
+
+
+def test_moe_is_refused_before_the_hub_is_asked(
+    fake_config_download: Callable[..., None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The parse gate runs first, so a refused model costs no metadata call."""
+    calls: list[str] = []
+
+    def _record(model_id: str, token: str | None) -> int | None:
+        calls.append(model_id)
+        return None
+
+    fake_config_download(_MIXTRAL_8X7B_CONFIG)
+    monkeypatch.setattr("fitcheck.config_parser._reported_param_count", _record)
+
+    with pytest.raises(UnsupportedModelError):
+        fetch_model_config("mistralai/Mixtral-8x7B-v0.1")
+
+    assert calls == []
+
+
+class _FakeSafetensors:
+    def __init__(self, total: Any) -> None:
+        self.total = total
+
+
+class _FakeModelInfo:
+    def __init__(self, safetensors: Any) -> None:
+        self.safetensors = safetensors
+
+
+def _install_fake_api(monkeypatch: pytest.MonkeyPatch, result: Any) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+
+    class _FakeApi:
+        def __init__(self, token: str | None = None) -> None:
+            seen["token"] = token
+
+        def model_info(self, model_id: str, expand: list[str] | None = None) -> Any:
+            seen["model_id"] = model_id
+            seen["expand"] = expand
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    monkeypatch.setattr("fitcheck.config_parser.HfApi", _FakeApi)
+    return seen
+
+
+def test_reported_param_count_reads_safetensors_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _install_fake_api(
+        monkeypatch, _FakeModelInfo(_FakeSafetensors(_LLAMA_31_8B_PARAMS))
+    )
+
+    assert (
+        _reported_param_count("meta-llama/Llama-3.1-8B", "hf_tok") == _LLAMA_31_8B_PARAMS
+    )
+    assert seen["token"] == "hf_tok"
+    assert seen["expand"] == ["safetensors"]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        OSError("no network"),
+        RuntimeError("hub is down"),
+        _FakeModelInfo(None),
+        _FakeModelInfo(_FakeSafetensors(None)),
+        _FakeModelInfo(_FakeSafetensors(0)),
+        _FakeModelInfo(_FakeSafetensors(True)),
+    ],
+)
+def test_reported_param_count_returns_none_when_the_hub_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch, result: Any
+) -> None:
+    _install_fake_api(monkeypatch, result)
+
+    assert _reported_param_count("some/model", None) is None
+
+
+def test_the_hub_cross_check_downloads_no_weights(
+    fake_config_download: Callable[..., None],
+    llama_31_8b_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole premise: a metadata call plus config.json, and no other file."""
+    fake_config_download(llama_31_8b_config)
+    _install_fake_api(monkeypatch, _FakeModelInfo(_FakeSafetensors(_LLAMA_31_8B_PARAMS)))
+    monkeypatch.setattr(
+        "fitcheck.config_parser._reported_param_count", _reported_param_count
+    )
+    downloaded: list[str] = []
+    stubbed = config_parser.hf_hub_download
+
+    def _record(*, repo_id: str, filename: str, token: str | None = None) -> str:
+        downloaded.append(filename)
+        return stubbed(repo_id=repo_id, filename=filename, token=token)
+
+    monkeypatch.setattr("fitcheck.config_parser.hf_hub_download", _record)
+
+    assert fetch_model_config("meta-llama/Llama-3.1-8B").num_params == _LLAMA_31_8B_PARAMS
+    assert downloaded == ["config.json"]
+
+
+@pytest.mark.network
+@pytest.mark.parametrize(
+    ("model_id", "expected"),
+    [
+        ("meta-llama/Llama-3.1-8B", 8_030_261_248),
+        ("HuggingFaceTB/SmolLM2-1.7B", 1_711_376_384),
+        ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", 1_100_048_384),
+        ("Qwen/Qwen2.5-1.5B", 1_543_714_304),
+    ],
+)
+def test_num_params_matches_the_hub_for_dense_models(
+    model_id: str, expected: int
+) -> None:
+    assert fetch_model_config(model_id).num_params == expected
+
+
+@pytest.mark.network
+@pytest.mark.parametrize(
+    "model_id", ["microsoft/phi-2", "Qwen/Qwen2.5-VL-7B-Instruct"]
+)
+def test_architectures_outside_the_formula_are_refused_against_the_real_hub(
+    model_id: str,
+) -> None:
+    with pytest.raises(UnsupportedModelError, match="tolerance"):
+        fetch_model_config(model_id)

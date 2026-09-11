@@ -360,6 +360,7 @@ class Measurement:
     cuda_context_mib: float
     cuda_context_init_mib: float
     after_load_allocated_mib: float
+    resident_before_step_mib: float
     peak_allocated_mib: float
     peak_reserved_mib: float
     process_mib: float
@@ -558,6 +559,8 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
     weight_breakdown = resident_weight_breakdown(model)
 
     optimizer = build_optimizer(model, args)
+    torch.cuda.synchronize()
+    resident_before_step_mib = torch.cuda.memory_allocated() / MIB
     total_params = _logical_param_count(model)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -637,6 +640,7 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         cuda_context_mib=context_mib,
         cuda_context_init_mib=context_init_mib,
         after_load_allocated_mib=after_load_mib,
+        resident_before_step_mib=resident_before_step_mib,
         peak_allocated_mib=peak_allocated,
         peak_reserved_mib=peak_reserved,
         process_mib=peak_reserved + context_mib,
@@ -697,10 +701,15 @@ def _measured_activation_mib(m: Measurement) -> float:
 
     Weights, optimizer states and gradients are all measured directly, so whatever
     is left in max_memory_allocated() is the activation memory.
+
+    The baseline is resident_before_step, not after_load: build_optimizer upcasts
+    trainable params to FP32, and that growth is weights, not activations. With LoRA
+    the two are equal because peft already holds the adapters in FP32; under --no-lora
+    they differ by the size of the whole model.
     """
     return (
         m.peak_allocated_mib
-        - m.after_load_allocated_mib
+        - m.resident_before_step_mib
         - m.optimizer_state_mib
         - m.gradient_mib
     )
@@ -773,7 +782,8 @@ def render(
     add(f"  sdpa backend: {m.sdpa_backend}")
     add(f"  params: {m.total_params:,} logical | {m.trainable_params:,} trainable")
     if model_config is not None:
-        base = m.total_params - m.trainable_params
+        adapter_params = m.trainable_params if args.lora_rank is not None else 0
+        base = m.total_params - adapter_params
         delta = base - model_config.num_params
         flag = "OK" if abs(delta) <= max(1, model_config.num_params // 1000) else "MISMATCH"
         add(f"          base {base:,} vs fitcheck P {model_config.num_params:,}"
@@ -791,6 +801,7 @@ def render(
     add(f"    CUDA context (at peak)           {m.cuda_context_mib:>12,.0f} MiB")
     add(f"    CUDA context (at init, for ref)  {m.cuda_context_init_mib:>12,.0f} MiB")
     add(f"    allocated after load             {m.after_load_allocated_mib:>12,.0f} MiB")
+    add(f"    resident before first step       {m.resident_before_step_mib:>12,.0f} MiB")
     add(f"    gradients (after backward)       {m.gradient_mib:>12,.0f} MiB")
     add(f"    peak allocated  (tensor bytes)   {m.peak_allocated_mib:>12,.0f} MiB")
     add(f"    peak reserved   (allocator pool) {m.peak_reserved_mib:>12,.0f} MiB")

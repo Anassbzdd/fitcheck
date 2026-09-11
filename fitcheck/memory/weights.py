@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
 
 _DEFAULT_QUANT_BLOCK_SIZE = 64
-_DOUBLE_QUANT_OVERHEAD_FACTOR = 0.5
+# Double quantization stores the absmax as INT8 (8 bits per block of 64) plus one FP32
+# scale per block of 256 blocks: (8/64 + 32/(64*256)) / 8 = 0.015869 bytes/param, against
+# the 4/64 = 0.0625 single-quant baseline. Measured on a T4: SmolLM2-1.7B NF4 holds 96 MiB
+# of scales without --double-quant and 24 MiB with it, matching 0.0625 x this factor.
+_DOUBLE_QUANT_OVERHEAD_FACTOR = 0.25390625
 _QUANTIZABLE_PRECISIONS = frozenset({"int4", "nf4", "int8", "fp8"})
 
 _SCALE_BYTES = 4.0

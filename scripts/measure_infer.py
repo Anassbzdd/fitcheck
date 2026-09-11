@@ -170,11 +170,6 @@ def build_model(args: argparse.Namespace):
 
 
 def _new_cache():
-    """A growable KV cache, across the transformers versions that ship one.
-
-    Returning None is a valid answer: older versions accept the legacy tuple cache,
-    which the forward pass creates on its own and hands back.
-    """
     try:
         from transformers import DynamicCache
     except ImportError:
@@ -183,12 +178,6 @@ def _new_cache():
 
 
 def _iter_cache_tensors(cache: Any):
-    """Every tensor reachable from the cache object.
-
-    Walks the object graph rather than naming attributes, because the cache layout
-    has been a list of tuples, then key_cache/value_cache lists, then a list of
-    per-layer objects. The walk survives all three.
-    """
     import torch
 
     seen: set[int] = set()
@@ -317,11 +306,6 @@ def _logical_param_count(model) -> int:
 
 
 def _forward(model, input_ids, cache, past_len: int, device: str):
-    """One forward pass that appends to `cache`, keeping the logits transient small.
-
-    Only the last position's logits matter for serving, and the (b, s, V) tensor is
-    otherwise the largest thing in the run -- it would hide the cache in the peak.
-    """
     import torch
 
     batch, width = input_ids.shape

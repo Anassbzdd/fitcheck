@@ -193,8 +193,8 @@ def _validate_serving_combination(quant: str, double_quant: bool) -> None:
     """The one check the training and serving surfaces share, so they cannot drift."""
     if double_quant and quant == "none":
         raise click.UsageError(
-            "--double-quant has nothing to quantize under --quant none. It halves the "
-            "NF4/INT8 scale overhead, so pair it with --quant nf4."
+            "--double-quant has nothing to quantize under --quant none. It cuts the "
+            "NF4/INT8 scale overhead by ~75%, so pair it with --quant nf4."
         )
 
 
@@ -448,7 +448,7 @@ class _DefaultCommand(click.Command):
 @click.option(
     "--double-quant",
     is_flag=True,
-    help="NF4 double quantization (halves the scale overhead).",
+    help="NF4 double quantization (cuts the scale overhead by ~75%).",
 )
 @click.option(
     "--qlora",
@@ -631,7 +631,7 @@ def estimate_command(
 @click.option(
     "--double-quant",
     is_flag=True,
-    help="NF4 double quantization (halves the scale overhead).",
+    help="NF4 double quantization (cuts the scale overhead by ~75%).",
 )
 @click.option(
     "--precision",
@@ -767,7 +767,7 @@ def infer_command(
 @click.option(
     "--double-quant",
     is_flag=True,
-    help="NF4 double quantization (halves the scale overhead).",
+    help="NF4 double quantization (cuts the scale overhead by ~75%).",
 )
 @click.option(
     "--qlora",

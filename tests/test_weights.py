@@ -121,10 +121,16 @@ def test_estimate_weight_memory_custom_block_size(precision: str, bytes_per_para
 
 
 @pytest.mark.parametrize(("precision", "bytes_per_param"), _QUANTIZABLE_BYTES_PER_PARAM)
-def test_estimate_weight_memory_double_quant_roughly_halves_overhead(
+def test_estimate_weight_memory_double_quant_removes_three_quarters_of_the_overhead(
     precision: str, bytes_per_param: float
 ) -> None:
+    """Not half. Measured on a T4, and it matches SPEC's derivation exactly.
+
+    The second level stores the absmax as INT8 per block of 64 plus one FP32 scale per
+    block of 256 blocks: (8/64 + 32/(64*256)) / 8 bytes/param against a 4/64 baseline.
+    """
     num_params = 1_000_000
+    expected_ratio = (8 / 64 + 32 / (64 * 256)) / 8 / (4 / 64)
 
     single = estimate_weight_memory(num_params, precision, QuantizationConfig(enabled=True))
     double = estimate_weight_memory(
@@ -135,7 +141,9 @@ def test_estimate_weight_memory_double_quant_roughly_halves_overhead(
     single_overhead_mib = single - base_mib
     double_overhead_mib = double - base_mib
 
-    assert double_overhead_mib == pytest.approx(single_overhead_mib * 0.5, rel=1e-9)
+    assert double_overhead_mib == pytest.approx(
+        single_overhead_mib * expected_ratio, abs=bytes_to_mib(1)
+    )
     assert double < single
 
 

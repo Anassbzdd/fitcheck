@@ -285,12 +285,15 @@ def test_scale_overhead_is_not_skipped_under_quantization(llama: ModelConfig) ->
     )
 
 
-def test_double_quant_halves_the_scale_overhead(llama: ModelConfig) -> None:
+def test_double_quant_removes_three_quarters_of_the_scale_overhead(
+    llama: ModelConfig,
+) -> None:
     plain = estimate_inference_memory(llama, "fp16", 2048, 1, "nf4", False)
     doubled = estimate_inference_memory(llama, "fp16", 2048, 1, "nf4", True)
 
     quantized_params = _LLAMA_31_8B_PARAMS - llama.num_unquantized_params
-    saved = bytes_to_mib(quantized_params * 4 / 64) / 2
+    kept = (8 / 64 + 32 / (64 * 256)) / 8 / (4 / 64)
+    saved = bytes_to_mib(quantized_params * 4 / 64) * (1 - kept)
     assert plain.weight_mib - doubled.weight_mib == pytest.approx(saved, rel=1e-6)
 
 

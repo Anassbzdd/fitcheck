@@ -133,19 +133,21 @@ $$ \text{Overhead}^{DQ} = \frac{8\text{ bits}}{64} + \frac{32\text{ bits}}{64 \t
 Against the single-quantization $0.0625$ bytes/param (0.5 bits/param, FP32 absmax) that is a factor of
 $\mathbf{0.254}$ — double quantization removes about three quarters of the scale overhead, not half.
 
-> **Known simplification — the double-quant factor is 0.5 in code, 0.254 in this derivation.**
-> `memory/weights.py` applies `_DOUBLE_QUANT_OVERHEAD_FACTOR = 0.5`, which was calibrated when this
-> spec modelled the first-level scales as **FP16**: against a $0.03125$ bytes/param baseline, $0.0159$
-> really is a factor of $0.508 \approx 0.5$. Correcting the baseline to FP32 moved the ratio without
-> moving the constant, so the two now disagree.
+> **Settled by measurement, 2026-09-11.** `memory/weights.py` carried
+> `_DOUBLE_QUANT_OVERHEAD_FACTOR = 0.5` for a while, calibrated back when this spec modelled the
+> first-level scales as **FP16**: against a $0.03125$ bytes/param baseline, $0.0159$ really is a
+> factor of $0.508 \approx 0.5$. Correcting the baseline to FP32 moved the ratio without moving the
+> constant, so the two disagreed, and the spec deliberately refused to fix it by arithmetic alone.
 >
-> The cost is confined to `--double-quant`: fitcheck charges $0.03125$ bytes/param where the
-> derivation gives $0.0159$, so the scale term reads **208 MiB instead of 105.6 MiB** on the
-> Llama-3.1-8B quantized slice — a **~102 MiB over-count**, or 1.3% of $W_{base}$. It **over**-counts,
-> which is the safe direction for an OOM tool, and the golden number set does not use `--double-quant`
-> so nothing in the Appendix moves. Unmeasured either way: no ground-truth run has exercised the
-> double-quant path. Resolve it by measuring that path, not by adjusting the constant to match the
-> arithmetic.
+> Two T4 runs of SmolLM2-1.7B NF4 (`--quant nf4` with and without `--double-quant`, everything else
+> identical) resolved it. The harness reports resident scale bytes directly: **96 MiB** without,
+> **24 MiB** with. The quantized slice is 1,610,612,736 params, so 96 MiB confirms the $4/64$ FP32
+> baseline exactly, and 24 MiB matches the $0.0159$ bytes/param derivation (24.4 MiB) — not the
+> $0.03125$ the old constant charged (48 MiB). **The derivation was right and the constant was
+> wrong by 2×.** The factor is now $0.25390625$, and measured `W_base + W_lora` on that run moved
+> from $+1.9\%$ to $-0.1\%$.
+>
+> The golden number set does not use `--double-quant`, so nothing in the Appendix moves.
 
 **Parameter counting from config** (no weight download):
 
@@ -429,7 +431,8 @@ $$M_{infer} = W_{base} + \text{KV} + C_{overhead}, \qquad \text{KV} = 2 \times L
    **serving does not**, because nothing calls it. Billing 4 bytes/param here would over-count
    Llama-3.1-8B by 2,004.5 MiB on the embeddings alone. The count itself is
    `ModelConfig.num_unquantized_params`, shared with Component 1's training path. NF4 absmax scales
-   are charged on the quantized slice only, FP32 per block of 64, `--double-quant` halving them.
+   are charged on the quantized slice only, FP32 per block of 64, `--double-quant` cutting them to
+   ~25% (measured).
 6. **$C_{overhead}$ is in the total, and `estimate_inference_memory` is not where it is added.** The
    component function returns the two model-side terms separately, as an `InferenceMemory`;
    `estimator.estimate_inference` adds `estimate_overhead(weights, kv)` on top. Rendering the
@@ -775,7 +778,7 @@ Arguments:
 
 Model / quantization:
   --quant TEXT           none|nf4|int8 — BASE MODEL storage (default: none)
-  --double-quant         NF4 double quantization (halves scale overhead)
+  --double-quant         NF4 double quantization (cuts scale overhead ~75%)
   --qlora                Shorthand: --quant nf4 --precision bf16 --grad-checkpoint
 
 Training Options:
@@ -993,7 +996,7 @@ Arguments:
 Serving Options:
   --quant TEXT           none|nf4|int8 — BASE MODEL storage (default: none).
                          Embeddings, LM head and norms are never quantized.
-  --double-quant         NF4 double quantization (halves scale overhead)
+  --double-quant         NF4 double quantization (cuts scale overhead ~75%)
   --precision TEXT       fp32|fp16|bf16 — COMPUTE dtype: the KV cache and the
                          unquantized weight slice (default: fp16)
   --seq-len INT          Context length one request holds (default: 2048)
@@ -1063,7 +1066,7 @@ Sweep Axes (ranges, not one config):
 
 Held Fixed Across the Sweep:
   --quant TEXT           none|nf4|int8 — BASE MODEL storage (default: none)
-  --double-quant         NF4 double quantization (halves scale overhead)
+  --double-quant         NF4 double quantization (cuts scale overhead ~75%)
   --qlora                Shorthand: --quant nf4 --precision bf16 --grad-checkpoint
   --precision TEXT       fp32|fp16|bf16 — COMPUTE dtype (default: bf16)
   --lora-targets TEXT    Preset (minimal | standard | full) or modules (default: standard)

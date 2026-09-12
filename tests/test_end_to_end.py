@@ -259,7 +259,7 @@ def test_savings_hints_price_each_toggle_as_a_total_delta(
 
     assert "adamw -> adam8bit: saves 312 MiB" in hints
     assert "--flash-attn OFF: costs 0 MiB (currently ON)" in hints
-    assert "--grad-checkpoint OFF: costs +32,256 MiB (currently ON)" in hints
+    assert "--grad-checkpoint OFF: costs +51,072 MiB (currently ON)" in hints
     assert "--grad-accum 8: costs 0 MiB (accumulation is free)" in hints
 
 
@@ -267,45 +267,71 @@ def test_golden_report_carries_no_warning(golden_report: MemoryReport) -> None:
     assert golden_report.warnings == ()
 
 
-def test_report_warns_when_checkpointing_is_off(
+def test_no_checkpointing_no_longer_warns(
+    llama_model: ModelConfig, qlora_training: TrainingConfig
+) -> None:
+    """Task 9.2 measured this branch, so the 8.3 'derived, not measured' caveat is
+    gone. A warning saying the branch is unmeasured would now be false."""
+    for flash_attn in (True, False):
+        report = estimate(
+            llama_model,
+            replace(qlora_training, grad_checkpoint=False, flash_attn=flash_attn),
+            get_gpu("4090"),
+        )
+
+        assert report.warnings == ()
+
+
+def test_int8_warns_that_activations_are_a_lower_bound(
     llama_model: ModelConfig, qlora_training: TrainingConfig
 ) -> None:
     report = estimate(
-        llama_model,
-        replace(qlora_training, grad_checkpoint=False),
-        get_gpu("4090"),
+        llama_model, replace(qlora_training, quantization="int8"), get_gpu("4090")
     )
 
     assert len(report.warnings) == 1
-    assert "derived, not measured" in report.warnings[0]
-
-    eager = estimate(
-        llama_model,
-        replace(qlora_training, grad_checkpoint=False, flash_attn=False),
-        get_gpu("4090"),
-    )
-
-    assert "over-estimate" in eager.warnings[0]
-    assert eager.warnings != report.warnings
+    assert "lower bound" in report.warnings[0]
+    assert "docs/SPEC.md" in report.warnings[0]
 
 
-def test_warning_is_attached_without_moving_the_estimate(
+def test_int8_bills_activations_at_fp32(
     llama_model: ModelConfig, qlora_training: TrainingConfig
 ) -> None:
-    off = replace(qlora_training, grad_checkpoint=False)
+    """bitsandbytes upcasts the layer norms to fp32 and LLM.int8() takes that fp32
+    input at every linear, so gamma is 4 whatever --precision says. Measured on
+    TinyLlama: 1,620 MiB predicted at gamma=2 against 3,729 measured."""
+    int8 = replace(qlora_training, quantization="int8")
 
-    warned = estimate(llama_model, off, get_gpu("4090"))
-    expected = estimate_activation_memory(
-        llama_model, off.batch_size, off.seq_len, False, off.flash_attn, off.precision
+    assert estimate(
+        llama_model, int8, get_gpu("4090")
+    ).activation_mib == pytest.approx(
+        estimate_activation_memory(
+            llama_model,
+            int8.batch_size,
+            int8.seq_len,
+            int8.grad_checkpoint,
+            int8.flash_attn,
+            "fp32",
+        ),
+        rel=1e-9,
     )
 
-    assert warned.activation_mib == pytest.approx(expected, rel=1e-9)
-    assert warned.warnings
+    # Only the gamma-scaled terms move. A_logits is fp32 on every path, and it
+    # wins the max() here, so the checkpoint store is the whole of the increase.
+    assert estimate(llama_model, int8, get_gpu("4090")).activation_mib == 24_224.0
+    assert estimate(llama_model, qlora_training, get_gpu("4090")).activation_mib == 20_128.0
 
 
-def test_estimate_warnings_matches_the_report(qlora_training: TrainingConfig) -> None:
+def test_estimate_warnings_matches_the_report(
+    llama_model: ModelConfig, qlora_training: TrainingConfig
+) -> None:
     assert estimate_warnings(qlora_training) == ()
-    assert estimate_warnings(replace(qlora_training, grad_checkpoint=False))
+
+    int8 = replace(qlora_training, quantization="int8")
+
+    assert estimate_warnings(int8) == estimate(
+        llama_model, int8, get_gpu("4090")
+    ).warnings
 
 
 def test_report_is_json_serializable_for_ci(golden_report: MemoryReport) -> None:

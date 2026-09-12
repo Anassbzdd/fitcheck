@@ -17,6 +17,7 @@ from fitcheck.estimator import (
     MemoryReport,
     ServingConfig,
     TrainingConfig,
+    _activation_precision,
     _format_delta,
     activation_breakdown,
     estimate_warnings,
@@ -489,6 +490,8 @@ def render_inference_report(
         _verdict_line(report, verdict_style, glyphs),
         _inference_suggestion_grid(report, serving, glyphs),
     ]
+    if report.warnings:
+        body += [Text(""), _warning_grid(report.warnings, glyphs)]
 
     return Panel(
         Group(*body),
@@ -510,7 +513,8 @@ def use_ascii_glyphs(console: Console) -> bool:
 def _geometry_grid(config: ModelConfig, training: TrainingConfig) -> Table:
     trainable = trainable_params(config, training)
     ffn_ratio = config.intermediate_size / config.hidden_size
-    gamma = precision_to_bytes(training.precision)
+    activation_dtype = _activation_precision(training)
+    gamma = precision_to_bytes(activation_dtype)
 
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style=_STYLE_LABEL, justify="right")
@@ -537,7 +541,7 @@ def _geometry_grid(config: ModelConfig, training: TrainingConfig) -> Table:
             "trainable",
             f"{trainable:,}  ({_percent(_fraction(trainable, config.num_params))})",
         ),
-        ("activation dtype", f"{training.precision} ({gamma:g} bytes/element)"),
+        ("activation dtype", f"{activation_dtype} ({gamma:g} bytes/element)"),
     ):
         grid.add_row(label, Text(value))
     return grid
@@ -556,14 +560,22 @@ def _activation_detail_table(
     )
     table.add_column("MiB", justify="right")
 
-    table.add_row("A_layer, all saved tensors for one layer", _mib(parts["layer_mib"]))
+    retained = not training.grad_checkpoint
+    layer_key = "retained_layer_mib" if retained else "layer_mib"
+    attention_key = (
+        "retained_attention_matrix_mib" if retained else "attention_matrix_mib"
+    )
+
+    table.add_row("A_layer, all saved tensors for one layer", _mib(parts[layer_key]))
     if training.flash_attn:
         attention_note = "avoided by Flash Attention"
+    elif retained:
+        attention_note = "~3 copies retained per layer, no Flash Attention"
     else:
         attention_note = "included, no Flash Attention"
     table.add_row(
         f"  attention matrix (b, n_h, s, s): {attention_note}",
-        _mib(parts["attention_matrix_mib"]),
+        _mib(parts[attention_key]),
     )
     table.add_row(
         "A_logits, four fp32 copies of (b, s, V)", _mib(parts["logits_mib"])
@@ -589,7 +601,7 @@ def _activation_detail_table(
     else:
         table.add_row(
             f"x {layers} layers, every layer's tensors kept",
-            _mib(parts["layer_mib"] * layers),
+            _mib(parts["retained_layer_mib"] * layers),
         )
         table.add_row("+ A_logits", _mib(parts["logits_mib"]))
         charged_mib = parts["all_layers_mib"]
@@ -644,9 +656,9 @@ def _why_largest(name: str, config: ModelConfig, training: TrainingConfig) -> st
             )
         return (
             f"all {config.num_layers} layers keep their full set of saved tensors "
-            f"({_mib(layer_mib * config.num_layers)} MiB) plus {_mib(logits_mib)} MiB of "
-            "logits. --grad-checkpoint trades compute for most of the first part, and "
-            "none of the second."
+            f"({_mib(parts['retained_layer_mib'] * config.num_layers)} MiB) plus "
+            f"{_mib(logits_mib)} MiB of logits. --grad-checkpoint trades compute for "
+            "most of the first part, and none of the second."
         )
     if name == "optimizer states":
         if training.optimizer.strip().casefold() == "adamw":

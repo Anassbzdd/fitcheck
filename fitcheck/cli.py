@@ -356,6 +356,7 @@ def inference_report_to_dict(
             ),
             "max_concurrent": report.max_concurrent,
         },
+        "warnings": list(report.warnings),
     }
 
 

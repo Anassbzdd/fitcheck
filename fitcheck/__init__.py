@@ -26,6 +26,7 @@ from fitcheck.estimator import (
     estimate,
     estimate_inference,
     estimate_warnings,
+    inference_warnings,
 )
 from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu, list_gpus
 
@@ -55,6 +56,7 @@ __all__ = [
     "estimate",
     "estimate_inference",
     "estimate_warnings",
+    "inference_warnings",
     "fetch_model_config",
     "get_gpu",
     "list_gpus",

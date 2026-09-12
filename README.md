@@ -459,7 +459,7 @@ fixed share of VRAM.
 
 | | needs a GPU? | component breakdown? | LoRA / QLoRA training? | empirically validated? |
 |:---|:---|:---|:---|:---|
-| **fitcheck** | no | yes — all 6 | yes, GQA-aware | **yes — 10 measured runs** (see below) |
+| **fitcheck** | no | yes — all 6 | yes, GQA-aware | **yes — 33 measured runs** (see below) |
 | [`accelerate estimate-memory`](https://huggingface.co/docs/accelerate/main/en/usage_guides/model_size_estimator) | no | weights + a coarse training multiplier | no | not published |
 | [HF Model Memory Usage Space](https://huggingface.co/spaces/hf-accelerate/model-memory-usage) | no | same, in a web UI | no | not published |
 | [vram.asmirnov.xyz](https://vram.asmirnov.xyz/) | no | yes, but outdated and has many issues | partial | not published |
@@ -476,10 +476,21 @@ three real bugs, and the gaps that remain are listed rather than hidden.
 
 ## Validation
 
-Ten real training runs, all reproducible from [`fitcheck.ipynb`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck.ipynb) with
-[`scripts/measure.py`](https://github.com/Anassbzdd/fitcheck/blob/main/scripts/measure.py). One Tesla T4 (sm_75), FP16 compute, QLoRA r=32
-[q,k,v,o], AdamW with FP32 states, gradient checkpointing on. Every run loads the real model,
-applies real LoRA adapters, and runs real training steps.
+**33 real training and serving runs on one Tesla T4 (sm_75), FP16 compute.** Every run loads the real
+model, applies real LoRA adapters, and runs real steps — nothing here is simulated. Reproducible from
+[`fitcheck.ipynb`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck.ipynb) and
+[`fitcheck_infer.ipynb`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck_infer.ipynb) with
+[`scripts/measure.py`](https://github.com/Anassbzdd/fitcheck/blob/main/scripts/measure.py).
+
+**Library versions are part of the result.** Attention internals change between majors, so mixing rows
+from different stacks in one table without saying so would be misleading. The 23 newer rows ran on:
+
+```
+torch 2.10.0+cu128 | transformers 5.0.0 | peft 0.19.1 | Python 3.12 | CUDA 12.8
+```
+
+The ten original rows ran on an earlier stack (torch 2.x / transformers 4.x). They are kept in their
+own table below for that reason, not merged into one list.
 
 ### What "error" means here
 
@@ -493,13 +504,19 @@ correct formula look broken, so the harness compares three times, like with like
 
 Both are reported below, because showing only the flattering one would be dishonest.
 
-### Results
+Errors are signed as `(predicted − measured) / measured`, so a **negative** number means fitcheck
+predicted **less** than reality — the unsafe direction, the one that lets a run OOM after you were
+told it would fit.
+
+### Results — training, gradient checkpointing ON
+
+QLoRA r=32 [q,k,v,o], AdamW with FP32 states. Predicted and Measured are MiB on the tensors tier.
 
 | Model | Config | Attention | Predicted | Measured | Tensors err | Process err |
 |:---|:---|:---|---:|---:|---:|---:|
 | TinyLlama-1.1B | bs=2, seq=512 | eager | 1,834 | 1,849 | −0.8% | +9.4% |
-| TinyLlama-1.1B | bs=2, seq=1024 | eager | 2,778 | 2,876 | **−3.4%** | −7.2% |
-| TinyLlama-1.1B | bs=2, seq=2048 | eager | 6,702 | 6,655 | +0.7% | −3.2% |
+| TinyLlama-1.1B | bs=2, seq=1024 | eager | 2,849 | 2,876 | −1.0% | −5.2% |
+| TinyLlama-1.1B | bs=2, seq=2048 | eager | 6,844 | 6,655 | +2.8% | −1.3% |
 | TinyLlama-1.1B | bs=2, seq=512 | SDPA (no s²) | 1,834 | 1,847 | −0.7% | +6.7% |
 | TinyLlama-1.1B | bs=2, seq=1024 | SDPA (no s²) | 2,510 | 2,528 | −0.7% | +3.1% |
 | TinyLlama-1.1B | bs=2, seq=2048 | SDPA (no s²) | 3,862 | 3,897 | −0.9% | −4.9% |
@@ -508,27 +525,78 @@ Both are reported below, because showing only the flattering one would be dishon
 | Qwen2.5-1.5B | bs=2, seq=1024 | eager | 6,810 | 6,831 | −0.3% | +1.7% |
 | Qwen2.5-1.5B | bs=2, seq=1024 | SDPA (no s²) | 6,810 | 6,823 | −0.2% | +3.7% |
 
-Predicted and Measured are MiB on the tensors tier.
+Two newer rows, on the 2026-09 stack, cover paths the ten above do not — full fine-tuning, and a
+sequence past 2048. These use LoRA/full FT on an fp16 base, not QLoRA:
+
+| Model | Config | Attention | Predicted | Measured | Tensors err | Process err |
+|:---|:---|:---|---:|---:|---:|---:|
+| llama-160m | **full fine-tuning**, bs=2, seq=1024 | eager | 3,550 | 3,377 | +5.1% | −7.9% |
+| SmolLM2-360M | r=32, bs=1, **seq=4096** | eager | 5,765 | 4,909 | **+17.4%** | −12.0% |
+
+### Results — training, gradient checkpointing OFF
+
+This is the branch that had never been measured, and it is the **default**. LoRA r=32 [q,k,v,o] on an
+unquantized fp16 base — so these rows also close `--quant none`.
+
+| Model | Config | Attention | Predicted | Measured | Tensors err | Process err |
+|:---|:---|:---|---:|---:|---:|---:|
+| SmolLM2-135M | bs=2, seq=512 | SDPA (no s²) | 1,868 | 1,846 | +1.2% | +22.2% |
+| SmolLM2-135M | bs=4, seq=512 | SDPA (no s²) | 3,424 | 3,314 | +3.3% | +11.5% |
+| SmolLM2-135M | bs=1, seq=2048 | SDPA (no s²) | 3,424 | 3,314 | +3.3% | +11.5% |
+| SmolLM2-1.7B | bs=1, seq=512 | SDPA (no s²) | 5,184 | 5,112 | +1.4% | +8.9% |
+| SmolLM2-1.7B | bs=1, seq=512 | eager | 6,298 | 6,215 | +1.3% | +9.7% |
+| Qwen2.5-0.5B | bs=2, seq=512 | SDPA (no s²) | 4,702 | 4,504 | +4.4% | +2.7% |
+| Qwen2.5-0.5B | bs=2, seq=512 | eager | 5,677 | 5,486 | +3.5% | +3.2% |
+| Qwen2.5-1.5B | bs=1, seq=512 | SDPA (no s²) | 5,636 | 5,552 | +1.5% | +8.7% |
+| Qwen2.5-1.5B | bs=1, seq=512 | eager | 6,124 | 5,999 | +2.1% | +7.2% |
+| gemma-2-2b | bs=1, seq=512 | SDPA (no s²) | 8,767 | 8,993 | −2.5% | +2.8% |
+| gemma-2-2b | bs=1, seq=512 | eager | 9,069 | 9,356 | −3.1% | +1.6% |
+
+The first three rows are the same 2,048 tokens arranged three ways. All three measured **3,001 MiB of
+activations, identical to the MiB**, while `s²` spans 16× across them — which is how we know the
+memory the old formula was missing is per-token, and not hiding in an `s²` term.
+
+### Results — serving (`fitcheck infer`)
+
+| Model | Config | Concurrent | Tensors err |
+|:---|:---|---:|---:|
+| TinyLlama-1.1B | fp16, seq=2048 | 1 | −2.8% |
+| SmolLM2-1.7B | nf4, seq=2048 | 4 | −3.4% |
+| Qwen2.5-1.5B | fp16, seq=2048 | 8 | −8.9% |
+| TinyLlama-1.1B | fp16, seq=2048 | 16 | **−23.2%** |
+
+**The KV cache formula is exact — +0.0% on all four**, including heavy GQA (Qwen2.5-1.5B, 2 KV heads)
+and an NF4 base, with weights inside 0.1%. Every bit of the error above is the *transient* work of a
+decode step, which `fitcheck infer` does not model at all: at 16 concurrent requests the peak was
+3,650 MiB against 2,812 MiB resident, so 838 MiB of it. It grows with concurrency, which is the
+direction that hurts, because nobody serves at concurrency 1. **`fitcheck infer` prints a warning
+above four concurrent requests** rather than presenting the number as fact.
+
+### Summary
 
 | tier | max abs error | mean abs error |
 |:---|---:|---:|
-| **tensors** — the five physical formulas | **3.4%** | 0.8% |
-| `A_act` alone, measured by subtraction | 4.6% | 0.9% |
-| **process** — the full total | **14.7%** | 5.5% |
+| **tensors** — the five physical formulas, all 23 training rows | **17.4%** | 2.2% |
+| tensors, excluding the one seq-4096 row | **5.1%** | 1.5% |
+| **process** — the full total | **22.2%** | 7.5% |
 
 **How to read this.** The physical formulas are right to a few percent. `C_overhead` is not — the
-process tier differs from the tensors tier only by that one heuristic, and every bit of the extra
-error is there. Its fragmentation model assumes a flat 5%; measured fragmentation ran from 6% to 32%,
-and is worst under eager attention because transient score matrices churn the allocator pool. That is
-the next thing to fix.
+process tier differs from the tensors tier only by that one heuristic, and essentially all of the
+extra error is there. Its fragmentation model assumes a flat 5%; measured `reserved/allocated` ran
+from **7% to 49%**, worst at long sequences and under eager attention, because big short-lived tensors
+churn the allocator pool. The `_BASE_CONTEXT_MIB` constant of 500 is separately wrong — the T4
+measured **133–147 MiB** on every one of the 33 runs — and the two errors partly cancel, so they have
+to be fitted together or fixing one will visibly worsen the other. That is the next thing to fix.
 
-Errors are signed as `(predicted − measured) / measured`, so a **negative** number means fitcheck
-predicted **less** than reality — the unsafe direction.
+The one tensors-tier row above 10% is an overhead row too: SmolLM2-360M at seq 4096 reserved
+7,304 MiB against 4,909 allocated, the worst fragmentation this project has measured.
 
 ### What these runs changed
 
-They were not a rubber stamp. Three things in the activation formula were wrong, and each was found
-by measurement rather than by re-reading the derivation:
+They were not a rubber stamp. **Five** things in the formulas were wrong, and every one was found by
+measurement rather than by re-reading the derivation.
+
+From the first twenty runs:
 
 1. **`A_act` summed the LM-head hump and the layer recompute.** They never coexist — the FP32 logits
    are freed before the backward pass reaches a decoder layer — so the peak is a `max`, not a sum.
@@ -537,9 +605,37 @@ by measurement rather than by re-reading the derivation:
 3. **The eager attention score matrix was billed once.** It is materialized about nine times across
    forward and backward, including two FP32 softmax copies — `9γ`, not `γ`.
 
-Across the wider development set of twenty runs, worst-case error fell from **36.1% to 4.8%**.
+Worst-case error across those twenty fell from **36.1% to 4.8%**.
 
-The third one was found by running the same config twice, changing only the attention kernel: the
+From the thirteen newest runs:
+
+4. **The no-checkpointing branch was wrong twice, in opposite directions.** The per-layer bracket was
+   about 2.5× too small, *and* the `9γ` score matrix — a constant fitted with checkpointing on, where
+   only one layer is ever live — was charged in all `L` layers at once. The over-count was the bigger
+   of the two, so the total looked "safely too high" and the under-count stayed hidden, until the
+   SDPA rows, which have no score matrix at all, exposed it alone at **−32.6%** — the unsafe
+   direction. Measured: the bracket's hidden-width total is **15**, not 6, and a layer *retains*
+   about **2.9** score-matrix copies when it is not the one being differentiated. Worst-case error on
+   that branch fell from **98.3% to 5.9%**, and the checkpointed branch did not move.
+5. **LoRA adapters are FP32 even on an unquantized base.** All 14 LoRA runs showed gradients at
+   *exactly* −50% and adapter weights at exactly half — nine of them with `--quant none`. peft's
+   `autocast_adapter_dtype=True` default upcasts adapters whenever the base is fp16 or bf16, not only
+   when it is quantized, and a gradient follows its parameter's dtype. The project's own documented
+   rule said "whenever the base is quantized"; measurement widened it to "always".
+
+Two more results are worth recording because they are *not* bugs:
+
+- **Full fine-tuning splits its terms differently from the harness, and the total is still exact.**
+  fitcheck keeps the FP32 master weight copy inside `S_optim` at 12 bytes/param; the harness upcasts
+  the parameters in place, so the master copy lands in weights instead. That reads as +50% / −50% /
+  −50% across three terms and sums to **2,479 MiB against 2,479 measured, exact to the MiB**. Real
+  mixed-precision training keeps a separate master copy, so fitcheck's split is the realistic one and
+  the harness is the unusual one. Correcting any one of those terms would break a perfect total.
+- **The `--double-quant` constant was settled by measuring, not by deriving.** Measured scale bytes:
+  96 MiB without it, **24 MiB** with. The spec's derivation predicted 24.4; the shipped `×0.5`
+  predicted 48. `W_base + W_lora` on that run moved from +1.9% to **−0.1%**.
+
+The `9γ` result was found by running the same config twice, changing only the attention kernel: the
 difference between the two peaks *is* the cost of the score matrix. On a T4 that meant using SDPA's
 memory-efficient backend, which — like Flash Attention — never builds the matrix, but unlike Flash
 Attention runs on pre-Ampere hardware.
@@ -555,27 +651,39 @@ hump to overtake the LM head.
 
 ### What is not measured
 
-Be as clear about the gaps as about the results:
+Be as clear about the gaps as about the results. This list is much shorter than it was — gradient
+checkpointing off, `--quant none`, `--double-quant`, full fine-tuning, seq 4096 and the serving path
+all have measured rows now — and what is left mostly needs hardware nobody here has.
 
-- **Any GPU other than this T4.** No Ampere or newer card, so no BF16 and no real FlashAttention-2 —
-  the flash code path is validated only through SDPA's memory-efficient backend as a stand-in.
-- **Gradient checkpointing off.** `L × A_layer + A_logits` is derived, never measured — and it is
-  the default, so **fitcheck prints a warning on this path** rather than presenting it with the same
-  confidence as the checkpointed one. With eager attention it is expected to over-estimate: the `9γ`
-  score matrix was fitted with checkpointing on, where exactly one layer is live, and this branch
-  charges all nine copies in every layer at once. Read the number as an upper bound. Splitting `9γ`
-  into a retained part and a transient part is the real fix, and it needs a measured row first —
-  inventing the split is how the estimate was wrong by 36% once already.
-- **`--quant none`, `--quant int8`, full fine-tuning, FP32 compute.** Code paths with no measured row.
-- **Sequences beyond 2048**, where the `9γ` coefficient multiplies an `s²` term.
-- **`fitcheck infer` in full.** Every measured row is a training run. The serving path
-  (resident weights + KV cache) shares the weight formula, which is measured, but the cache
-  term and the serving overhead constant have no measured row of their own.
+- **Any GPU other than this T4.** All 33 runs are one Tesla T4 (sm_75). That means **no BF16 and no
+  real FlashAttention-2** — sm_75 supports neither — so the flash code path is validated only through
+  SDPA's memory-efficient backend as a stand-in. This is now the single largest gap in the project.
+- **`--quant int8` beyond one model.** One TinyLlama run measured activations **−56.6%** low. The
+  cause is identified: `prepare_model_for_kbit_training` upcasts the layer norms to FP32 and
+  LLM.int8() takes that FP32 input at every linear, so fitcheck now bills int8 activations at `γ=4`
+  regardless of `--precision`. That takes activations on the measured row from **−56.6% to −9.3%**,
+  and the tensors tier from −38.9% to −5.7%. The rest is LLM.int8()'s own fp16 outlier buffers,
+  which are not modelled. **fitcheck warns on `--quant int8`** and calls the
+  figure a lower bound. One model is exactly how a 36% error happened here once before; a second int8
+  row on a different model is owed before the mechanism can be called general.
+- **Serving transients, and serving above 16 concurrent requests.** The KV cache formula is exact, but
+  the decode-step transient is not modelled and reached −23.2% at 16 concurrent. No coefficient is
+  fitted for it, deliberately: 838 MiB is far larger than any mechanism yet identified — the logits
+  row is about 2 MiB at that shape — and one data point cannot settle it. `fitcheck infer` warns
+  above four concurrent requests instead. Closing it properly needs a concurrency sweep.
+- **Sequences beyond 4096**, where the eager coefficient multiplies an `s²` term.
+- **MoE models**, which are refused rather than estimated — see [Model support](#model-support).
 - **Every GPU entry except the T4.** The T4 used to claim 15,360 MiB usable of 16,384 when the card
   actually reports 14,912 MiB total — vendor GB treated as GiB, unsafe direction — and is now
   corrected to its measured `14_912 / 14_000`. It is the only row in `gpu_db.py` backed by a
   measurement. The rest are estimates, and `h200` / `b200` deliberately take the `usable_mib` that
-  is safe under the pessimistic reading of their vendor GB until someone measures them.
+  is safe under the pessimistic reading of their vendor GB.
+
+One open question is recorded rather than hidden: the activation bracket's split between `h` and
+`n_h·d_k` — shipped as `12h + 3·n_h·d_k` — is decided by **one model**. Gemma-2 is the only measured
+model where those two widths differ, and it also has four layer norms per layer instead of two, which
+pushes the same coefficient. One model, two effects. The hidden-width *total* of 15 is solid; the
+split between the two halves is not, and a second model with `n_h·d_k ≠ h` would settle it.
 
 Reproducing any of this needs one command:
 
@@ -603,16 +711,22 @@ params only — 8 bytes/param for AdamW, whose states stay FP32 even when you tr
 gradients, activations, and CUDA overhead. `estimator.py` orchestrates the six and returns a
 `MemoryReport`.
 
-Two dtype rules catch people out, and both come from the same peft call. On a **quantized** base,
-`prepare_model_for_kbit_training` upcasts everything trainable to FP32 — so QLoRA's adapters are
-FP32, not the bf16 you asked for, and the gradients follow them there. `--precision` is the
-**compute** dtype and drives activations; `--quant` is how the base is **stored**. They are separate
-axes on purpose.
+Two dtype rules catch people out. **LoRA adapters are held in FP32 on every path** — not the bf16
+you asked for — and gradients follow their parameter's dtype, so they are FP32 too. Two different
+peft mechanisms land in the same place: `prepare_model_for_kbit_training` on a quantized base, and
+`get_peft_model`'s `autocast_adapter_dtype=True` default on an unquantized fp16/bf16 one. Measured on
+14 runs out of 14. And `--precision` is the **compute** dtype, driving activations, while `--quant`
+is how the base is **stored** — separate axes on purpose. (The one place they interact:
+`--quant int8` forces activations to FP32, because bitsandbytes feeds LLM.int8() FP32 inputs.)
 
-Activations are the hard term and the one worth reading about. `A_layer` sums the twelve tensors
-autograd saves per decoder layer, plus the `(b, n_h, s, s)` attention score matrix when Flash
-Attention is off — billed at **9γ**, because eager attention materializes it about nine times across
-forward and backward. `A_logits` is four FP32 copies of the `(b, s, V)` tensor, and for a
+Activations are the hard term and the one worth reading about. `A_layer` charges **15 hidden-width
+tensors** per decoder layer plus `3 × intermediate_size` for the FFN — the count is measured, not
+derived; the derivation in `docs/Blueprint.md` names six of the fifteen and the other nine are an
+open question — plus the `(b, n_h, s, s)` attention score matrix when Flash Attention is off.
+That score matrix has **two** coefficients, because it is two different quantities: with gradient
+checkpointing on, one layer is live and peaks at about **9** copies of it; with checkpointing off,
+every layer is live and each one *retains* about **2.9**. Using the first number in the second
+situation over-estimated by 98%. `A_logits` is four FP32 copies of the `(b, s, V)` tensor, and for a
 large-vocabulary model it is usually the single biggest line in the whole budget.
 
 Under gradient checkpointing the peak is **not** a sum of those:
@@ -624,7 +738,8 @@ A_act = 2L·γ·b·s·h  +  max(A_logits, A_layer)
 Only the checkpoints are resident for the whole backward pass. The LM-head hump and one layer's
 recompute are both transient and never overlap, so the peak takes whichever is larger — adding them
 prices a moment that never happens. This is measured, not assumed, and getting it wrong is what made
-v0.1.1 under-predict by up to 36%.
+v0.1.1 under-predict by up to 36%. With checkpointing **off**, every layer keeps its own saved set
+and the formula becomes `L × A_layer + A_logits` with the retained score-matrix count.
 
 `max_batch_size` is found by bisecting the whole estimator and flooring, never by extrapolating from
 one point: `total(b)` is piecewise linear, with a kink wherever that `max` flips branches.

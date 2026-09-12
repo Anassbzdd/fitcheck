@@ -8,7 +8,6 @@ from fitcheck.config_parser import ModelConfig
 from fitcheck.gpu_db import GpuSpec
 from fitcheck.memory.activations import (
     _activation_parts,
-    _derived_branch_warning,
     estimate_activation_memory,
 )
 from fitcheck.memory.gradients import estimate_gradient_memory
@@ -26,6 +25,23 @@ from fitcheck.utils import bytes_to_mib, precision_to_bytes
 _QUANTIZATIONS = ("none", "nf4", "int8")
 _MAX_SEARCH_CEILING = 1 << 20
 _HINT_GRAD_ACCUM_STEPS = 8
+
+_SERVING_CONCURRENCY_WARN_AT = 4
+
+_WARNING_INT8_ACTIVATIONS = (
+    "--quant int8 activations are billed at fp32, because LLM.int8() receives fp32 "
+    "inputs from the upcast layer norms. That mechanism is measured, but on ONE model "
+    "only, and it still leaves the estimate about 9% low on activations -- LLM.int8() "
+    "keeps its own fp16 outlier buffers, which fitcheck does not model. Treat an int8 "
+    "estimate as a lower bound. See docs/SPEC.md 3.7."
+)
+
+_WARNING_SERVING_CONCURRENCY = (
+    "fitcheck infer models resident memory only -- weights plus KV cache. The transient "
+    "work of a decode step is not modelled, and it grows with concurrency: measured "
+    "-2.8% at 1 concurrent request and -23.2% at 16, on a T4. Above a handful of "
+    "concurrent requests, treat the total as a lower bound. See docs/SPEC.md 3.7."
+)
 
 
 @dataclass(frozen=True)
@@ -85,6 +101,7 @@ class InferenceReport:
     headroom_mib: float
     fits: bool
     max_concurrent: int
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -164,26 +181,37 @@ def activation_breakdown(
         training.batch_size,
         training.seq_len,
         training.flash_attn,
-        precision_to_bytes(training.precision),
+        precision_to_bytes(_activation_precision(training)),
     )
 
     layer_mib = bytes_to_mib(parts.layer_bytes)
+    retained_layer_mib = bytes_to_mib(parts.retained_layer_bytes)
     logits_mib = bytes_to_mib(parts.logits_bytes)
     store_mib = bytes_to_mib(parts.checkpoint_store_bytes)
 
     return {
         "layer_mib": layer_mib,
+        "retained_layer_mib": retained_layer_mib,
         "logits_mib": logits_mib,
         "attention_matrix_mib": bytes_to_mib(parts.attention_matrix_bytes),
+        "retained_attention_matrix_mib": bytes_to_mib(
+            parts.retained_attention_matrix_bytes
+        ),
         "checkpoint_store_mib": store_mib,
         "resident_hump_mib": max(logits_mib, layer_mib),
-        "all_layers_mib": layer_mib * config.num_layers + logits_mib,
+        "all_layers_mib": retained_layer_mib * config.num_layers + logits_mib,
         "checkpointed_mib": store_mib + max(logits_mib, layer_mib),
     }
 
 
 def _adapter_precision(training: TrainingConfig) -> str:
-    return "fp32" if training.quantization != "none" else training.precision
+    return "fp32"
+
+
+def _activation_precision(training: TrainingConfig) -> str:
+    if training.quantization.strip().casefold() == "int8":
+        return "fp32"
+    return training.precision
 
 
 def _base_weight_memory(config: ModelConfig, training: TrainingConfig) -> float:
@@ -246,7 +274,7 @@ def _compute_components(config: ModelConfig, training: TrainingConfig) -> _Compo
         training.seq_len,
         training.grad_checkpoint,
         training.flash_attn,
-        training.precision,
+        _activation_precision(training),
     )
 
     return _Components(
@@ -332,8 +360,16 @@ def _savings_hints(
 
 
 def estimate_warnings(training: TrainingConfig) -> tuple[str, ...]:
-    warning = _derived_branch_warning(training.grad_checkpoint, training.flash_attn)
-    return (warning,) if warning is not None else ()
+    if _validate_quantization(training.quantization) == "int8":
+        return (_WARNING_INT8_ACTIVATIONS,)
+    return ()
+
+
+def inference_warnings(serving: ServingConfig) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if serving.num_concurrent > _SERVING_CONCURRENCY_WARN_AT:
+        warnings.append(_WARNING_SERVING_CONCURRENCY)
+    return tuple(warnings)
 
 
 def estimate(
@@ -421,4 +457,5 @@ def estimate_inference(
             ),
             capacity_mib,
         ),
+        warnings=inference_warnings(serving_config),
     )

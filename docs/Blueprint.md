@@ -70,7 +70,7 @@ Welcome to fitcheck interactive terminal. Type a command or 'help'.
   not quantize and peft upcasts to FP32.
 - Gradient checkpointing is ON: you store two hidden-state tensors per layer
   (4,096 MiB) plus the larger of the LM-head hump (16,032 MiB) and one layer's full
-  activations (1,088 MiB) — a max, not a sum, because those two never coexist.
+  activations (1,648 MiB) — a max, not a sum, because those two never coexist.
 - Flash Attention is ON but saves nothing here: the LM-head hump wins that max either
   way. It would start paying at longer sequences.
 - LoRA adds 208 MiB of trainable weights and 416 MiB of AdamW states. Optimizer states
@@ -260,22 +260,35 @@ These are stored in $\gamma_{adapter}$, the dtype the trainable parameters are a
 
 $$\text{LoRA Memory} = \text{Total LoRA params} \times \gamma_{adapter}$$
 
-$$\gamma_{adapter} = \begin{cases} 4 \text{ bytes (FP32)} & \text{the base is quantized} \\ \gamma \text{ (the compute dtype)} & \text{the base is not} \end{cases}$$
+$$\gamma_{adapter} = 4 \text{ bytes (FP32), on every LoRA path}$$
 
 > [!WARNING]
-> **On a quantized base the adapters are FP32, whatever `--precision` says.** It is tempting to reason
-> that adapters are trainable, therefore they follow the compute dtype, therefore QLoRA trains BF16
-> adapters on a 4-bit base — and that is the version of the story everyone tells. What actually
-> happens is that peft's `prepare_model_for_kbit_training` upcasts every trainable parameter to FP32,
-> the same call that upcasts the embeddings and LM head in Component 1. It never consults
-> `--precision`.
+> **LoRA adapters are FP32, whatever `--precision` says — and it is not only QLoRA.** It is tempting
+> to reason that adapters are trainable, therefore they follow the compute dtype, therefore LoRA
+> trains BF16 adapters. That is the version of the story everyone tells, and it is wrong twice over.
+>
+> Two different peft mechanisms land in the same place:
+>
+> - On a **quantized** base, `prepare_model_for_kbit_training` upcasts every trainable parameter to
+>   FP32 — the same call that upcasts the embeddings and LM head in Component 1.
+> - On an **unquantized** fp16/bf16 base, `get_peft_model`'s `autocast_adapter_dtype=True` default
+>   does the same thing.
+>
+> Neither consults `--precision`. An FP32 base gives FP32 adapters anyway. There is no reachable
+> configuration where they are half precision.
 >
 > So the golden config's adapters cost **208 MiB, not 104**, and the gradients that follow them cost
-> 208 rather than 104 as well (Component 4). Believing the BF16 version under-counts a QLoRA run by
-> 208 MiB — small next to the activations, but low, and low is the direction that OOMs someone.
+> 208 rather than 104 as well (Component 4). Believing the BF16 version under-counts by half on two
+> components at once — and low is the direction that OOMs someone.
 >
-> The 4-bit base with higher-precision adapters is still the asymmetry that makes the method work.
-> The adapters are simply further up than the folklore suggests.
+> **This one was caught by measurement, not by reading peft's source.** All 14 measured LoRA runs
+> showed gradients at *exactly* −50.0% — not approximately, exactly, on every row, including nine
+> with `--quant none`. An error that lands on a round number in every single run is not noise; it is
+> a factor of two hiding in the model. This document, and the project's own written rule, previously
+> said "whenever the base is quantized". The measurement widened it to "always".
+>
+> The 4-bit base with higher-precision adapters is still the asymmetry that makes QLoRA work. The
+> adapters are simply further up than the folklore suggests, on every path.
 
 ### Component 3: Optimizer States
 
@@ -306,10 +319,11 @@ dtype:
 
 $$\text{Gradient Memory} = \text{trainable\_params} \times \gamma_{adapter}$$
 
-The distinction only bites when the two differ, which is exactly the QLoRA case: bf16 compute, FP32
-adapters, and therefore **FP32 gradients**. Read this term off `--precision` and you halve it on every
-QLoRA run. Under full fine-tuning there is no upcast and $\gamma_{adapter} = \gamma$, so the simpler
-reading is right there.
+The distinction bites on **every LoRA run**, not just QLoRA: peft holds the adapters in FP32 whether
+the base is quantized or not (Component 2), so gradients are FP32 too. Read this term off
+`--precision` and you halve it every time — measured at exactly −50.0% on 14 runs out of 14. Only
+under **full fine-tuning** is there no upcast, and there $\gamma_{adapter} = \gamma$, so the simpler
+reading is right.
 
 With gradient accumulation, gradients are **not** multiplied by the accumulation steps — they're accumulated in-place into the same tensor.
 
@@ -341,7 +355,7 @@ x  = x + down_proj(silu(g) * u)           #     SAVED ×1 — down_proj's input
 | 4 | Attention output                | $(b, s, n_hd_k)$      | $\gamma bs \cdot n_hd_k$             | Also `o_proj`'s input — same storage   |
 | 5 | Post-attn residual sum          | $(b, s, h)$           | $\gamma bsh$                         | MLP-norm backward needs its input      |
 | 6 | MLP-norm output                 | $(b, s, h)$           | $\gamma bsh$                         | Input to `gate_proj` and `up_proj`     |
-|   | **subtotal**                    |                       | $\mathbf{\gamma bs(4h + 2n_hd_k)}$   | $= \gamma bs \cdot 6h$ when $n_hd_k = h$ |
+|   | **subtotal (derived)**          |                       | $\mathbf{\gamma bs(4h + 2n_hd_k)}$   | $= \gamma bs \cdot 6h$ when $n_hd_k = h$ — but **measured at $15h$**, see below |
 | 7 | K projection output             | $(b, n_{kv}, s, d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA**                    |
 | 8 | V projection output             | $(b, n_{kv}, s, d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA**                    |
 | 9 | Attention score matrix          | $(b, n_h, s, s)$      | $\mathbf{9\gamma bn_hs^2}$           | **Removed by Flash Attention** — nine copies, not one, and all nine live *within one layer* |
@@ -362,9 +376,30 @@ x  = x + down_proj(silu(g) * u)           #     SAVED ×1 — down_proj's input
 > Flash Attention's `logsumexp` — $(b, n_h, s)$ in FP32 — *is* saved, but at ~1 MiB per layer here it is
 > rounding error next to the terms above.
 
+> [!IMPORTANT]
+> **The table above is the derivation. It is not the number that ships.** It accounts for six
+> hidden-width tensors per layer, and each row of it is sound — you can follow every one to a real
+> autograd rule. But when the no-checkpointing branch was finally measured (33 T4 runs, 2026-09-12),
+> the implied count came out at **fifteen**, not six, consistently across nine models.
+>
+> Both facts are kept here on purpose, because the gap between them is the most honest thing in this
+> document. The derivation explains the **shape** of the formula — which terms scale with tokens,
+> which with $s^2$, which with $d_{ff}$ — and measurement confirms that shape exactly: the $3d_{ff}$
+> is right, the $s^2$ term is right, and three runs with identical token counts but 16× different
+> $s^2$ measured the same activation memory to the MiB. What the derivation got wrong is only the
+> **count** — and for a count, a measurement beats a derivation every time.
+>
+> Nine tensors per layer are therefore unaccounted for by name. Framework bookkeeping, `.contiguous()`
+> copies and dtype-cast intermediates are the likely candidates, but "likely" is not "measured", so
+> this document does not pretend to know. **That is a real open question, written down rather than
+> papered over.**
+
 **General formula per layer (no gradient checkpointing):**
 
-$$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + 9\gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}]$$
+$$A_{layer} = \gamma bs\left[15h + 1h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + c\,\gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}]$$
+
+where $c$, the number of score-matrix copies, **is 9 with gradient checkpointing on and 2.9 with it
+off** — see the two-regimes warning below.
 
 Where:
 - $s$ = sequence length
@@ -377,12 +412,33 @@ Where:
 - $\gamma$ = bytes per activation element, from the **compute** precision (2 for BF16/FP16, 4 for FP32)
 
 > [!NOTE]
-> **The $6h$ form quietly assumes $n_h d_k = h$.** Rows 3 and 4 are really $n_h d_k$ wide and rows 7–8
-> are $n_{kv}d_k$ wide, so the bracket without any assumption is
-> $4h + 2n_hd_k + 2n_{kv}d_k + 3d_{ff}$. Substitute $n_hd_k = h$ and you get the $6h$ form back exactly
-> — which is why every number in this document is unaffected. It matters for Gemma-2-9B, where
-> $16 \times 256 = 4096$ against $h = 3584$, so the $6h$ form counts its Q and attention-output tensors
-> 12.5% short. Teach the $6h$ form, implement the other one.
+> **The $15h$ form quietly assumes $n_h d_k = h$.** The bracket that actually ships is
+> $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$. Substitute $n_hd_k = h$ and you get the $15h$ form back
+> exactly — which is why every number in this document is unaffected. It matters for Gemma-2-9B,
+> where $16 \times 256 = 4096$ against $h = 3584$. Teach the $15h$ form, implement the other one.
+>
+> **And be honest about the 12 against the 3.** Their *sum* is what is measured: every bracket within
+> a point of the best fit adds up to 15. The split between them rests on **one model** — Gemma-2 is
+> the only measured model where $n_hd_k \ne h$, and it also has four layer norms per layer instead of
+> two, which pushes the same coefficient. One model, two effects. The 12 and the 3 are the best guess
+> available, not a result.
+
+> [!WARNING]
+> **The score matrix has two coefficients, and using the wrong one cost 98%.**
+> The nine materializations in row 9 are all *within one layer* — they are what that layer **peaks
+> at** while it is being differentiated. With gradient checkpointing on, exactly one layer is ever
+> live, so 9 is right. With checkpointing **off**, every layer is live at once, and what matters is
+> not what a layer peaks at but what it **keeps**: measured at about **2.9** copies.
+>
+> The old formula used 9 for both, which charged nine simultaneous copies in all $L$ layers —
+> physically impossible, and it over-estimated SmolLM2-135M by **98.3%**. The measurement is clean:
+> plot $(A_{eager} - A_{sdpa}) / (\gamma bn_hs^2)$ against layer count over nine eager/SDPA model
+> pairs and you get a straight line through the origin, slope **2.92**. A line through the origin
+> means there is no extra transient sitting on top — just a fixed number of copies retained per layer.
+>
+> The general lesson is worth more than the constant: **a coefficient carries the regime it was
+> fitted in.** Reusing one outside its regime feels like reusing knowledge and is actually inventing
+> a number.
 
 > [!WARNING]
 > **Don't hardcode $\gamma = 2$.** It is tempting, because BF16 training is the overwhelmingly common case and
@@ -484,20 +540,28 @@ For the golden config the stack costs $2 \times 32 \times 64 = 4{,}096$ MiB, and
 $A_{logits} = 16{,}032$ over $A_{layer} = 1{,}088$, giving $A_{act} = 20{,}128$ MiB.
 
 > [!WARNING]
-> **The same mistake, one level down — and it is still in the code.** The $9\gamma$ score matrix is a
+> **The same mistake, one level down — and this is how it was found.** The $9\gamma$ score matrix is a
 > transient *inside one layer*, and the coefficient was fitted with checkpointing on, where only one
-> layer is ever live. The no-checkpointing branch multiplies all of $A_{layer}$ by $L$, so it charges
-> nine copies of the score matrix in every layer at the same time — twenty-two rooms of chairs for
-> people who are never all in the building at once. For TinyLlama at $b{=}1,\ s{=}2048$ that is
-> 50,688 MiB of a 54,240 MiB estimate.
+> layer is ever live. The no-checkpointing branch used to multiply all of $A_{layer}$ by $L$, so it
+> charged nine copies of the score matrix in every layer at the same time — twenty-two rooms of
+> chairs for people who are never all in the building at once. For TinyLlama at $b{=}1,\ s{=}2048$
+> that was 50,688 MiB of a 54,240 MiB estimate.
 >
-> Fixing it means splitting the nine into a **retained** part (the softmax output really is saved in
-> every layer) and a **transient** part (the other copies peak only where backward currently is).
-> The tempting move is to reason out the split and ship it. Do not: this document has been wrong
-> three times about exactly these constants, and every correction came from a measurement, not from
-> harder thinking. Until a no-checkpointing run exists, `fitcheck` keeps the formula and **prints a
-> warning** that the branch is derived and over-estimates. An estimate that announces its own
-> weakness is honest; one that hides it is the P1 bug wearing different clothes.
+> **Resolved by measurement, 2026-09-12.** The fix is to split the nine into a **retained** part
+> (what every layer keeps) and a **transient** part (what peaks only where backward currently is).
+> The tempting move was to reason out that split and ship it. The project refused to, on the grounds
+> that it had already been wrong three times about exactly these constants and every correction had
+> come from a measurement rather than from harder thinking.
+>
+> **That refusal was justified.** The reasoned-out guess was retained = 2, transient = 7. The
+> measurement says retained = **2.9** and transient = **0** — there is no separate transient term at
+> all. And it exposed a second error the reasoning had missed entirely: the bracket itself was about
+> 2.5× too small, which had been hiding *underneath* the over-count in the opposite direction. Had
+> the guess shipped, it would have fixed the visible half and left an unsafe under-estimate behind.
+>
+> The warning the tool printed in the meantime is now gone, because the branch is measured. An
+> estimate that announces its own weakness is honest; one that keeps announcing a weakness it no
+> longer has is just noise.
 
 #### Component 5b: The logits — the term this document originally forgot
 
@@ -713,13 +777,13 @@ Using the general formula with $d_{ff} = 14336$ (from Llama 3.1-8B `config.json`
 
 **Per-layer activations (Flash Attention removes the $s^2$ term), with $\gamma = 2$ for BF16:**
 
-$$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right]$$
+$$A_{layer} = \gamma bs\left[15h + 1h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right]$$
 
-$$= 2 \times 4 \times 2048 \times \left[6 \times 4096 + 2 \times 4096 \times \frac{8}{32} + 3 \times 14336\right]$$
+$$= 2 \times 4 \times 2048 \times \left[15 \times 4096 + 1 \times 4096 \times \frac{8}{32} + 3 \times 14336\right]$$
 
-$$= 16{,}384 \times \left[24{,}576 + 2{,}048 + 43{,}008\right]$$
+$$= 16{,}384 \times \left[61{,}440 + 1{,}024 + 43{,}008\right]$$
 
-$$= 16{,}384 \times 69{,}632 = 1{,}140{,}850{,}688 \text{ bytes} = 1{,}088\text{ MiB}$$
+$$= 16{,}384 \times 105{,}472 = 1{,}727{,}983{,}616 \text{ bytes} = 1{,}648\text{ MiB}$$
 
 **With gradient checkpointing (checkpoint every layer):**
 
@@ -730,26 +794,34 @@ $$2L \times \gamma bsh = 2 \times 32 \times 2 \times 4 \times 2048 \times 4096 =
 
 Then the peak adds whichever transient hump is larger — the LM head, or one layer's recompute:
 
-$$A_{layer} = 1{,}088\text{ MiB} \qquad A_{logits} = 16{,}032\text{ MiB}$$
+$$A_{layer} = 1{,}648\text{ MiB} \qquad A_{logits} = 16{,}032\text{ MiB}$$
 
-$$A_{act} = 4{,}096 + \max(16{,}032,\ 1{,}088) = \mathbf{20{,}128\text{ MiB}}$$
+$$A_{act} = 4{,}096 + \max(16{,}032,\ 1{,}648) = \mathbf{20{,}128\text{ MiB}}$$
 
 > [!NOTE]
-> **Without Flash Attention, nothing changes here.** The eager score matrix is
-> $9\gamma bn_hs^2 = 9 \times 1{,}024 = 9{,}216$ MiB per layer, which takes $A_{layer}$ from 1,088 to
-> **10,304** MiB — still below the 16,032 MiB LM-head hump, so the `max` picks the same branch and
-> $A_{act}$ stays at 20,128. Flash Attention saves **0 MiB** at this shape. That is the 128k vocabulary
-> talking, not a bug, and it is the kind of thing you only find by taking a max instead of a sum.
+> **Without Flash Attention, nothing changes here.** Checkpointing is on, so the score matrix is
+> charged at the transient rate: $9\gamma bn_hs^2 = 9 \times 1{,}024 = 9{,}216$ MiB for the one layer
+> being recomputed, which takes $A_{layer}$ from 1,648 to **10,864** MiB — still below the 16,032 MiB
+> LM-head hump, so the `max` picks the same branch and $A_{act}$ stays at 20,128. Flash Attention
+> saves **0 MiB** at this shape. That is the 128k vocabulary talking, not a bug, and it is the kind of
+> thing you only find by taking a max instead of a sum.
 >
-> **Without checkpointing it is a different world:** $32 \times 10{,}304 + 16{,}032 = 345{,}760$ MiB
-> eager, or $32 \times 1{,}088 + 16{,}032 = 50{,}848$ MiB with Flash. Neither fits a 4090 — which is the
-> real lesson: at bs=4 / seq=2048, checkpointing is not optional on a consumer card.
+> **Without checkpointing it is a different world** — and note the score matrix switches to the
+> *retained* rate of $2.9\gamma$, because every layer is live at once rather than one at a time:
+> eager costs $32 \times (1{,}648 + 2{,}970) + 16{,}032 = 163{,}795$ MiB, and Flash costs
+> $32 \times 1{,}648 + 16{,}032 = 68{,}768$ MiB. Neither fits a 4090 — which is the real lesson: at
+> bs=4 / seq=2048, checkpointing is not optional on a consumer card.
 
 > [!NOTE]
-> **Accuracy of this component, measured.** Across the ten runs in `fitcheck.ipynb`, $A_{act}$ measured
-> by subtraction lands within **4.6%** of this formula (mean 0.9%). That is the term this document once
-> called "±10-15%, to be calibrated later" — it has now been calibrated, and the calibration is what
-> produced the $\max$, the $2L$ and the $9\gamma$. See SPEC.md §3.8 for how it was measured.
+> **Accuracy of this component, measured.** Across 33 T4 runs, $A_{act}$ measured by subtraction lands
+> within **4.6%** of this formula on the checkpointed branch and **6.8%** on the no-checkpointing one.
+> That is the term this document once called "±10-15%, to be calibrated later" — it has now been
+> calibrated four separate times, and each round changed something: the $\max$ instead of a sum, the
+> $2L$ instead of $L$, the $9\gamma$ instead of $\gamma$, and then the splitting of that $9\gamma$ into
+> two regime-specific constants alongside a bracket of 15 instead of 6. See SPEC.md §3.8.
+>
+> Read that list again: **four rounds of measurement, four corrections.** Not one of them came from
+> re-reading the derivation. That is the argument for ground truth in a single paragraph.
 
 ---
 
@@ -855,17 +927,30 @@ They were not a rubber stamp. Three things in Component 5 were wrong and the mea
 
 Worst-case error across the wider development set of twenty runs fell from **36.1% to 4.8%**.
 
+A third session of thirteen runs then opened the branch nobody had measured, and found two more:
+
+4. The no-checkpointing bracket was about **2.5× too small**, and the $9\gamma$ score matrix was
+   charged in every layer at once. Both fixed; worst-case error on that branch **98.3% → 5.9%**.
+5. **LoRA adapters are FP32 even on an unquantized base**, so $W_{lora}$ and $G_{grad}$ were each
+   half what they should be — on 14 runs out of 14, at exactly $-50.0\%$.
+
 ### Still unmeasured
 
-- **Any GPU other than this T4.** No Ampere or newer card, so no BF16 and no real Flash Attention 2 —
-  the flash path is validated only through SDPA's memory-efficient backend as a stand-in.
-- **The no-checkpointing branch.** $L \times A_{layer} + A_{logits}$ is derived, never measured — and
-  it is the **default**, so `fitcheck` warns on this path instead of letting it pass as measured. With
-  eager attention it is expected to over-estimate; see the warning under Component 5.
-- **`--quant none`, `--quant int8`, full fine-tuning, FP32 compute.** All are code paths with no
-  ground-truth row.
-- **Sequences beyond 2048.** The $9\gamma$ coefficient multiplies an $s^2$ term, so extrapolation
-  error grows with $s$.
+- **Any GPU other than this T4.** All 33 runs are one card. No Ampere or newer, so no BF16 and no
+  real Flash Attention 2 — the flash path is validated only through SDPA's memory-efficient backend
+  as a stand-in. This is now the largest remaining gap by a distance.
+- **`--quant int8` beyond one model**, and **FP32 compute** at all. int8 activations are billed at
+  $\gamma = 4$ on the strength of a single measured row, and `fitcheck` warns on that path.
+- **Serving transients.** The KV cache formula is exact ($+0.0\%$ on four rows), but the transient
+  work of a decode step is not modelled and reaches $-23.2\%$ at 16 concurrent requests.
+  `fitcheck infer` warns above four rather than fitting a coefficient to one data point.
+- **Sequences beyond 4096.** The eager coefficient multiplies an $s^2$ term, so extrapolation error
+  grows with $s$.
+- **Nine of the fifteen hidden-width tensors per layer.** The count is measured; the derivation
+  names only six of them. See Component 5.
+
+What is *no longer* on this list, as of 2026-09-12: the no-checkpointing branch, `--quant none`,
+`--double-quant`, full fine-tuning, seq 4096, and the whole of `fitcheck infer`.
 
 ### How to measure ground truth
 
@@ -1030,15 +1115,18 @@ $$\boxed{\text{Peak VRAM} = W_{base} + W_{lora} + S_{optim} + G_{grad} + A_{act}
 
 Where:
 - $W_{base}$ = base model weight memory (function of param count + **storage** precision + quantization overhead)
-- $W_{lora}$ = LoRA adapter memory (function of rank, targets, layers, **GQA head dimensions**, and $\gamma_{adapter}$ — FP32 whenever the base is quantized, the compute precision otherwise)
+- $W_{lora}$ = LoRA adapter memory (function of rank, targets, layers, **GQA head dimensions**, and $\gamma_{adapter}$ — FP32 on every LoRA path, quantized base or not)
 - $S_{optim}$ = optimizer states (function of trainable params + optimizer type + **master weight copy for full FT**)
-- $G_{grad}$ = gradient memory (function of trainable params + $\gamma_{adapter}$ — a `.grad` matches its parameter's dtype, so QLoRA gradients are FP32)
+- $G_{grad}$ = gradient memory (function of trainable params + $\gamma_{adapter}$ — a `.grad` matches its parameter's dtype, so every LoRA run's gradients are FP32)
 - $\gamma$ = bytes per activation element, from the **compute** precision (2 for BF16/FP16, 4 for FP32)
 - $A_{act}$ = activation memory — **this is the hard one:**
 
 $$A_{act} = \begin{cases} L \times A_{layer} + A_{logits} & \text{no gradient checkpointing} \\ 2L\gamma bsh + \max(A_{logits},\ A_{layer}) & \text{gradient checkpointing (every layer)} \end{cases}$$
 
-$$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + 9\gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}] \qquad A_{logits} = 16\, bsV$$
+$$A_{layer} = \gamma bs\left[15h + 1h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + c\,\gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}] \qquad A_{logits} = 16\, bsV$$
+
+with $c = 9$ under checkpointing (one layer live, its transient peak) and $c = 2.9$ without it
+(every layer live, what each one retains).
 
 > [!IMPORTANT]
 > **Under checkpointing that is a `max`, not a sum, and the store is $2L$, not $L$.** The LM-head hump
@@ -1046,13 +1134,25 @@ $$A_{layer} = \gamma bs\left[6h + 2h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\r
 > never happened. Non-reentrant checkpointing keeps two $(b,s,h)$ tensors per boundary, not one. And
 > eager attention builds the score matrix about nine times, not once. All three were found by
 > measurement, and together they took worst-case error from 36.1% to 4.8% — see the Validation Plan.
+>
+> **A fourth correction landed later, on the branch nobody had measured.** With checkpointing off,
+> the bracket was ~2.5× too small *and* the nine score-matrix copies were charged in every layer at
+> once. That branch went from 98.3% worst-case error to 5.9%, and it is the **default** invocation.
 
 - $C_{overhead}$ = CUDA context + fragmentation + workspace buffers $\approx 500\text{ MiB} + 5\%$
 
 > [!IMPORTANT]
-> The $6h$ is six distinct $(b,s,h)$ tensors — layer input, attn-norm output, Q, attention output,
-> post-attn residual sum, mlp-norm output. Earlier drafts of these documents carried $5h$ in the formula and
-> a table that summed to $4h$; both were wrong, and the mismatch between them is what exposed the bug.
-> **If a formula and its derivation table disagree, the formula is not the thing to trust — recount.**
+> **The hidden-width count has been wrong three times, and the last correction is the interesting
+> one.** Early drafts carried $5h$ in the formula against a table that summed to $4h$; both were
+> wrong, and the mismatch between them is what exposed the bug. Recounting the table gave $6h$ — six
+> distinct $(b,s,h)$ tensors: layer input, attn-norm output, Q, attention output, post-attn residual
+> sum, mlp-norm output. That derivation is sound and is still in Component 5.
+>
+> Then the branch where the count is actually visible got measured, and it came out at **$15h$**.
+>
+> So the lesson from the first two rounds — *if a formula and its derivation table disagree, recount*
+> — turns out to be only half of it. The other half: **if a derivation and a measurement disagree,
+> the measurement wins, and the derivation becomes an open question rather than an answer.** Nine of
+> those fifteen tensors are still unnamed. That is written down, not hidden.
 
 Each of these is a formula you can derive on paper, implement in code, and validate against a real GPU measurement. That's the whole project.

@@ -4,11 +4,9 @@ from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.activations import (
     _ActivationParts,
     _activation_parts,
-    _derived_branch_warning,
     estimate_activation_memory,
 )
 
-# Golden set: Llama-3.1-8B, bs=4, seq=2048, bf16 .
 _GOLDEN_BATCH = 4
 _GOLDEN_SEQ = 2048
 _GOLDEN_VOCAB = 128_256
@@ -19,15 +17,19 @@ _LOGITS = 4 * 4.0 * _GOLDEN_BATCH * _GOLDEN_SEQ * _GOLDEN_VOCAB / 1024**2  # 16,
 # Under checkpointing the peak is 2 * L * gamma * b * s * h (resident) plus whichever
 # of the LM-head hump or one layer's recompute is larger -- they never coexist.
 _CKPT_STORE = 2 * 2 * 32 * _GOLDEN_BATCH * _GOLDEN_SEQ * 4096 / 1024**2  # 4,096
-_A_LAYER_FLASH = 1_088.0
-_A_LAYER_NO_FLASH = _A_LAYER_FLASH + 9 * 1_024.0  # 9 gamma copies of b*n_h*s^2
+# bracket = 12h + 3*(n_h*d_k) + 1*(n_kv*d_k) + 3*d_ff = 105,472 for Llama-3.1-8B.
+# The hidden-width total of 15 is measured (task 9.2); see docs/SPEC.md Component 5.
+_SCORE_MATRIX = 1_024.0  # gamma * b * n_h * s^2, one copy
+_A_LAYER_FLASH = 1_648.0
+_A_LAYER_NO_FLASH = _A_LAYER_FLASH + 9 * _SCORE_MATRIX      # ckpt: one layer's peak
+_A_LAYER_RETAINED = _A_LAYER_FLASH + 2.9 * _SCORE_MATRIX    # no ckpt: every layer keeps
 
 # Llama-3.1-8B has a 128k vocabulary, so the LM-head hump wins both ways here and
 # Flash Attention does not move A_act at all at this shape.
 _A_ACT_CKPT_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_FLASH)          # 20,128
 _A_ACT_CKPT_NO_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_NO_FLASH)    # 20,128
 _A_ACT_NO_CKPT_FLASH = 32 * _A_LAYER_FLASH + _LOGITS
-_A_ACT_NO_CKPT_NO_FLASH = 32 * _A_LAYER_NO_FLASH + _LOGITS
+_A_ACT_NO_CKPT_NO_FLASH = 32 * _A_LAYER_RETAINED + _LOGITS
 
 
 def _model_config(
@@ -107,15 +109,32 @@ def test_four_paths(
     assert result == pytest.approx(expected, rel=1e-9)
 
 
-def test_flash_attn_off_adds_nine_gamma_copies_of_the_score_matrix(
+def test_flash_attn_off_adds_the_retained_copies_in_every_layer(
     llama: ModelConfig,
 ) -> None:
-    # No checkpointing, so the layer hump is not hidden behind the max().
     delta = _estimate(llama, grad_checkpoint=False, flash_attn=False) - _estimate(
         llama, grad_checkpoint=False
     )
 
-    assert delta == pytest.approx(32 * 9 * 1_024.0, rel=1e-9)
+    assert delta == pytest.approx(32 * 2.9 * _SCORE_MATRIX, rel=1e-9)
+
+
+def test_checkpointed_layer_hump_still_charges_nine_copies(
+    llama: ModelConfig,
+) -> None:
+    seq_len, batch_size = 8192, 1
+    score_matrix = 2 * batch_size * 32 * seq_len**2 / 1024**2
+    a_layer_flash = 2 * batch_size * seq_len * 105_472 / 1024**2
+    store = 2 * 2 * 32 * batch_size * seq_len * 4096 / 1024**2
+    logits = 4 * 4.0 * batch_size * seq_len * _GOLDEN_VOCAB / 1024**2
+
+    eager = _estimate(
+        llama, seq_len=seq_len, batch_size=batch_size, flash_attn=False
+    )
+
+    assert eager == pytest.approx(
+        store + max(logits, a_layer_flash + 9 * score_matrix), rel=1e-9
+    )
 
 
 def test_flash_attn_does_not_help_when_the_lm_head_hump_dominates(
@@ -160,7 +179,7 @@ def test_reads_intermediate_size_from_config_instead_of_assuming_4h(
 ) -> None:
     # Checkpointing off, so the layer hump is visible instead of hidden by the max().
     four_h = _model_config(intermediate_size=4 * 4096)
-    bracket = 4 * 4096 + 2 * 4096 + 2 * 1024 + 3 * (4 * 4096)
+    bracket = 12 * 4096 + 3 * 4096 + 1 * 1024 + 3 * (4 * 4096)
     a_layer = 2 * _GOLDEN_BATCH * _GOLDEN_SEQ * bracket / 1024**2
 
     assert _estimate(four_h, grad_checkpoint=False) == pytest.approx(
@@ -182,10 +201,10 @@ def test_gqa_kv_width_is_smaller_than_mha(llama: ModelConfig) -> None:
 def test_gemma2_uses_head_dim_not_hidden_size_for_q_and_attn_output(
     gemma2_9b: ModelConfig,
 ) -> None:
-    # bracket = 4*3584 + 2*(16*256) + 2*(8*256) + 3*14336 = 69,632
-    # A_layer = 2 * 4*2048 * 69,632 B = 1,088 MiB
+    # bracket = 12*3584 + 3*(16*256) + 1*(8*256) + 3*14336 = 100,352
+    # A_layer = 2 * 4*2048 * 100,352 B = 1,568 MiB
     assert _estimate(gemma2_9b, grad_checkpoint=False) == pytest.approx(
-        42 * 1_088.0 + _LOGITS, rel=1e-9
+        42 * 1_568.0 + _LOGITS, rel=1e-9
     )
 
 
@@ -206,16 +225,18 @@ def test_gemma2_differs_from_the_n_h_d_k_equals_h_assumption(
     )
 
 
-def test_exact_bracket_reduces_to_the_six_h_form_when_n_h_d_k_equals_h(
+def test_exact_bracket_reduces_to_the_hidden_width_form_when_n_h_d_k_equals_h(
     llama: ModelConfig,
 ) -> None:
+    """15 hidden-width tensors, not 6: 12h + 3*(n_h d_k) collapses to 15h whenever
+    n_h * d_k == h, which is every model except Gemma-2 in the ground-truth set."""
     gamma, tokens = 2, _GOLDEN_BATCH * _GOLDEN_SEQ
-    six_h_bracket = (
-        6 * llama.hidden_size
-        + 2 * llama.hidden_size * llama.num_kv_heads // llama.num_attention_heads
+    hidden_width_bracket = (
+        15 * llama.hidden_size
+        + 1 * llama.hidden_size * llama.num_kv_heads // llama.num_attention_heads
         + 3 * llama.intermediate_size
     )
-    a_layer_mib = gamma * tokens * six_h_bracket / 1024**2
+    a_layer_mib = gamma * tokens * hidden_width_bracket / 1024**2
 
     assert a_layer_mib == pytest.approx(_A_LAYER_FLASH, rel=1e-9)
     assert _estimate(llama, grad_checkpoint=False) == pytest.approx(
@@ -295,7 +316,12 @@ def test_activation_parts_are_the_golden_terms(llama: ModelConfig) -> None:
     assert parts.layer_bytes / 1024**2 == pytest.approx(_A_LAYER_FLASH, rel=1e-9)
     assert parts.logits_bytes / 1024**2 == pytest.approx(_LOGITS, rel=1e-9)
     assert parts.checkpoint_store_bytes / 1024**2 == pytest.approx(_CKPT_STORE, rel=1e-9)
-    assert parts.attention_matrix_bytes / 1024**2 == pytest.approx(9 * 1_024.0, rel=1e-9)
+    assert parts.attention_matrix_bytes / 1024**2 == pytest.approx(
+        9 * _SCORE_MATRIX, rel=1e-9
+    )
+    assert parts.retained_attention_matrix_bytes / 1024**2 == pytest.approx(
+        2.9 * _SCORE_MATRIX, rel=1e-9
+    )
 
 
 def test_attention_matrix_part_is_nine_gamma_and_only_without_flash(
@@ -308,13 +334,36 @@ def test_attention_matrix_part_is_nine_gamma_and_only_without_flash(
     assert eager.checkpoint_store_bytes == _parts(llama).checkpoint_store_bytes
 
 
+def test_retained_score_matrix_is_smaller_than_the_transient_one(
+    llama: ModelConfig,
+) -> None:
+    """Two regimes, two constants. With checkpointing on, one layer is live and
+    peaks at 9 copies. With it off, every layer stays live and keeps ~2.9 -- so
+    charging 9 copies in all L layers at once, as fitcheck used to, cannot happen.
+    Measured on a T4: worst-case error on that branch fell from 98.3% to 5.9%."""
+    eager = _parts(llama, flash_attn=False)
+
+    assert eager.retained_layer_bytes < eager.layer_bytes
+    assert eager.retained_layer_bytes / 1024**2 == pytest.approx(
+        _A_LAYER_RETAINED, rel=1e-9
+    )
+
+
+def test_flash_attention_makes_the_two_regimes_identical(llama: ModelConfig) -> None:
+    flash = _parts(llama, flash_attn=True)
+
+    assert flash.retained_layer_bytes == flash.layer_bytes
+
+
 def test_parts_reconstruct_the_public_estimate(llama: ModelConfig) -> None:
     for flash_attn in (True, False):
         parts = _parts(llama, flash_attn=flash_attn)
         checkpointed = parts.checkpoint_store_bytes + max(
             parts.logits_bytes, parts.layer_bytes
         )
-        uncheckpointed = llama.num_layers * parts.layer_bytes + parts.logits_bytes
+        uncheckpointed = (
+            llama.num_layers * parts.retained_layer_bytes + parts.logits_bytes
+        )
 
         assert _estimate(llama, flash_attn=flash_attn) == pytest.approx(
             checkpointed / 1024**2, rel=1e-9
@@ -324,30 +373,10 @@ def test_parts_reconstruct_the_public_estimate(llama: ModelConfig) -> None:
         ) == pytest.approx(uncheckpointed / 1024**2, rel=1e-9)
 
 
-def test_no_warning_when_checkpointing_is_on(llama: ModelConfig) -> None:
-    for flash_attn in (True, False):
-        assert _derived_branch_warning(grad_checkpoint=True, flash_attn=flash_attn) is None
-
-
-@pytest.mark.parametrize("flash_attn", [True, False])
-def test_no_checkpointing_warns_that_the_branch_is_derived(flash_attn: bool) -> None:
-    warning = _derived_branch_warning(grad_checkpoint=False, flash_attn=flash_attn)
-
-    assert warning is not None
-    assert "derived, not measured" in warning
-    assert "docs/SPEC.md" in warning
-
-
-def test_eager_no_checkpointing_names_the_over_estimate() -> None:
-    warning = _derived_branch_warning(grad_checkpoint=False, flash_attn=False)
-
-    assert warning is not None
-    assert "over-estimate" in warning
-    assert "9" in warning
-    assert warning != _derived_branch_warning(grad_checkpoint=False, flash_attn=True)
-
-
-def test_warning_does_not_change_the_number(llama: ModelConfig) -> None:
+def test_no_checkpointing_branch_is_measured_not_derived(llama: ModelConfig) -> None:
+    """Task 9.2 measured this branch on a T4 over 11 rows and 9 models, so the
+    'derived, not measured' caveat 8.3 attached to it is gone. Keeping a warning
+    that says the branch is unmeasured would now be false."""
     assert _estimate(llama, flash_attn=False, grad_checkpoint=False) == pytest.approx(
         _A_ACT_NO_CKPT_NO_FLASH, rel=1e-9
     )

@@ -8,33 +8,27 @@ _LOGITS_COPIES = 4
 _LOGITS_BYTES = 4.0
 
 _CHECKPOINT_TENSORS_PER_LAYER = 2
+
+# Hidden-width tensors saved per layer. The total of 15 is measured; the split
+# between the two is decided by gemma-2 alone -- the only model in the ground-truth
+# set whose q_width differs from hidden_size. See docs/SPEC.md Component 5.
+_HIDDEN_TENSORS_PER_LAYER = 12
+_Q_TENSORS_PER_LAYER = 3
+_KV_TENSORS_PER_LAYER = 1
+_FF_TENSORS_PER_LAYER = 3
+
+
 _EAGER_ATTENTION_COPIES = 9
-
-_WARNING_NO_CHECKPOINT = (
-    "Gradient checkpointing is OFF. This activation branch is derived, not measured -- "
-    "every ground-truth run so far had checkpointing on. Treat the activation figure as "
-    "an upper bound. See docs/SPEC.md 3.7."
-)
-_WARNING_NO_CHECKPOINT_EAGER = (
-    "Gradient checkpointing and Flash Attention are both OFF. This activation branch is "
-    "derived, not measured, and is expected to over-estimate: the 9-copy eager score "
-    "matrix was fitted with checkpointing on, where only one layer is live, and this "
-    "branch charges all 9 copies in every layer at once. Treat the activation figure as "
-    "a loose upper bound. See docs/SPEC.md 3.7."
-)
-
-
-def _derived_branch_warning(grad_checkpoint: bool, flash_attn: bool) -> str | None:
-    if grad_checkpoint:
-        return None
-    return _WARNING_NO_CHECKPOINT if flash_attn else _WARNING_NO_CHECKPOINT_EAGER
+_EAGER_RETAINED_COPIES = 2.9
 
 
 @dataclass(frozen=True)
 class _ActivationParts:
     layer_bytes: float
+    retained_layer_bytes: float
     logits_bytes: float
     attention_matrix_bytes: float
+    retained_attention_matrix_bytes: float
     checkpoint_store_bytes: float
 
 
@@ -61,24 +55,31 @@ def _activation_parts(
     q_width = config.num_attention_heads * config.head_dim
     kv_width = config.num_kv_heads * config.head_dim
     bracket = (
-        4 * hidden_size + 2 * q_width + 2 * kv_width + 3 * config.intermediate_size
+        _HIDDEN_TENSORS_PER_LAYER * hidden_size
+        + _Q_TENSORS_PER_LAYER * q_width
+        + _KV_TENSORS_PER_LAYER * kv_width
+        + _FF_TENSORS_PER_LAYER * config.intermediate_size
     )
     tokens = micro_batch * sequence_length
 
-    attention_matrix_bytes = (
-        _EAGER_ATTENTION_COPIES
-        * bytes_per_element
+    score_matrix_bytes = (
+        bytes_per_element
         * micro_batch
         * config.num_attention_heads
         * sequence_length**2
     )
+    attention_matrix_bytes = _EAGER_ATTENTION_COPIES * score_matrix_bytes
+    retained_attention_matrix_bytes = _EAGER_RETAINED_COPIES * score_matrix_bytes
 
     layer_bytes = bytes_per_element * tokens * bracket
+    retained_layer_bytes = layer_bytes
     if not flash_attn:
         layer_bytes += attention_matrix_bytes
+        retained_layer_bytes += retained_attention_matrix_bytes
 
     return _ActivationParts(
         layer_bytes=layer_bytes,
+        retained_layer_bytes=retained_layer_bytes,
         logits_bytes=_LOGITS_COPIES * _LOGITS_BYTES * tokens * config.vocab_size,
         checkpoint_store_bytes=(
             _CHECKPOINT_TENSORS_PER_LAYER
@@ -88,6 +89,7 @@ def _activation_parts(
             * hidden_size
         ),
         attention_matrix_bytes=attention_matrix_bytes,
+        retained_attention_matrix_bytes=retained_attention_matrix_bytes,
     )
 
 
@@ -114,6 +116,8 @@ def estimate_activation_memory(
             parts.logits_bytes, parts.layer_bytes
         )
     else:
-        total_bytes = config.num_layers * parts.layer_bytes + parts.logits_bytes
+        total_bytes = (
+            config.num_layers * parts.retained_layer_bytes + parts.logits_bytes
+        )
 
     return bytes_to_mib(round(total_bytes))

@@ -48,3 +48,8 @@ AUDIT.md
 infer_problemes.md
 
 .obsidian/
+
+runs/
+runs.zip
+
+.claude/

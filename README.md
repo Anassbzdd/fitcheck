@@ -314,7 +314,7 @@ Everything else has a sane default. `fitcheck --help` lists the full set.
 | `--seq-len` | Sequence length in tokens. | `2048` |
 | `--grad-checkpoint` | Recompute activations instead of storing them. Usually the biggest single saving. | off |
 | `--flash-attn` | Skip the attention score matrix. Sometimes saves nothing — see [below](#a-result-worth-knowing). | off |
-| `--gpu` | Target card. `--list-gpus` prints all 22. Use `--vram-mib` for a card not in the list. | `4090` |
+| `--gpu` | Target card. `--list-gpus` prints all 23. Use `--vram-mib` for a card not in the list. | `4090` |
 
 `--grad-accum` is display-only: gradient accumulation costs **0 MiB**, because gradients
 accumulate in place.
@@ -342,7 +342,7 @@ fitcheck meta-llama/Llama-3.1-8B --qlora --vram-mib 32768
 fitcheck meta-llama/Llama-3.1-8B --qlora --batch-size 4 --json
 ```
 
-`--list-gpus` prints the 22-card database. `--verbose` adds the per-layer activation breakdown.
+`--list-gpus` prints the 23-card database. `--verbose` adds the per-layer activation breakdown.
 `--no-color` for logs. `-V` for the version. `fitcheck --help` has the full option surface.
 
 ### Mode B
@@ -586,7 +586,18 @@ extra error is there. Its fragmentation model assumes a flat 5%; measured `reser
 from **7% to 49%**, worst at long sequences and under eager attention, because big short-lived tensors
 churn the allocator pool. The `_BASE_CONTEXT_MIB` constant of 500 is separately wrong — the T4
 measured **133–147 MiB** on every one of the 33 runs — and the two errors partly cancel, so they have
-to be fitted together or fixing one will visibly worsen the other. That is the next thing to fix.
+to be fitted together or fixing one will visibly worsen the other.
+
+Fitting them together is now what `fitcheck` does. `fitcheck/calibrate.py` reads archived
+`scripts/measure.py --json` rows and solves for both constants at once, per **(GPU, attention
+kernel)**, with a third term for how fragmentation moves with sequence length; the result is data in
+`fitcheck/overhead_db.py`, shaped like `gpu_db.py`. The table above is unchanged because that
+database is **still empty** — every card falls back to the original 500 MiB + 5%, which errs high,
+the safe direction for an OOM tool. On the ten archived T4 rows the fit takes the flash group to
+6.1% worst-case and the eager group only to 13.9%, and the eager group turns on a single run whose
+allocator reserved 30.9% more than it handed out while its SDPA twin reserved 11.9% off an identical
+tensor peak. Separating that from run-to-run variance needs repeats, and a per-card constant needs a
+second card. Both are measurements, not code.
 
 The one tensors-tier row above 10% is an overhead row too: SmolLM2-360M at seq 4096 reserved
 7,304 MiB against 4,909 allocated, the worst fragmentation this project has measured.
@@ -672,6 +683,10 @@ all have measured rows now — and what is left mostly needs hardware nobody her
   row is about 2 MiB at that shape — and one data point cannot settle it. `fitcheck infer` warns
   above four concurrent requests instead. Closing it properly needs a concurrency sweep.
 - **Sequences beyond 4096**, where the eager coefficient multiplies an `s²` term.
+- **The `C_overhead` constants themselves.** The fit exists (`python -m fitcheck.calibrate`), the
+  archive format exists (`data/measurements/`), and the acceptance check exists
+  (`--check`). What does not exist yet is a fitted row that earns its place: no card ships
+  calibrated constants, so every estimate still uses the conservative default.
 - **MoE models**, which are refused rather than estimated — see [Model support](#model-support).
 - **Every GPU entry except the T4.** The T4 used to claim 15,360 MiB usable of 16,384 when the card
   actually reports 14,912 MiB total — vendor GB treated as GiB, unsafe direction — and is now
@@ -781,8 +796,10 @@ constraints (no `torch` in the package, `config.json` only).
 The most useful thing you can contribute right now is **a measured row on hardware that is not a
 Tesla T4**. Every number in the validation table comes from one card, which means BF16 and real
 FlashAttention-2 (both need sm_80 or newer) have never been exercised, and the 500 MiB CUDA-context
-constant has been checked exactly once. If you have an Ampere or newer GPU, one run of
-`scripts/measure.py` is worth more to this project than any feature — open it with the
+constant has been checked exactly once. If you have an Ampere or newer GPU,
+`python scripts/calibration_sweep.py --gpu <key>` runs the whole calibration grid unattended and
+writes one JSON row per configuration; even a single run of `scripts/measure.py --json` is worth
+more to this project than any feature — open it with the
 [measurement issue template](https://github.com/Anassbzdd/fitcheck/blob/main/.github/ISSUE_TEMPLATE/measurement.yml).
 
 ---

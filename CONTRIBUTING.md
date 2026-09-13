@@ -23,9 +23,27 @@ It prints prediction vs measurement at all three tiers, a per-component spot-che
 row ready to paste. Open it with the
 [measurement issue template](.github/ISSUE_TEMPLATE/measurement.yml).
 
+### Calibrating your card
+
+`C_overhead` — the CUDA context plus the caching allocator's fragmentation — is the one component
+that cannot be derived from a `config.json`, because it belongs to a driver and a card rather than
+to a model. It is fitted per (GPU, attention kernel) and shipped as data in
+`fitcheck/overhead_db.py`, so adding your card is a one-line source change:
+
+```bash
+python scripts/calibration_sweep.py --gpu <key>      # ~20 rows, unattended, one process each
+python -m fitcheck.calibrate runs/*.json             # see the fit and its residuals
+python -m fitcheck.calibrate runs/*.json --emit-python   # the OVERHEAD_DB entry to paste
+```
+
+Commit the row files under `data/measurements/` alongside the entry — see the README there for the
+format and for what makes a row usable. A fitted profile without its rows in the repo is a number
+nobody can check.
+
 The paths with **no measured row at all** are listed under "What is not measured" in the README.
-The largest gaps: gradient checkpointing off, `--quant none` / `--quant int8`, full fine-tuning,
-FP32 compute, `--double-quant`, sequences beyond 2048, and the whole `fitcheck infer` path.
+The largest gaps: any card that is not a T4 (which is also what `C_overhead` needs before a
+per-card fit means anything), a second `--quant int8` model, and an `fitcheck infer` concurrency
+sweep.
 
 ## The bar for a merge
 

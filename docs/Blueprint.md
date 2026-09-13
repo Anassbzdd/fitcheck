@@ -120,7 +120,7 @@ Before building, it's critical to understand the competitive landscape and **cle
 5. **Actionable advice** — "you can increase batch_size to X" or "switch to 8-bit optimizer to save Y MiB"
 6. **CLI-first** — designed for the terminal workflow where ML engineers actually work, and
    `--json` + an exit code (0 fits / 1 doesn't / 2 error) so CI can gate a training job on it
-7. **Calibration mode** *(roadmap — Phase 3, not in v0.1)* — run 1 real forward pass to compute a correction factor for future estimates
+7. **Calibrated overhead** — the one term that cannot be derived (CUDA context + allocator fragmentation) is *fitted* per GPU and attention kernel from archived real runs, not guessed at globally; `fitcheck/calibrate.py` does the fit, `overhead_db.py` ships the result
 
 > [!IMPORTANT]
 > Your README must include this comparison table. When someone asks "how is this different from X?", they should get a clear answer immediately. This is what separates a tool that gets adoption from one that gets ignored.
@@ -613,10 +613,39 @@ what makes Flash Attention worthless at that shape.
 
 This is modeled as a constant + small percentage:
 
-$$\text{Overhead} \approx 500\text{ MiB} + 0.05 \times (W_{base} + A_{act})$$
+$$\text{Overhead} = \text{base\_context} + f(s) \times (W_{base} + A_{act})$$
 
 The percentage tracks $W_{base}$ specifically, not $W_{base} + W_{lora}$ — the adapters are too small to
 move it, and pinning the definition keeps the term reproducible.
+
+**This is the one component you cannot check on paper, and knowing why matters more than the two
+numbers.** The other five are derivations: a tensor has a shape and a dtype, and multiplying them out
+gives an answer that is either right or wrong. The CUDA context and the caching allocator's
+fragmentation are not properties of your model at all — they belong to a driver, a card, and a
+kernel. A Tesla T4 measures **133–147 MiB** of context; the 500 in the original formula was a guess
+from before anyone ran the experiment. Measured `reserved / allocated` ran anywhere from **7% to
+49%** against the flat 5%, worst at long sequences and under eager attention, both of which churn
+large short-lived blocks that the allocator rounds up and then cannot reuse.
+
+So these constants are **fitted, not derived**, per (GPU, attention kernel):
+
+$$f(s) = \text{frag} + \text{frag\_per\_octave} \times \log_2\!\left(\frac{s}{2048}\right)$$
+
+`fitcheck/calibrate.py` reads archived `scripts/measure.py --json` runs and solves for both at once,
+by least squares on the residual *(measured process total − predicted tensors)*. Fitting them
+separately is the trap: the 500 MiB context is far too generous and the 5% fragmentation far too
+mean, and the two errors partly cancel — so correcting either one alone makes the total visibly
+worse. The result is data in `fitcheck/overhead_db.py`, shaped like `gpu_db.py`. A card nobody has
+measured falls back to the original 500 + 5%, which errs high: for a tool whose job is avoiding OOM,
+a false "fits" costs the user far more than a false "doesn't fit".
+
+> **The honest status.** `OVERHEAD_DB` is still empty. The fit, the archive and the acceptance check
+> all exist; what does not exist is a card whose rows earn a profile. On the ten archived T4 rows the
+> flash group fits to 6.1% and the eager group only to 13.9%, and that group turns on a single run
+> whose allocator reserved 30.9% more than it handed out while its SDPA twin reserved 11.9% off an
+> identical tensor peak. Telling a mechanism from allocator variance needs repeats; a *per-card*
+> constant needs more than one card. Both are measurements, not code — which is the general shape of
+> this component's remaining error.
 
 ## Code Architecture
 
@@ -641,7 +670,8 @@ fitcheck/
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
-├── calibrate.py             # Phase 3: real measurement (still an empty stub)
+├── overhead_db.py           # (GPU, kernel) → OverheadProfile — the fitted C_overhead constants
+├── calibrate.py             # Phase 3: fits overhead_db.py from measure.py --json runs
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)

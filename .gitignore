@@ -29,10 +29,18 @@ htmlcov/
 # Editor
 .vscode/
 
+# Raw output of scripts/calibration_sweep.py — a scratch directory while a sweep runs.
+# Rows that are KEPT belong in data/measurements/ under a named file, with provenance.
+# That folder is tracked on purpose: it is the only evidence behind overhead_db.py, and
+# 23 of the 33 runs the audit credits were lost precisely because nobody committed them.
+runs/
+runs.zip
+
 # Internal agent scaffolding — not project documentation.
 # docs/ IS tracked on purpose: SPEC.md and Blueprint.md are the public "how it works"
 # reference, and README's how-it-works section links to them (SPEC.md Definition of Done #5).
 CLAUDE.md
+.claude/
 
 docs/TASKS.md
 docs/ADVISOR.md

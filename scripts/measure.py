@@ -520,10 +520,13 @@ def _preflight_device(args: argparse.Namespace) -> None:
                 f"score matrix, so it measures the same thing fitcheck's flash_attn "
                 f"branch predicts, and it runs on sm_75."
             )
+        # stderr, not stdout: --json writes one parseable document to stdout and
+        # a notice mixed into it would make the row unreadable by calibrate.py.
         print(
             f"measure.py: {name} is sm_{capability}, so Flash Attention 2 is "
             f"unavailable. --flash-attn is being applied to the PREDICTION only; "
-            f"the measured kernel is '{args.attn_impl}'."
+            f"the measured kernel is '{args.attn_impl}'.",
+            file=sys.stderr,
         )
 
     visible = torch.cuda.device_count()
@@ -531,7 +534,8 @@ def _preflight_device(args: argparse.Namespace) -> None:
         print(
             f"measure.py: {visible} GPUs visible; measuring device 0 ({name}) only. "
             f"This is by design -- fitcheck predicts single-device memory, so a "
-            f"sharded or DDP run would not be comparable to the prediction."
+            f"sharded or DDP run would not be comparable to the prediction.",
+            file=sys.stderr,
         )
 
 
@@ -737,6 +741,37 @@ def config_label(args: argparse.Namespace, targets: list[str]) -> str:
     return ", ".join(bits)
 
 
+def run_record(args: argparse.Namespace, targets: list[str], gpu_name: str) -> dict[str, Any]:
+    """The knobs of this run, as structured fields rather than a label string.
+
+    `fitcheck.calibrate` reads these to group rows by (GPU, attention kernel) and to
+    fit the sequence slope of fragmentation. Parsing `config` would work until
+    someone reworded it, so the fields it needs are their own block.
+
+    `kernel` collapses to fitcheck's own two-way split: "flash" is any kernel that
+    never materializes the (b, n_h, s, s) score matrix -- FA2 and SDPA's
+    memory-efficient backend both count -- and "eager" is one that does.
+    """
+    from fitcheck import __version__
+
+    return {
+        "fitcheck_version": __version__,
+        "gpu_key": (args.gpu or "").strip().casefold() or None,
+        "gpu_name": gpu_name,
+        "kernel": "flash" if args.flash_attn else "eager",
+        "attn_impl": _attn_implementation(args),
+        "seq_len": args.seq_len,
+        "batch_size": args.batch_size,
+        "precision": args.precision,
+        "quantization": args.quant,
+        "double_quant": bool(args.double_quant),
+        "optimizer": args.optimizer,
+        "lora_rank": args.lora_rank,
+        "lora_targets": list(targets) if args.lora_rank is not None else [],
+        "grad_checkpoint": bool(args.grad_checkpoint),
+    }
+
+
 def markdown_row(
     args: argparse.Namespace,
     targets: list[str],
@@ -910,6 +945,7 @@ def main(argv: list[str] | None = None) -> int:
             "model_id": args.model_id,
             "gpu": gpu_name,
             "config": config_label(args, targets),
+            "run": run_record(args, targets, gpu_name),
             "measured": asdict(m),
         }
         if report is not None:

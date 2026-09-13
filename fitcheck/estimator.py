@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Iterable
 
 from fitcheck.config_parser import ModelConfig
-from fitcheck.gpu_db import GpuSpec
+from fitcheck.gpu_db import GpuSpec, gpu_key_for
 from fitcheck.memory.activations import (
     _activation_parts,
     estimate_activation_memory,
@@ -20,6 +20,7 @@ from fitcheck.memory.lora import (
 from fitcheck.memory.optimizer import estimate_optimizer_memory
 from fitcheck.memory.overhead import estimate_overhead
 from fitcheck.memory.weights import QuantizationConfig, estimate_weight_memory
+from fitcheck.overhead_db import get_overhead_profile
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
 
 _QUANTIZATIONS = ("none", "nf4", "int8")
@@ -229,7 +230,9 @@ def _base_weight_memory(config: ModelConfig, training: TrainingConfig) -> float:
     )
 
 
-def _compute_components(config: ModelConfig, training: TrainingConfig) -> _Components:
+def _compute_components(
+    config: ModelConfig, training: TrainingConfig, gpu_key: str | None = None
+) -> _Components:
     if not isinstance(config, ModelConfig):
         raise ValueError("model_config must be a ModelConfig")
 
@@ -283,7 +286,12 @@ def _compute_components(config: ModelConfig, training: TrainingConfig) -> _Compo
         optimizer_mib=optimizer_mib,
         gradient_mib=gradient_mib,
         activation_mib=activation_mib,
-        overhead_mib=estimate_overhead(weight_mib, activation_mib),
+        overhead_mib=estimate_overhead(
+            weight_mib,
+            activation_mib,
+            get_overhead_profile(gpu_key, training.flash_attn),
+            training.seq_len,
+        ),
     )
 
 
@@ -309,16 +317,25 @@ def _largest_fitting(total_at: Callable[[int], float], usable_mib: float) -> int
 
 
 def _total_at_batch(
-    config: ModelConfig, training: TrainingConfig, batch_size: int
+    config: ModelConfig,
+    training: TrainingConfig,
+    batch_size: int,
+    gpu_key: str | None = None,
 ) -> float:
-    return _compute_components(config, replace(training, batch_size=batch_size)).total_mib
+    return _compute_components(
+        config, replace(training, batch_size=batch_size), gpu_key
+    ).total_mib
 
 
 def _max_batch_size(
-    config: ModelConfig, training: TrainingConfig, usable_mib: float
+    config: ModelConfig,
+    training: TrainingConfig,
+    usable_mib: float,
+    gpu_key: str | None = None,
 ) -> int:
     return _largest_fitting(
-        lambda batch_size: _total_at_batch(config, training, batch_size), usable_mib
+        lambda batch_size: _total_at_batch(config, training, batch_size, gpu_key),
+        usable_mib,
     )
 
 
@@ -332,12 +349,17 @@ def _format_delta(delta_mib: float) -> str:
 
 
 def _savings_hints(
-    config: ModelConfig, training: TrainingConfig, baseline_mib: float
+    config: ModelConfig,
+    training: TrainingConfig,
+    baseline_mib: float,
+    gpu_key: str | None = None,
 ) -> list[str]:
 
     def delta(**overrides: object) -> str:
         variant = replace(training, **overrides)
-        return _format_delta(_compute_components(config, variant).total_mib - baseline_mib)
+        return _format_delta(
+            _compute_components(config, variant, gpu_key).total_mib - baseline_mib
+        )
 
     hints: list[str] = []
 
@@ -384,7 +406,8 @@ def estimate(
         training_config.grad_accum_steps, "grad_accum_steps"
     )
 
-    components = _compute_components(model_config, training_config)
+    gpu_key = gpu_key_for(gpu_spec)
+    components = _compute_components(model_config, training_config, gpu_key)
     total_mib = components.total_mib
     capacity_mib = float(gpu_spec.usable_mib)
 
@@ -399,9 +422,13 @@ def estimate(
         gpu_capacity_mib=capacity_mib,
         headroom_mib=capacity_mib - total_mib,
         fits=total_mib <= capacity_mib,
-        max_batch_size=_max_batch_size(model_config, training_config, capacity_mib),
+        max_batch_size=_max_batch_size(
+            model_config, training_config, capacity_mib, gpu_key
+        ),
         effective_batch_size=training_config.batch_size * grad_accum_steps,
-        savings_hints=_savings_hints(model_config, training_config, total_mib),
+        savings_hints=_savings_hints(
+            model_config, training_config, total_mib, gpu_key
+        ),
         warnings=estimate_warnings(training_config),
     )
 
@@ -417,13 +444,26 @@ def _inference_memory(config: ModelConfig, serving: ServingConfig) -> InferenceM
     )
 
 
-def _inference_total(
-    config: ModelConfig, serving: ServingConfig, num_concurrent: int
+def _inference_overhead(
+    memory: InferenceMemory, serving: ServingConfig, gpu_key: str | None
 ) -> float:
-    memory = _inference_memory(
-        config, replace(serving, num_concurrent=num_concurrent)
+    return estimate_overhead(
+        memory.weight_mib,
+        memory.kv_cache_mib,
+        get_overhead_profile(gpu_key, flash_attn=False),
+        serving.seq_len,
     )
-    return memory.total_mib + estimate_overhead(memory.weight_mib, memory.kv_cache_mib)
+
+
+def _inference_total(
+    config: ModelConfig,
+    serving: ServingConfig,
+    num_concurrent: int,
+    gpu_key: str | None = None,
+) -> float:
+    scaled = replace(serving, num_concurrent=num_concurrent)
+    memory = _inference_memory(config, scaled)
+    return memory.total_mib + _inference_overhead(memory, scaled, gpu_key)
 
 
 def estimate_inference(
@@ -434,8 +474,9 @@ def estimate_inference(
     if not isinstance(gpu_spec, GpuSpec):
         raise ValueError("gpu_spec must be a GpuSpec")
 
+    gpu_key = gpu_key_for(gpu_spec)
     memory = _inference_memory(model_config, serving_config)
-    overhead_mib = estimate_overhead(memory.weight_mib, memory.kv_cache_mib)
+    overhead_mib = _inference_overhead(memory, serving_config, gpu_key)
     total_mib = memory.total_mib + overhead_mib
     capacity_mib = float(gpu_spec.usable_mib)
 
@@ -453,7 +494,7 @@ def estimate_inference(
         fits=total_mib <= capacity_mib,
         max_concurrent=_largest_fitting(
             lambda concurrent: _inference_total(
-                model_config, serving_config, concurrent
+                model_config, serving_config, concurrent, gpu_key
             ),
             capacity_mib,
         ),

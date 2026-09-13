@@ -7,10 +7,6 @@ class GpuSpec:
     vram_mib: int
     usable_mib: int
 
-# `t4` is the only entry with a measured total (14,912 MiB reported by
-# torch.cuda.get_device_properties across all 20 validation runs, ECC on). Every other row is
-# an estimate. A measured row for any of them is a genuinely useful contribution -- see
-# .github/ISSUE_TEMPLATE/measurement.yml.
 
 GPU_DB: dict[str, GpuSpec] = {
     # Consumer GPUs
@@ -26,6 +22,7 @@ GPU_DB: dict[str, GpuSpec] = {
     # Older / cloud GPUs
     # Measured: 14,912 MiB total with ECC on, not the 16,384 a "16 GB" label suggests.
     "t4": GpuSpec("Tesla T4", 14_912, 14_000),
+    "p100-16": GpuSpec("Tesla P100 16GB", 16_384, 15_500),
     "v100-16": GpuSpec("Tesla V100 16GB", 16_384, 15_000),
     "l4": GpuSpec("L4 24GB", 24_576, 23_000),
     "a10": GpuSpec("A10 24GB", 24_576, 23_000),
@@ -48,6 +45,16 @@ GPU_DB: dict[str, GpuSpec] = {
 
 def list_gpus() -> list[tuple[str, GpuSpec]]:
     return list(GPU_DB.items())
+
+
+def gpu_key_for(spec: GpuSpec) -> str | None:
+    if not isinstance(spec, GpuSpec):
+        raise ValueError("spec must be a GpuSpec")
+
+    for key, known in GPU_DB.items():
+        if known == spec:
+            return key
+    return None
 
 
 def get_gpu(name: str | None = None, vram_mib: int | None = None) -> GpuSpec:

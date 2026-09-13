@@ -11,7 +11,7 @@ from fitcheck.estimator import (
     _compute_components,
     _largest_fitting,
 )
-from fitcheck.gpu_db import GPU_DB, GpuSpec
+from fitcheck.gpu_db import GPU_DB, GpuSpec, gpu_key_for
 from fitcheck.memory.lora import LORA_TARGETS_STANDARD
 
 DEFAULT_BATCH_SIZES: tuple[int, ...] = (1, 2, 4, 8, 16)
@@ -151,6 +151,7 @@ def _grouped_points(
     model_id: str,
 ) -> tuple[list[FrontierPoint], int, int]:
     usable_mib = float(gpu.usable_mib)
+    gpu_key = gpu_key_for(gpu)
     groups: dict[tuple[int, int], list[tuple[int, int, float]]] = {}
     grid_size = 0
     fitting_count = 0
@@ -164,6 +165,7 @@ def _grouped_points(
             replace(
                 base, batch_size=batch_size, seq_len=seq_len, lora_rank=lora_rank
             ),
+            gpu_key,
         ).total_mib
         if total_mib > usable_mib:
             continue
@@ -224,10 +226,12 @@ def _total_at(
     batch_size: int,
     seq_len: int,
     lora_rank: int,
+    gpu_key: str | None = None,
 ) -> float:
     return _compute_components(
         config,
         replace(base, batch_size=batch_size, seq_len=seq_len, lora_rank=lora_rank),
+        gpu_key,
     ).total_mib
 
 
@@ -235,16 +239,17 @@ def _ceilings(
     config: ModelConfig, anchor: TrainingConfig, gpu: GpuSpec
 ) -> list[AxisCeiling]:
     usable_mib = float(gpu.usable_mib)
+    gpu_key = gpu_key_for(gpu)
 
     max_batch = _largest_fitting(
         lambda batch_size: _total_at(
-            config, anchor, batch_size, anchor.seq_len, anchor.lora_rank
+            config, anchor, batch_size, anchor.seq_len, anchor.lora_rank, gpu_key
         ),
         usable_mib,
     )
     max_rank = _largest_fitting(
         lambda lora_rank: _total_at(
-            config, anchor, anchor.batch_size, anchor.seq_len, lora_rank
+            config, anchor, anchor.batch_size, anchor.seq_len, lora_rank, gpu_key
         ),
         usable_mib,
     )
@@ -256,6 +261,7 @@ def _ceilings(
             max(batch_size, 1),
             anchor.seq_len,
             max(lora_rank, 1),
+            gpu_key,
         )
 
     return [
@@ -277,10 +283,15 @@ def _ceilings(
     ]
 
 
-def _prices(config: ModelConfig, anchor: TrainingConfig) -> list[AxisPrice]:
-    baseline_mib = _total_at(
-        config, anchor, anchor.batch_size, anchor.seq_len, anchor.lora_rank
-    )
+def _prices(
+    config: ModelConfig, anchor: TrainingConfig, gpu_key: str | None = None
+) -> list[AxisPrice]:
+    def at(batch_size: int, lora_rank: int) -> float:
+        return _total_at(
+            config, anchor, batch_size, anchor.seq_len, lora_rank, gpu_key
+        )
+
+    baseline_mib = at(anchor.batch_size, anchor.lora_rank)
     tokens = anchor.batch_size * anchor.seq_len
     prices: list[AxisPrice] = []
 
@@ -300,15 +311,13 @@ def _prices(config: ModelConfig, anchor: TrainingConfig) -> list[AxisPrice]:
             _AXIS_RANK,
             anchor.lora_rank,
             halved_rank,
-            _total_at(config, anchor, anchor.batch_size, anchor.seq_len, halved_rank),
+            at(anchor.batch_size, halved_rank),
         )
     add(
         _AXIS_RANK,
         anchor.lora_rank,
         anchor.lora_rank * 2,
-        _total_at(
-            config, anchor, anchor.batch_size, anchor.seq_len, anchor.lora_rank * 2
-        ),
+        at(anchor.batch_size, anchor.lora_rank * 2),
     )
 
     if anchor.batch_size > 1:
@@ -317,17 +326,13 @@ def _prices(config: ModelConfig, anchor: TrainingConfig) -> list[AxisPrice]:
             _AXIS_TOKENS,
             tokens,
             halved_batch * anchor.seq_len,
-            _total_at(
-                config, anchor, halved_batch, anchor.seq_len, anchor.lora_rank
-            ),
+            at(halved_batch, anchor.lora_rank),
         )
     add(
         _AXIS_TOKENS,
         tokens,
         anchor.batch_size * 2 * anchor.seq_len,
-        _total_at(
-            config, anchor, anchor.batch_size * 2, anchor.seq_len, anchor.lora_rank
-        ),
+        at(anchor.batch_size * 2, anchor.lora_rank),
     )
 
     return prices
@@ -404,7 +409,7 @@ def advise(
         fitting_count=fitting_count,
         frontier=frontier,
         ceilings=_ceilings(model_config, anchor, gpu_spec),
-        prices=_prices(model_config, anchor),
+        prices=_prices(model_config, anchor, gpu_key_for(gpu_spec)),
         anchor=anchor,
         recommended=recommended,
     )

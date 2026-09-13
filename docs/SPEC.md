@@ -461,16 +461,29 @@ those are cannot get that from this document yet. That is an honest gap, not a r
 
 #### Component 6: CUDA Overhead ($C_{overhead}$)
 
-$$C_{overhead} \approx 500\text{ MiB} + 0.05 \times (W_{base} + A_{act})$$
+$$C_{overhead} = \text{base\_context} + f(s) \times (W_{base} + A_{act}), \qquad
+f(s) = \text{frag} + \text{frag\_per\_octave} \times \log_2\!\left(\frac{s}{2048}\right)$$
 
 Covers: CUDA context (~300-800 MiB), cuDNN/cuBLAS workspace, PyTorch caching allocator fragmentation.
+
+The two constants are **per (GPU, attention kernel)**, not global. They live in
+`fitcheck/overhead_db.py` as `OverheadProfile` rows, exactly the way `gpu_db.py` holds card specs,
+and they are produced by `fitcheck/calibrate.py` from archived `scripts/measure.py --json` runs. A
+card with no fitted row falls back to `DEFAULT_OVERHEAD_PROFILE` — **500 MiB and a flat 5%**, the
+pre-9.3 constants, which is why no uncalibrated estimate moved when 9.3 landed.
+
+$f(s)$ is clamped at zero and the slope is applied only inside `[seq_len_min, seq_len_max]`, the
+range the fit actually saw. Both guards say the same thing: a trend measured over 512–4096 tokens is
+evidence about 512–4096 tokens, and run far enough it would eventually predict that the allocator
+hands out more than it reserves.
 
 > **On the deliberate overlap with `usable_mib`.** `GpuSpec.usable_mib` already discounts what the driver and
 > display reserve before your process starts (4090: 24,576 → 23,500), while $C_{overhead}$ covers what
 > PyTorch's own runtime adds on top — CUDA context, allocator fragmentation, cuBLAS workspace. The two
 > allowances overlap by a few hundred MiB, so `fitcheck` biases its estimate high **on purpose**: for a tool
 > whose entire job is avoiding OOM, a false "fits" is far more costly to the user than a false "doesn't fit".
-> Do not "fix" this by removing one of them.
+> Do not "fix" this by removing one of them. `calibrate.py --safety-mib` exists so that a fit can keep
+> that bias rather than least-squares it away.
 
 > **Measured status: this is the least accurate component, by a wide margin, and it is now the only
 > one that is.** With the Component 5 corrections of task 9.2 shipped, the tensors tier (which
@@ -498,9 +511,23 @@ Covers: CUDA context (~300-800 MiB), cuDNN/cuBLAS workspace, PyTorch caching all
 > **The 500 MiB context constant is separately wrong**: the T4 measured **133–147 MiB** consistently
 > across all 33 runs, never once near 500. The two errors partly cancel today, which is why the
 > process tier scores better than the allocator tier — so fit them **together**, or fixing one will
-> visibly worsen the other. This is task 9.3 and it now has the data it was waiting for.
+> visibly worsen the other. `calibrate.py` does exactly that: one least-squares over the residual
+> $\text{measured process} - \text{predicted tensors}$, which solves for both at once.
 
-**Implementation:** `memory/overhead.py` — function `estimate_overhead(weight_memory, activation_memory)`.
+> **What is fitted today, and what is not.** Task 9.3 ships the machinery, the archive format and the
+> acceptance check; `OVERHEAD_DB` itself is **still empty**, and that is deliberate. Of the two
+> groups the ten archived T4 rows can fit, `flash` lands at **6.1%** worst-case process error —
+> inside the 8% the task asks for — while `eager` reaches **13.9%**. The eager group turns on one row
+> (SmolLM2-1.7B, bs=4, seq=1024) that reserved **30.9%** more than it allocated while its SDPA twin,
+> at an identical tensor peak, reserved 11.9%. Five single-shot rows cannot separate a mechanism from
+> allocator variance, and that is what the repeat block in `scripts/calibration_sweep.py` is for.
+> Shipping a T4 profile early is also not free: it moves the process-tier column of every T4 row in
+> README's validation tables, and thirteen of those rows have no archived `reserved`/`context` split
+> to recompute from. So the profiles land with the sweep that regenerates all of them, not before.
+
+**Implementation:** `memory/overhead.py` — function
+`estimate_overhead(weight_memory, activation_memory, profile=None, seq_len=None)`. The constants are
+data in `overhead_db.py`; the fit is `fitcheck/calibrate.py`; the archive is `data/measurements/`.
 
 ---
 
@@ -613,9 +640,10 @@ fitcheck/
 │   ├── overhead.py          # Component 6
 │   └── inference.py         # Component 7 — serving (v0.2), not in the training equation
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
+├── overhead_db.py           # (GPU, kernel) → OverheadProfile — the fitted C_overhead constants
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
-├── calibrate.py             # Phase 3: real measurement (still an empty stub)
+├── calibrate.py             # Phase 3 (9.3): fits overhead_db.py from measure.py --json
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
@@ -627,12 +655,18 @@ tests/
 ├── test_gradients.py
 ├── test_activations.py
 ├── test_overhead.py
+├── test_overhead_db.py
+├── test_calibrate.py
 ├── test_inference.py
 ├── test_advisor.py
 └── test_end_to_end.py       # full pipeline: config → report → verdict
 scripts/                     # NOT part of the installed package
 ├── measure.py               # ground-truth harness (§3.8) — imports torch/peft/bitsandbytes
+├── measure_infer.py         # the serving-side equivalent (Component 7)
+├── calibration_sweep.py     # drives measure.py over the 9.3 grid, one process per row
 └── requirements-measure.txt # its deps, deliberately separate from pyproject.toml
+data/measurements/           # NOT packaged — archived measure.py --json rows, the only
+                             # evidence behind overhead_db.py
 ```
 
 > **The dependency runs one way.** `scripts/measure.py` imports `fitcheck`; `fitcheck` never imports
@@ -1314,7 +1348,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Gated linear units** (GLU variants: SiLU, GELU) | Treated uniformly — all save same intermediate shapes. | ✅ MVP |
 | **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
 | **Offline mode** | If `config.json` is cached locally, works without internet. The Hub parameter count is unavailable, so `num_params` falls back to the `config.json` formula with a warning on stderr — and the architectures that only the cross-check catches (phi-2, Qwen2.5-VL) are estimated rather than refused. | ✅ MVP |
-| **`C_overhead` fragmentation model** | Fixed 5% of $(W_{base}+A_{act})$. Measured `reserved/allocated` ran **7%–49%** across 33 runs and is larger under eager attention and long sequences. `_BASE_CONTEXT_MIB` is separately wrong — 500 in the code, **133–147** measured on the T4 — and the two errors partly cancel, so they must be fitted together. This is where essentially all residual error now sits (§3.8, Component 6). Task 9.3. | ⚠️ Known, evidenced |
+| **`C_overhead` fragmentation model** | Now a per-(GPU, kernel) `OverheadProfile` fitted by `fitcheck/calibrate.py`, with a sequence slope and a calibrated range — but **`OVERHEAD_DB` is still empty**, so every card falls back to the old flat 500 MiB + 5% and no estimate has moved. Measured `reserved/allocated` ran **7%–49%** across 33 runs; the T4 CUDA context measured **133–147** MiB against 500 in the code. On the ten archived rows the fit takes `flash` to **6.1%** worst-case process error, inside the 8% target, and `eager` only to **13.9%** — one run cannot separate that group's outlier from allocator variance. This is where essentially all residual error still sits (§3.8, Component 6). Task 9.3, half done. | ⚠️ Machinery shipped, constants owed |
 | **T4 / ECC entries in `gpu_db`** | Fixed: T4 is now `14_912 / 14_000`, the measured total. `h200` and `b200` take the `usable_mib` that is safe under the pessimistic reading of their vendor GB. Only the T4 is measured; the rest of the table is estimates. | ✅ fixed, rest unmeasured |
 | **No-checkpointing branch** | **Measured 2026-09-12 (task 9.2)** over 11 rows and 9 models: worst-case error 98.3% → 5.9%. The bracket is now $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$ and the score matrix is charged at the retained rate ($2.9\gamma$), not the transient one ($9\gamma$) — see Component 5. The 8.3 warning is **removed**: keeping a caveat that says the branch is unmeasured would now be false. | ✅ measured |
 | **`--quant int8` activations** | Billed at **$\gamma = 4$** whatever `--precision` says: `prepare_model_for_kbit_training` upcasts the layer norms to FP32 and LLM.int8() takes that FP32 input at every linear — the run prints `MatMul8bitLt: inputs will be cast from torch.float32` hundreds of times. On the one measured int8 row (TinyLlama, bs=2, seq=1024) that takes $A_{act}$ from **1,620 predicted against 3,729 measured ($-56.6\%$)** to **3,382 ($-9.3\%$)**, and the tensors tier from $-38.9\%$ to $-5.7\%$. The residual is LLM.int8()'s own FP16 outlier buffers, which are not modelled, so `estimate_warnings` attaches a caveat calling the figure a lower bound. **One model, one run** — a second int8 row on a different model is owed before the mechanism can be called general. | ⚠️ Partly measured, warned |

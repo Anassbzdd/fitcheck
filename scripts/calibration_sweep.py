@@ -53,10 +53,73 @@ GRID: tuple[tuple[str, int, int], ...] = (
 REPEAT = ("HuggingFaceTB/SmolLM2-1.7B", 4, 1024)
 REPEATS = 3
 
+# One failed row is a data point -- an out-of-memory config is a real answer. Three in a
+# row is a broken environment saying the same thing over and over, and the remaining
+# rows would only say it again after paying for the model downloads.
+_ABORT_AFTER_FAILURES = 3
+
 
 def _slug(model_id: str, batch_size: int, seq_len: int, kernel: str, tag: str) -> str:
     name = model_id.split("/")[-1].replace(".", "-")
     return f"{name}-bs{batch_size}-seq{seq_len}-{kernel}{tag}"
+
+
+def _normalise_tag(tag: str) -> str:
+    """`--tag nf4`, `--tag -nf4` and `--tag=-nf4` all mean the same thing.
+
+    argparse reads a value starting with `-` as another flag, so `--tag -nf4` fails
+    with "expected one argument" before this script ever runs. Accepting the bare word
+    and adding the separator here is the difference between a flag that works and one
+    that needs its own footnote.
+    """
+    trimmed = tag.strip().lstrip("-")
+    return f"-{trimmed}" if trimmed else ""
+
+
+def preflight(args: argparse.Namespace) -> str | None:
+    """Check the measurement stack once, instead of failing the same way 20 times.
+
+    Every dependency problem here is global: a missing library or an incompatible
+    version kills every row identically. Finding that out on row 1 costs a second;
+    finding it out on row 20 costs however long the models took to download.
+    """
+    probe = (
+        "import torch, transformers, peft, json;"
+        "p = torch.cuda.get_device_properties(0);"
+        "print(json.dumps({"
+        "'torch': torch.__version__, 'transformers': transformers.__version__,"
+        "'peft': peft.__version__, 'gpu': p.name,"
+        "'capability': f'sm_{p.major}{p.minor}',"
+        "'total_mib': round(p.total_memory / 1024**2),"
+        "'arch_list': torch.cuda.get_arch_list()}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        tail = result.stderr.strip().splitlines()[-4:]
+        print("PREFLIGHT FAILED -- not running the grid.\n")
+        for line in tail:
+            print(f"  {line}")
+        print(
+            "\nThe measurement stack could not be imported, so every row would fail "
+            "the same way.\nInstall the pinned versions and try again:\n"
+            "\n    pip install -q -U -r scripts/requirements-measure.txt\n"
+        )
+        return None
+
+    info = json.loads(result.stdout)
+    print(
+        f"{info['gpu']} ({info['capability']}, {info['total_mib']:,} MiB) | "
+        f"torch {info['torch']} | transformers {info['transformers']} | "
+        f"peft {info['peft']}"
+    )
+    if info["capability"] not in info["arch_list"]:
+        print(
+            f"  WARNING: this torch build lists {info['arch_list']} and not "
+            f"{info['capability']}. Kernels may fail to launch on this card."
+        )
+    return str(result.stdout)
 
 
 def _row_args(
@@ -102,7 +165,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lora-r", type=int, default=32)
     parser.add_argument("--out", default="runs", help="directory for the row files")
     parser.add_argument(
-        "--tag", default="", help="suffix for the filenames, e.g. -nf4"
+        "--tag",
+        default="",
+        help="suffix for the filenames, e.g. 'nf4'. A leading dash is optional.",
     )
     parser.add_argument(
         "--kernels",
@@ -113,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
         "--no-repeats", action="store_true", help="skip the repeat block"
     )
     args = parser.parse_args(argv)
+    args.tag = _normalise_tag(args.tag)
+
+    if preflight(args) is None:
+        return 2
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -130,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     done, failed = 0, []
+    consecutive_failures = 0
     for index, (model_id, batch_size, seq_len, kernel, tag) in enumerate(plan, 1):
         target = out / f"{_slug(model_id, batch_size, seq_len, kernel, tag)}.json"
         if target.exists():
@@ -149,14 +219,28 @@ def main(argv: list[str] | None = None) -> int:
             for line in result.stderr.strip().splitlines()[-6:]:
                 print(f"      {line}")
             failed.append(target.name)
+            consecutive_failures += 1
+            if consecutive_failures >= _ABORT_AFTER_FAILURES:
+                # An out-of-memory row is a data point; three in a row is a broken
+                # environment, and the next seventeen will say exactly the same thing.
+                print(
+                    f"\nSTOPPING: {consecutive_failures} rows failed in a row. This is "
+                    f"an environment problem, not a memory limit -- fix the error above "
+                    f"and re-run. Rows already written are kept and will be skipped."
+                )
+                break
             continue
 
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
             print(f"    FAILED: stdout was not JSON ({error})")
+            print(f"      first 200 chars of stdout: {result.stdout[:200]!r}")
             failed.append(target.name)
+            consecutive_failures += 1
             continue
+
+        consecutive_failures = 0
 
         target.write_text(json.dumps(payload, indent=1), encoding="utf-8")
         errors = payload.get("error_pct", {})

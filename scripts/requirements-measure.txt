@@ -1,6 +1,28 @@
+# Dependencies of scripts/measure.py ONLY. Deliberately NOT in pyproject.toml:
+# fitcheck itself must install with click + rich + huggingface-hub and nothing else.
+#
+# On a managed GPU image (Kaggle, Colab, a cloud notebook) DO NOT install this file
+# with `-U`. Those images ship a torch built against their own CUDA, and pip will
+# happily replace it with a generic PyPI build that does not match -- which takes
+# torchvision, torchaudio and the CUDA toolkit down with it, and then transformers
+# fails with a confusing `Could not import module 'LlamaConfig'`. There, install
+# nothing: the stack is already present. See the note on torchao below.
 torch>=2.1
 transformers>=4.56
 peft>=0.11
 accelerate>=0.30
 bitsandbytes>=0.43
-torchao>=0.16.0
+
+# torchao is NOT a dependency -- nothing in this project imports it. It is listed here
+# only to record a trap, because the fix is the opposite of what it looks like:
+#
+#   ImportError: Found an incompatible version of torchao. Found version 0.10.0,
+#   but only versions above 0.16.0 are supported
+#
+# peft's is_torchao_available() returns False quietly when torchao is ABSENT, and
+# raises the error above when it is present but old. So the fix is to REMOVE it:
+#
+#   pip uninstall -y torchao
+#
+# Upgrading it instead drags in a new torch and breaks the image, which is how this
+# note came to be written.

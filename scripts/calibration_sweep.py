@@ -76,6 +76,43 @@ def _normalise_tag(tag: str) -> str:
     return f"-{trimmed}" if trimmed else ""
 
 
+_GENERIC_ADVICE = (
+    "The measurement stack could not be imported, so every row would fail the same\n"
+    "way. On a managed GPU image (Kaggle, Colab) the stack is already installed --\n"
+    "do NOT `pip install -U` over it. See scripts/requirements-measure.txt."
+)
+
+_TORCHAO_ADVICE = (
+    "An OLD torchao is installed. peft raises on that, but skips torchao silently\n"
+    "when it is absent -- and nothing in this project uses it. So REMOVE it:\n"
+    "\n    pip uninstall -y torchao\n"
+    "\nDo not upgrade it instead: torchao pulls a matching torch, and replacing a\n"
+    "GPU image's torch breaks torchvision, torchaudio and the CUDA toolkit with it."
+)
+
+_BROKEN_TORCH_ADVICE = (
+    "torch looks broken or mismatched with this image. The usual cause is a\n"
+    "`pip install -U` that replaced the image's CUDA build with a generic PyPI one;\n"
+    "`Could not import module 'LlamaConfig'` is a symptom of it, not a transformers\n"
+    "bug. pip cannot undo this reliably -- restart the session from a clean image\n"
+    "(on Kaggle: stop the session and start a new one) and install nothing but\n"
+    "`pip install -e .`."
+)
+
+
+def _diagnose(stderr: str) -> str:
+    """Name the fix, not just the error.
+
+    Each of these was a real hour lost. A preflight that says "something is wrong"
+    is barely better than the twenty stack traces it replaced.
+    """
+    if "torchao" in stderr:
+        return _TORCHAO_ADVICE
+    if "LlamaConfig" in stderr or "Torch not compiled with CUDA" in stderr:
+        return _BROKEN_TORCH_ADVICE
+    return _GENERIC_ADVICE
+
+
 def preflight(args: argparse.Namespace) -> str | None:
     """Check the measurement stack once, instead of failing the same way 20 times.
 
@@ -101,11 +138,7 @@ def preflight(args: argparse.Namespace) -> str | None:
         print("PREFLIGHT FAILED -- not running the grid.\n")
         for line in tail:
             print(f"  {line}")
-        print(
-            "\nThe measurement stack could not be imported, so every row would fail "
-            "the same way.\nInstall the pinned versions and try again:\n"
-            "\n    pip install -q -U -r scripts/requirements-measure.txt\n"
-        )
+        print(f"\n{_diagnose(result.stderr)}")
         return None
 
     info = json.loads(result.stdout)

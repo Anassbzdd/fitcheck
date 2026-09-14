@@ -76,6 +76,35 @@ def _normalise_tag(tag: str) -> str:
     return f"-{trimmed}" if trimmed else ""
 
 
+# Run in a subprocess. It prints the stack description as JSON on success, and on
+# failure prints the traceback followed by the ROOT CAUSE as the last line -- the real
+# error in a transformers import chain sits fifty lines below the symptom, and a tail
+# of the traceback shows only the symptom. `Could not import module 'LlamaConfig'` is
+# the symptom; `operator torchvision::nms does not exist` is the cause.
+_PROBE = """
+import json, sys, traceback
+try:
+    import torch, transformers, peft
+    p = torch.cuda.get_device_properties(0)
+    print(json.dumps({
+        "torch": torch.__version__,
+        "transformers": transformers.__version__,
+        "peft": peft.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "gpu": p.name,
+        "capability": "sm_%d%d" % (p.major, p.minor),
+        "total_mib": round(p.total_memory / 1024**2),
+        "arch_list": torch.cuda.get_arch_list(),
+    }))
+except BaseException as error:
+    traceback.print_exc()
+    root = error
+    while root.__cause__ or root.__context__:
+        root = root.__cause__ or root.__context__
+    print("ROOT CAUSE: %s: %s" % (type(root).__name__, root), file=sys.stderr)
+    sys.exit(1)
+"""
+
 _GENERIC_ADVICE = (
     "The measurement stack could not be imported, so every row would fail the same\n"
     "way. On a managed GPU image (Kaggle, Colab) the stack is already installed --\n"
@@ -90,25 +119,47 @@ _TORCHAO_ADVICE = (
     "GPU image's torch breaks torchvision, torchaudio and the CUDA toolkit with it."
 )
 
+_TORCHVISION_MISMATCH_ADVICE = (
+    "torchvision does not match torch. `operator torchvision::nms does not exist`\n"
+    "means torchvision was compiled against a different torch than the one loaded,\n"
+    "which happens when `pip install -U` replaces a GPU image's torch. transformers\n"
+    "imports torchvision for image models, so every text model dies with it too.\n"
+    "\nTHE REAL FIX is a clean image. On Kaggle a kernel restart is NOT enough --\n"
+    "pip changes live in the container, so use Run > Factory reset (or stop the\n"
+    "session from the sidebar and reopen), then install nothing but `pip install -e .`\n"
+    "plus `pip uninstall -y torchao`.\n"
+    "\nIf a clean image is genuinely unavailable, `pip uninstall -y torchvision\n"
+    "torchaudio` also clears it: transformers skips them when they are absent, and\n"
+    "nothing here measures an image or an audio model. Note in that case that the\n"
+    "rows were taken on a different torch than the rest of the archive."
+)
+
 _BROKEN_TORCH_ADVICE = (
     "torch looks broken or mismatched with this image. The usual cause is a\n"
     "`pip install -U` that replaced the image's CUDA build with a generic PyPI one;\n"
     "`Could not import module 'LlamaConfig'` is a symptom of it, not a transformers\n"
-    "bug. pip cannot undo this reliably -- restart the session from a clean image\n"
-    "(on Kaggle: stop the session and start a new one) and install nothing but\n"
-    "`pip install -e .`."
+    "bug. pip cannot undo this reliably -- restart from a clean image (on Kaggle:\n"
+    "Run > Factory reset; a kernel restart keeps the broken packages) and install\n"
+    "nothing but `pip install -e .`."
 )
 
 
 def _diagnose(stderr: str) -> str:
     """Name the fix, not just the error.
 
-    Each of these was a real hour lost. A preflight that says "something is wrong"
-    is barely better than the twenty stack traces it replaced.
+    Each of these cost a real Kaggle session. A preflight that only says "something
+    is wrong" is barely better than the twenty stack traces it replaced, and the
+    bottom of an import chain like this one is fifty lines below the symptom.
     """
+    if "torchvision::nms" in stderr or "torchvision" in stderr and "operator" in stderr:
+        return _TORCHVISION_MISMATCH_ADVICE
     if "torchao" in stderr:
         return _TORCHAO_ADVICE
-    if "LlamaConfig" in stderr or "Torch not compiled with CUDA" in stderr:
+    if (
+        "LlamaConfig" in stderr
+        or "BloomPreTrainedModel" in stderr
+        or "Torch not compiled with CUDA" in stderr
+    ):
         return _BROKEN_TORCH_ADVICE
     return _GENERIC_ADVICE
 
@@ -120,28 +171,21 @@ def preflight(args: argparse.Namespace) -> str | None:
     version kills every row identically. Finding that out on row 1 costs a second;
     finding it out on row 20 costs however long the models took to download.
     """
-    probe = (
-        "import torch, transformers, peft, json;"
-        "p = torch.cuda.get_device_properties(0);"
-        "print(json.dumps({"
-        "'torch': torch.__version__, 'transformers': transformers.__version__,"
-        "'peft': peft.__version__, 'gpu': p.name,"
-        "'capability': f'sm_{p.major}{p.minor}',"
-        "'total_mib': round(p.total_memory / 1024**2),"
-        "'arch_list': torch.cuda.get_arch_list()}))"
-    )
     result = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True
+        [sys.executable, "-c", _PROBE], capture_output=True, text=True
     )
     if result.returncode != 0:
-        tail = result.stderr.strip().splitlines()[-4:]
         print("PREFLIGHT FAILED -- not running the grid.\n")
-        for line in tail:
+        for line in result.stderr.strip().splitlines()[-3:]:
             print(f"  {line}")
         print(f"\n{_diagnose(result.stderr)}")
         return None
 
     info = json.loads(result.stdout)
+    if not info["cuda_available"]:
+        print("PREFLIGHT FAILED -- torch imports, but sees no CUDA device.\n")
+        print(_BROKEN_TORCH_ADVICE)
+        return None
     print(
         f"{info['gpu']} ({info['capability']}, {info['total_mib']:,} MiB) | "
         f"torch {info['torch']} | transformers {info['transformers']} | "

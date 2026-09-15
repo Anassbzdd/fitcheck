@@ -63,7 +63,8 @@ Welcome to fitcheck interactive terminal. Type a command or 'help'.
 > explain
 💡 Explanation:
 - Activations (20,128 MiB) are the largest component at 65.8% — and 16,032 MiB of that
-  is the logits: four FP32 copies of the (b, s, V) tensor, which a 128k vocabulary makes
+  is the logits: four FP32 copies of the (b, s, V) tensor (3.5 with an unquantized base), which a
+  128k vocabulary makes
   enormous. Neither gradient checkpointing nor Flash Attention reduces it.
 - Base model weights (7,753 MiB) come second at 25.3% — the NF4-quantized 8.03B base,
   its FP32 quantization scales, and the embeddings and LM head that bitsandbytes does
@@ -527,6 +528,14 @@ LM head, long before it reaches a decoder layer. So the peak takes whichever hum
 
 $$A_{act} = 2L\gamma bsh + \max\left(A_{logits},\ A_{layer}\right)$$
 
+> [!NOTE]
+> **This document works the QLoRA example throughout, and the $2L$ is the quantized-base form.**
+> The store is really **one** $(b,s,h)$ tensor per layer, held FP32 once peft's kbit prep has
+> upcast the norms -- and $L$ tensors at 4 bytes is the same byte count as $2L$ at $\gamma = 2$.
+> With an unquantized base the store is $L\gamma bsh$, $A_{logits}$ is 3.5 copies and the score
+> matrix is $7.4\gamma$. Measured 2026-09-15; see docs/SPEC.md *Activation profiles*. Every
+> number in this document is QLoRA and is unaffected.
+
 > [!IMPORTANT]
 > **Peak memory is a maximum over time, not a sum.** `torch.cuda.max_memory_allocated()` reports the
 > highest the water level ever reached, and a training step is not one moment. Two big humps —
@@ -955,6 +964,13 @@ They were not a rubber stamp. Three things in Component 5 were wrong and the mea
 2. The checkpoint store was $L\gamma bsh$; it is **$2L\gamma bsh$**.
 3. The eager score matrix was billed at $\gamma$; it is **$9\gamma$**.
 
+> [!WARNING]
+> **Points 2 and 3 were measured on QLoRA runs only, and then applied to every run.** That is the
+> error task 9.3 found on 2026-09-15: with an unquantized base the store is $L\gamma bsh$ and the
+> score matrix is $7.4\gamma$. Every run in this session was QLoRA, so the session's own numbers
+> stand -- what was wrong was treating them as unconditional. The store 'doubling' was really the
+> dtype changing: $L$ FP32 tensors, not $2L$ at $\gamma$.
+
 Worst-case error across the wider development set of twenty runs fell from **36.1% to 4.8%**.
 
 A third session of thirteen runs then opened the branch nobody had measured, and found two more:
@@ -1159,7 +1175,9 @@ with $c = 9$ under checkpointing (one layer live, its transient peak) and $c = 2
 (every layer live, what each one retains).
 
 > [!IMPORTANT]
-> **Under checkpointing that is a `max`, not a sum, and the store is $2L$, not $L$.** The LM-head hump
+> **Under checkpointing that is a `max`, not a sum, and the store is $2L$, not $L$** -- with a
+> **quantized** base. (Really $L$ tensors held FP32, the same bytes; unquantized it is $L\gamma bsh$.
+> See docs/SPEC.md *Activation profiles*.) The LM-head hump
 > and one layer's recompute are both transient and never overlap, so pricing both prices a peak that
 > never happened. Non-reentrant checkpointing keeps two $(b,s,h)$ tensors per boundary, not one. And
 > eager attention builds the score matrix about nine times, not once. All three were found by

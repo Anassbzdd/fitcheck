@@ -341,12 +341,12 @@ only **whole-number tensor counts** (a free least-squares fit returns $-51.5$ te
 which is physically impossible — it overfits, because $h$ and $n_hd_k$ are the same number in 8 of the
 9 models):
 
-| bracket | worst error over the 11 rows |
-| :--- | ---: |
-| $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$ | **5.9%** |
-| $11h + 4n_hd_k + 1n_{kv}d_k + 3d_{ff}$ | 6.1% |
-| $10h + 5n_hd_k + 1n_{kv}d_k + 3d_{ff}$ | 6.2% |
-| $4h + 2n_hd_k + 2n_{kv}d_k + 3d_{ff}$ (the derived one) | **32.6%** |
+| bracket                                                 | worst error over the 11 rows |
+| :------------------------------------------------------ | ---------------------------: |
+| $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$                  |                     **5.9%** |
+| $11h + 4n_hd_k + 1n_{kv}d_k + 3d_{ff}$                  |                         6.1% |
+| $10h + 5n_hd_k + 1n_{kv}d_k + 3d_{ff}$                  |                         6.2% |
+| $4h + 2n_hd_k + 2n_{kv}d_k + 3d_{ff}$ (the derived one) |                    **32.6%** |
 
 Three things are solid and one is not:
 
@@ -411,10 +411,55 @@ $$A_{act} = \begin{cases} L \times A_{layer}^{retained} + A_{logits} & \text{no 
 Under Flash Attention the two forms of $A_{layer}$ are equal, because the only thing that differs
 between them is the score matrix, and Flash removes it.
 
-**Why $2L\gamma bsh$ and not $L\gamma bsh$.** Non-reentrant checkpointing (`use_reentrant=False`, which is
-what `transformers` uses) retains two $(b,s,h)$ tensors per boundary: the layer input it saved, and the
-recomputed output the autograd graph holds. Measured across 20 T4 runs — a multiplier of **1** gives 10.4%
-worst-case error and **3** gives 9.8%, against **4.8%** for **2**.
+**Why $2L\gamma bsh$ and not $L\gamma bsh$ — and why that is only true with a quantized base.**
+The $2L$ above, the four $A_{logits}$ copies and the $9\gamma$ score matrix were all measured on QLoRA
+runs and then applied to every run. **That was wrong, and it is corrected as of 2026-09-15 (task 9.3).**
+See *Activation profiles* immediately below. Every formula and every golden number in this document is
+stated for the **quantized** profile and is unchanged by the correction.
+
+### Activation profiles — the three constants depend on the base-model storage
+
+`prepare_model_for_kbit_training` upcasts the norms to FP32 once the base is quantized, and the saved
+activations follow. So the checkpoint store is **one** $(b,s,h)$ tensor per layer whose dtype is FP32
+under a quantized base and $\gamma$ otherwise. $L$ tensors at 4 bytes is the same byte count as
+"$2L$ tensors at $\gamma$" whenever $\gamma = 2$, which is why every QLoRA measurement fitcheck has
+ever taken agreed with the old form, and every unquantized one did not.
+
+| constant | `--quant none` | `--quant nf4` | `--quant int8` |
+| :--- | ---: | ---: | ---: |
+| checkpoint tensors per layer ($\kappa$) | 1 | 1 | 2 (pinned) |
+| checkpoint dtype | $\gamma$ | FP32 | $\gamma$ (already FP32) |
+| $A_{logits}$ FP32 copies | 3.5 | 4 | 4 |
+| score-matrix copies ($c$) | 7.4 | 9 | 9 |
+
+$$A_{act}^{ckpt} = \kappa L \gamma_{ckpt} bsh + \max(A_{logits},\ A_{layer})$$
+
+**Measured 2026-09-15**, T4 sweep, 32 distinct rows (5 models, seq 512–4096, bs 1/2/4, both kernels),
+`data/measurements/t4-sweep-2026-09-15.json`. Fitting this structure to each half separately returns
+$0.90L$ / 3.56 copies / $c=7.30$ for `none` and $1.93L$ / 4.04 copies / $c=9.15$ for `nf4` — the second
+being the shipped set, unmoved. Against the measured $A_{act}$:
+
+| | worst | mean |
+| :--- | ---: | ---: |
+| `--quant none`, one profile for all (pre-2026-09-15) | +32.1% | 23.3% |
+| `--quant none`, own profile | **−3.3%** | **1.1%** |
+| `--quant nf4`, unchanged | −4.8% | 1.1% |
+
+Two caveats, both recorded rather than resolved:
+
+- **int8 is pinned to the pre-correction constants.** There is no int8 row in the sweep, and the one
+  archived int8 measurement already under-predicts by 9.3% because LLM.int8()'s FP16 outlier buffers
+  are not modelled. Giving it the nf4 profile would halve its checkpoint store and make an
+  under-prediction worse, which is the direction that costs the user an OOM.
+- **The FP32 checkpoint pin is derived, not measured.** Every row in the sweep is fp16, so "one tensor
+  at FP32" and "two at $\gamma$" are identical in all 32 of them. The first is chosen because it
+  explains both profiles with the same structural constant and matches the upcast already documented
+  for int8. It changes a prediction only for `--quant nf4 --precision fp32`, which is a contradiction
+  in terms — QLoRA is defined here as an nf4 base with bf16 compute.
+- **The no-checkpointing branch inherits the corrected $A_{logits}$ copy count but keeps $2.9\gamma$.**
+  Every row in the sweep has checkpointing on. $A_{logits}$ does not depend on checkpointing, so the
+  copy count carries; the retained score-matrix constant has no unquantized measurement and was left
+  alone rather than scaled by guess.
 
 > **Consequence worth knowing.** For a large-vocabulary model under checkpointing the LM-head hump usually
 > wins the $\max$, and then **Flash Attention does not reduce peak memory at all** — for the golden

@@ -53,6 +53,7 @@ they would.
 
 | file | card | rows | note |
 |:---|:---|---:|:---|
+| `t4-sweep-2026-09-15.json` | Tesla T4 (sm_75) | 40 | LoRA r=32 [q,k,v,o], fp16, checkpointing on, eager and SDPA, seq 512–4096, bs 1/2/4, **both `--quant none` and `nf4`**. One session, one stack; `cuda_context_mib` is 140.875 on every row. 8 rows are deliberate repeats (`-r2`/`-r3`) and came back bit-identical — exclude them before fitting or they carry 3× weight. These are the rows that found the per-quantization activation profiles. |
 | `t4-qlora-2026-09-01.json` | Tesla T4 (sm_75) | 10 | QLoRA r=32, fp16, checkpointing on, eager and SDPA, seq 512–2048. Measured half transcribed from `fitcheck.ipynb`; predicted half recomputed. See `_provenance` in the file. |
 
 ## Adding a card

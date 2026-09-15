@@ -8,6 +8,7 @@ from fitcheck.config_parser import ModelConfig
 from fitcheck.gpu_db import GpuSpec, gpu_key_for
 from fitcheck.memory.activations import (
     _activation_parts,
+    _validate_quantization as _activation_profile_for,
     estimate_activation_memory,
 )
 from fitcheck.memory.gradients import estimate_gradient_memory
@@ -183,6 +184,7 @@ def activation_breakdown(
         training.seq_len,
         training.flash_attn,
         precision_to_bytes(_activation_precision(training)),
+        _activation_profile_for(training.quantization),
     )
 
     layer_mib = bytes_to_mib(parts.layer_bytes)
@@ -278,6 +280,7 @@ def _compute_components(
         training.grad_checkpoint,
         training.flash_attn,
         _activation_precision(training),
+        training.quantization,
     )
 
     return _Components(

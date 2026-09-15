@@ -1,0 +1,3165 @@
+{
+ "_provenance": "40 rows from the T4 calibration sweep of 2026-09-15, emitted by `scripts/measure.py --json` via `scripts/calibration_sweep.py` and archived from the notebook's runs.zip. ONE Kaggle session, one stack: Tesla T4 (sm_75, 14,912 MiB), torch 2.14.0+cu130 / transformers 5.17.0 / peft 0.20.0, torchvision and torchaudio UNINSTALLED (the image shipped a torchvision built against a different torch, so `import transformers` died on `operator torchvision::nms does not exist`; nothing here measures an image model). `measured.cuda_context_mib` is 140.875 on all 40 rows, which is how you can tell they are one session. LoRA r=32 [q,k,v,o], fp16, AdamW fp32, gradient checkpointing ON for every row. 8 of the 40 are deliberate repeats of SmolLM2-1.7B bs=4 seq=1024 (suffix -r2/-r3, 3 per kernel per quant): they came back BIT-IDENTICAL, so the allocator noise floor on this card is zero and the 30.9% eager fragmentation is a mechanism, not variance. Exclude the repeats before fitting C_overhead or they carry 3x weight. The measured half is verbatim. The predicted half is recomputed with fitcheck 0.3.0: these rows are what identified the per-quantization activation profiles, so the predictions they were emitted with are the pre-correction ones and must not be reused. Measurements do not change when the formulas do. Each row also carries the `model_config` it was measured with, so the archive can be re-scored and re-fitted with no network access at all.",
+ "runs": [
+  {
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "Qwen2-5-1-5B-Instruct-bs2-seq1024-eager-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1643.8681640625,
+    "resident_before_step_mib": 1643.8681640625,
+    "peak_allocated_mib": 6838.541015625,
+    "peak_reserved_mib": 7548.0,
+    "process_mib": 7688.875,
+    "peak_forward_mib": 4474.57275390625,
+    "peak_backward_mib": 6838.541015625,
+    "peak_optimizer_mib": 3007.02490234375,
+    "optimizer_state_mib": 66.5,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 33.25,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 8716288,
+    "total_params": 1552430592,
+    "step_seconds": 2.694697088000339,
+    "weight_breakdown": {
+     "nf4_packed": 624.75,
+     "quant_scales": 78.105712890625,
+     "unquantized_fp32": 924.052734375,
+     "other": 0.0
+    },
+    "activation_mib": 5094.9228515625
+   },
+   "predicted": {
+    "weight_mib": 1593.45849609375,
+    "lora_mib": 33.25,
+    "optimizer_mib": 66.5,
+    "gradient_mib": 33.25,
+    "activation_mib": 5084.0,
+    "overhead_mib": 833.8729248046875,
+    "total_mib": 7644.3314208984375
+   },
+   "error_pct": {
+    "tensors": -0.41065074358822773,
+    "process": -0.5793250521248232,
+    "activation": -0.21438698643199677
+   },
+   "model_config": {
+    "name": "Qwen2.5-1.5B-Instruct",
+    "num_params": 1543714304,
+    "hidden_size": 1536,
+    "num_layers": 28,
+    "num_attention_heads": 12,
+    "num_kv_heads": 2,
+    "intermediate_size": 8960,
+    "vocab_size": 151936,
+    "head_dim": 128,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "Qwen2-5-1-5B-Instruct-bs2-seq1024-eager-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 2978.52734375,
+    "resident_before_step_mib": 2978.52734375,
+    "peak_allocated_mib": 7405.8095703125,
+    "peak_reserved_mib": 7910.0,
+    "process_mib": 8050.875,
+    "peak_forward_mib": 6223.84130859375,
+    "peak_backward_mib": 7405.8095703125,
+    "peak_optimizer_mib": 3735.79345703125,
+    "optimizer_state_mib": 66.5,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 33.25,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 8716288,
+    "total_params": 1552430592,
+    "step_seconds": 1.3497285710000142,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 33.25,
+     "other": 2944.4013671875
+    },
+    "activation_mib": 4327.5322265625
+   },
+   "predicted": {
+    "weight_mib": 2944.4013671875,
+    "lora_mib": 33.25,
+    "optimizer_mib": 66.5,
+    "gradient_mib": 33.25,
+    "activation_mib": 4322.5,
+    "overhead_mib": 863.3450683593751,
+    "total_mib": 8263.246435546875
+   },
+   "error_pct": {
+    "tensors": -0.07977795093036255,
+    "process": 2.637867754087284,
+    "activation": -0.11628397661863887
+   },
+   "model_config": {
+    "name": "Qwen2.5-1.5B-Instruct",
+    "num_params": 1543714304,
+    "hidden_size": 1536,
+    "num_layers": 28,
+    "num_attention_heads": 12,
+    "num_kv_heads": 2,
+    "intermediate_size": 8960,
+    "vocab_size": 151936,
+    "head_dim": 128,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "Qwen2-5-1-5B-Instruct-bs2-seq1024-flash-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1641.9931640625,
+    "resident_before_step_mib": 1641.9931640625,
+    "peak_allocated_mib": 6827.666015625,
+    "peak_reserved_mib": 7400.0,
+    "process_mib": 7540.875,
+    "peak_forward_mib": 4463.69775390625,
+    "peak_backward_mib": 6827.666015625,
+    "peak_optimizer_mib": 3005.14990234375,
+    "optimizer_state_mib": 66.5,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 33.25,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 8716288,
+    "total_params": 1552430592,
+    "step_seconds": 2.588166273999832,
+    "weight_breakdown": {
+     "nf4_packed": 624.75,
+     "quant_scales": 78.105712890625,
+     "unquantized_fp32": 924.052734375,
+     "other": 0.0
+    },
+    "activation_mib": 5085.9228515625
+   },
+   "predicted": {
+    "weight_mib": 1593.45849609375,
+    "lora_mib": 33.25,
+    "optimizer_mib": 66.5,
+    "gradient_mib": 33.25,
+    "activation_mib": 5084.0,
+    "overhead_mib": 833.8729248046875,
+    "total_mib": 7644.3314208984375
+   },
+   "error_pct": {
+    "tensors": -0.2520263804918237,
+    "process": 1.3719418621637078,
+    "activation": -0.0378073285541337
+   },
+   "model_config": {
+    "name": "Qwen2.5-1.5B-Instruct",
+    "num_params": 1543714304,
+    "hidden_size": 1536,
+    "num_layers": 28,
+    "num_attention_heads": 12,
+    "num_kv_heads": 2,
+    "intermediate_size": 8960,
+    "vocab_size": 151936,
+    "head_dim": 128,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "Qwen2-5-1-5B-Instruct-bs2-seq1024-flash-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 2978.52734375,
+    "resident_before_step_mib": 2978.52734375,
+    "peak_allocated_mib": 7401.8095703125,
+    "peak_reserved_mib": 7766.0,
+    "process_mib": 7906.875,
+    "peak_forward_mib": 6219.84130859375,
+    "peak_backward_mib": 7401.8095703125,
+    "peak_optimizer_mib": 3735.79345703125,
+    "optimizer_state_mib": 66.5,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 33.25,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 8716288,
+    "total_params": 1552430592,
+    "step_seconds": 1.5106501349999917,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 33.25,
+     "other": 2944.4013671875
+    },
+    "activation_mib": 4323.5322265625
+   },
+   "predicted": {
+    "weight_mib": 2944.4013671875,
+    "lora_mib": 33.25,
+    "optimizer_mib": 66.5,
+    "gradient_mib": 33.25,
+    "activation_mib": 4322.5,
+    "overhead_mib": 863.3450683593751,
+    "total_mib": 8263.246435546875
+   },
+   "error_pct": {
+    "tensors": -0.02578022450960511,
+    "process": 4.507108504268433,
+    "activation": -0.023874612432823007
+   },
+   "model_config": {
+    "name": "Qwen2.5-1.5B-Instruct",
+    "num_params": 1543714304,
+    "hidden_size": 1536,
+    "num_layers": 28,
+    "num_attention_heads": 12,
+    "num_kv_heads": 2,
+    "intermediate_size": 8960,
+    "vocab_size": 151936,
+    "head_dim": 128,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-nf4-r2.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1296.4658203125,
+    "resident_before_step_mib": 1296.4658203125,
+    "peak_allocated_mib": 5297.271484375,
+    "peak_reserved_mib": 6996.0,
+    "process_mib": 7136.875,
+    "peak_forward_mib": 3793.33447265625,
+    "peak_backward_mib": 5297.271484375,
+    "peak_optimizer_mib": 2336.74755859375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 6.786379655000019,
+    "weight_breakdown": {
+     "nf4_packed": 768.0,
+     "quant_scales": 96.01025390625,
+     "unquantized_fp32": 432.3828125,
+     "other": 0.0
+    },
+    "activation_mib": 3856.8056640625
+   },
+   "predicted": {
+    "weight_mib": 1248.3828125,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3840.0,
+    "overhead_mib": 754.419140625,
+    "total_mib": 6034.801953125
+   },
+   "error_pct": {
+    "tensors": -0.3188183185403157,
+    "process": -15.441955293808562,
+    "activation": -0.43574049424097877
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-nf4-r3.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1296.4658203125,
+    "resident_before_step_mib": 1296.4658203125,
+    "peak_allocated_mib": 5297.271484375,
+    "peak_reserved_mib": 6984.0,
+    "process_mib": 7124.875,
+    "peak_forward_mib": 3793.33447265625,
+    "peak_backward_mib": 5297.271484375,
+    "peak_optimizer_mib": 2336.74755859375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 6.806069535999995,
+    "weight_breakdown": {
+     "nf4_packed": 768.0,
+     "quant_scales": 96.01025390625,
+     "unquantized_fp32": 432.3828125,
+     "other": 0.0
+    },
+    "activation_mib": 3856.8056640625
+   },
+   "predicted": {
+    "weight_mib": 1248.3828125,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3840.0,
+    "overhead_mib": 754.419140625,
+    "total_mib": 6034.801953125
+   },
+   "error_pct": {
+    "tensors": -0.3188183185403157,
+    "process": -15.299539246302565,
+    "activation": -0.43574049424097877
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1296.4658203125,
+    "resident_before_step_mib": 1296.4658203125,
+    "peak_allocated_mib": 5297.271484375,
+    "peak_reserved_mib": 6996.0,
+    "process_mib": 7136.875,
+    "peak_forward_mib": 3793.33447265625,
+    "peak_backward_mib": 5297.271484375,
+    "peak_optimizer_mib": 2336.74755859375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 6.104608647000077,
+    "weight_breakdown": {
+     "nf4_packed": 768.0,
+     "quant_scales": 96.01025390625,
+     "unquantized_fp32": 432.3828125,
+     "other": 0.0
+    },
+    "activation_mib": 3856.8056640625
+   },
+   "predicted": {
+    "weight_mib": 1248.3828125,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3840.0,
+    "overhead_mib": 754.419140625,
+    "total_mib": 6034.801953125
+   },
+   "error_pct": {
+    "tensors": -0.3188183185403157,
+    "process": -15.441955293808562,
+    "activation": -0.43574049424097877
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-none-r2.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 3312.1923828125,
+    "resident_before_step_mib": 3312.1923828125,
+    "peak_allocated_mib": 6536.748046875,
+    "peak_reserved_mib": 7734.0,
+    "process_mib": 7874.875,
+    "peak_forward_mib": 5784.81103515625,
+    "peak_backward_mib": 6536.748046875,
+    "peak_optimizer_mib": 3936.47412109375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 4.842547704000026,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 48.0,
+     "other": 3264.19140625
+    },
+    "activation_mib": 3080.5556640625
+   },
+   "predicted": {
+    "weight_mib": 3264.19140625,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3072.0,
+    "overhead_mib": 816.8095703125,
+    "total_mib": 7345.0009765625
+   },
+   "error_pct": {
+    "tensors": -0.13090057263398186,
+    "process": -6.728665831997334,
+    "activation": -0.27773119513176303
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-none-r3.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 3312.1923828125,
+    "resident_before_step_mib": 3312.1923828125,
+    "peak_allocated_mib": 6536.748046875,
+    "peak_reserved_mib": 7734.0,
+    "process_mib": 7874.875,
+    "peak_forward_mib": 5784.81103515625,
+    "peak_backward_mib": 6536.748046875,
+    "peak_optimizer_mib": 3936.47412109375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 4.580285533999927,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 48.0,
+     "other": 3264.19140625
+    },
+    "activation_mib": 3080.5556640625
+   },
+   "predicted": {
+    "weight_mib": 3264.19140625,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3072.0,
+    "overhead_mib": 816.8095703125,
+    "total_mib": 7345.0009765625
+   },
+   "error_pct": {
+    "tensors": -0.13090057263398186,
+    "process": -6.728665831997334,
+    "activation": -0.27773119513176303
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 3312.1923828125,
+    "resident_before_step_mib": 3312.1923828125,
+    "peak_allocated_mib": 6536.748046875,
+    "peak_reserved_mib": 7734.0,
+    "process_mib": 7874.875,
+    "peak_forward_mib": 5784.81103515625,
+    "peak_backward_mib": 6536.748046875,
+    "peak_optimizer_mib": 3936.47412109375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 4.337119928999982,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 48.0,
+     "other": 3264.19140625
+    },
+    "activation_mib": 3080.5556640625
+   },
+   "predicted": {
+    "weight_mib": 3264.19140625,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3072.0,
+    "overhead_mib": 816.8095703125,
+    "total_mib": 7345.0009765625
+   },
+   "error_pct": {
+    "tensors": -0.13090057263398186,
+    "process": -6.728665831997334,
+    "activation": -0.27773119513176303
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-nf4-r2.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1296.4658203125,
+    "resident_before_step_mib": 1296.4658203125,
+    "peak_allocated_mib": 5281.271484375,
+    "peak_reserved_mib": 5940.0,
+    "process_mib": 6080.875,
+    "peak_forward_mib": 3777.33447265625,
+    "peak_backward_mib": 5281.271484375,
+    "peak_optimizer_mib": 2336.74755859375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 5.128525326999807,
+    "weight_breakdown": {
+     "nf4_packed": 768.0,
+     "quant_scales": 96.01025390625,
+     "unquantized_fp32": 432.3828125,
+     "other": 0.0
+    },
+    "activation_mib": 3840.8056640625
+   },
+   "predicted": {
+    "weight_mib": 1248.3828125,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3840.0,
+    "overhead_mib": 754.419140625,
+    "total_mib": 6034.801953125
+   },
+   "error_pct": {
+    "tensors": -0.016826854624481927,
+    "process": -0.7576713363619515,
+    "activation": -0.020976433929953967
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-nf4-r3.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1296.4658203125,
+    "resident_before_step_mib": 1296.4658203125,
+    "peak_allocated_mib": 5281.271484375,
+    "peak_reserved_mib": 5940.0,
+    "process_mib": 6080.875,
+    "peak_forward_mib": 3777.33447265625,
+    "peak_backward_mib": 5281.271484375,
+    "peak_optimizer_mib": 2336.74755859375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 5.033917536999979,
+    "weight_breakdown": {
+     "nf4_packed": 768.0,
+     "quant_scales": 96.01025390625,
+     "unquantized_fp32": 432.3828125,
+     "other": 0.0
+    },
+    "activation_mib": 3840.8056640625
+   },
+   "predicted": {
+    "weight_mib": 1248.3828125,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3840.0,
+    "overhead_mib": 754.419140625,
+    "total_mib": 6034.801953125
+   },
+   "error_pct": {
+    "tensors": -0.016826854624481927,
+    "process": -0.7576713363619515,
+    "activation": -0.020976433929953967
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1296.4658203125,
+    "resident_before_step_mib": 1296.4658203125,
+    "peak_allocated_mib": 5281.271484375,
+    "peak_reserved_mib": 5960.0,
+    "process_mib": 6100.875,
+    "peak_forward_mib": 3777.33447265625,
+    "peak_backward_mib": 5281.271484375,
+    "peak_optimizer_mib": 2336.74755859375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 5.046738984000058,
+    "weight_breakdown": {
+     "nf4_packed": 768.0,
+     "quant_scales": 96.01025390625,
+     "unquantized_fp32": 432.3828125,
+     "other": 0.0
+    },
+    "activation_mib": 3840.8056640625
+   },
+   "predicted": {
+    "weight_mib": 1248.3828125,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3840.0,
+    "overhead_mib": 754.419140625,
+    "total_mib": 6034.801953125
+   },
+   "error_pct": {
+    "tensors": -0.016826854624481927,
+    "process": -1.083009353166551,
+    "activation": -0.020976433929953967
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-none-r2.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 3312.1923828125,
+    "resident_before_step_mib": 3312.1923828125,
+    "peak_allocated_mib": 6528.748046875,
+    "peak_reserved_mib": 7094.0,
+    "process_mib": 7234.875,
+    "peak_forward_mib": 5776.81103515625,
+    "peak_backward_mib": 6528.748046875,
+    "peak_optimizer_mib": 3936.47412109375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 3.708372645000054,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 48.0,
+     "other": 3264.19140625
+    },
+    "activation_mib": 3072.5556640625
+   },
+   "predicted": {
+    "weight_mib": 3264.19140625,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3072.0,
+    "overhead_mib": 816.8095703125,
+    "total_mib": 7345.0009765625
+   },
+   "error_pct": {
+    "tensors": -0.008525993360494855,
+    "process": 1.5221545163185266,
+    "activation": -0.018084751693816573
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-none-r3.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 3312.1923828125,
+    "resident_before_step_mib": 3312.1923828125,
+    "peak_allocated_mib": 6528.748046875,
+    "peak_reserved_mib": 7094.0,
+    "process_mib": 7234.875,
+    "peak_forward_mib": 5776.81103515625,
+    "peak_backward_mib": 6528.748046875,
+    "peak_optimizer_mib": 3936.47412109375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 3.3433069159999604,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 48.0,
+     "other": 3264.19140625
+    },
+    "activation_mib": 3072.5556640625
+   },
+   "predicted": {
+    "weight_mib": 3264.19140625,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3072.0,
+    "overhead_mib": 816.8095703125,
+    "total_mib": 7345.0009765625
+   },
+   "error_pct": {
+    "tensors": -0.008525993360494855,
+    "process": 1.5221545163185266,
+    "activation": -0.018084751693816573
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=4, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 3312.1923828125,
+    "resident_before_step_mib": 3312.1923828125,
+    "peak_allocated_mib": 6528.748046875,
+    "peak_reserved_mib": 7094.0,
+    "process_mib": 7234.875,
+    "peak_forward_mib": 5776.81103515625,
+    "peak_backward_mib": 6528.748046875,
+    "peak_optimizer_mib": 3936.47412109375,
+    "optimizer_state_mib": 96.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 48.0,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 12582912,
+    "total_params": 1723959296,
+    "step_seconds": 3.3606695779999427,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 48.0,
+     "other": 3264.19140625
+    },
+    "activation_mib": 3072.5556640625
+   },
+   "predicted": {
+    "weight_mib": 3264.19140625,
+    "lora_mib": 48.0,
+    "optimizer_mib": 96.0,
+    "gradient_mib": 48.0,
+    "activation_mib": 3072.0,
+    "overhead_mib": 816.8095703125,
+    "total_mib": 7345.0009765625
+   },
+   "error_pct": {
+    "tensors": -0.008525993360494855,
+    "process": 1.5221545163185266,
+    "activation": -0.018084751693816573
+   },
+   "model_config": {
+    "name": "SmolLM2-1.7B",
+    "num_params": 1711376384,
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 32,
+    "num_kv_heads": 32,
+    "intermediate_size": 8192,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=1, seq=4096, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 4096,
+    "batch_size": 1,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-135M-bs1-seq4096-eager-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 179.29736328125,
+    "resident_before_step_mib": 179.29736328125,
+    "peak_allocated_mib": 3679.26708984375,
+    "peak_reserved_mib": 5224.0,
+    "process_mib": 5364.875,
+    "peak_forward_mib": 2114.658203125,
+    "peak_backward_mib": 3679.26708984375,
+    "peak_optimizer_mib": 1038.7041015625,
+    "optimizer_state_mib": 28.125,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 14.0625,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 3686400,
+    "total_params": 138201408,
+    "step_seconds": 3.6853167180001947,
+    "weight_breakdown": {
+     "nf4_packed": 50.625,
+     "quant_scales": 6.3409423828125,
+     "unquantized_fp32": 122.196533203125,
+     "other": 0.0
+    },
+    "activation_mib": 3457.7822265625
+   },
+   "predicted": {
+    "weight_mib": 165.087158203125,
+    "lora_mib": 14.0625,
+    "optimizer_mib": 28.125,
+    "gradient_mib": 14.0625,
+    "activation_mib": 3342.0,
+    "overhead_mib": 675.3543579101563,
+    "total_mib": 4238.691516113281
+   },
+   "error_pct": {
+    "tensors": -3.150897415429231,
+    "process": -20.991793543870436,
+    "activation": -3.348453400941999
+   },
+   "model_config": {
+    "name": "SmolLM2-135M",
+    "num_params": 134515008,
+    "hidden_size": 576,
+    "num_layers": 30,
+    "num_attention_heads": 9,
+    "num_kv_heads": 3,
+    "intermediate_size": 1536,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=1, seq=4096, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 4096,
+    "batch_size": 1,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-135M-bs1-seq4096-eager-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 270.65283203125,
+    "resident_before_step_mib": 270.65283203125,
+    "peak_allocated_mib": 3180.10693359375,
+    "peak_reserved_mib": 4476.0,
+    "process_mib": 4616.875,
+    "peak_forward_mib": 2416.638671875,
+    "peak_backward_mib": 3180.10693359375,
+    "peak_optimizer_mib": 736.1845703125,
+    "optimizer_state_mib": 28.125,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 14.0625,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 3686400,
+    "total_params": 138201408,
+    "step_seconds": 2.485236005000047,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 14.0625,
+     "other": 256.5670166015625
+    },
+    "activation_mib": 2867.2666015625
+   },
+   "predicted": {
+    "weight_mib": 256.5670166015625,
+    "lora_mib": 14.0625,
+    "optimizer_mib": 28.125,
+    "gradient_mib": 14.0625,
+    "activation_mib": 2823.0,
+    "overhead_mib": 653.9783508300782,
+    "total_mib": 3789.7953674316404
+   },
+   "error_pct": {
+    "tensors": -1.392717852482297,
+    "process": -17.914273888038114,
+    "activation": -1.5438606768682472
+   },
+   "model_config": {
+    "name": "SmolLM2-135M",
+    "num_params": 134515008,
+    "hidden_size": 576,
+    "num_layers": 30,
+    "num_attention_heads": 9,
+    "num_kv_heads": 3,
+    "intermediate_size": 1536,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=1, seq=4096, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 4096,
+    "batch_size": 1,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-135M-bs1-seq4096-flash-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 179.29736328125,
+    "resident_before_step_mib": 179.29736328125,
+    "peak_allocated_mib": 3576.75146484375,
+    "peak_reserved_mib": 3784.0,
+    "process_mib": 3924.875,
+    "peak_forward_mib": 2049.783203125,
+    "peak_backward_mib": 3576.75146484375,
+    "peak_optimizer_mib": 1037.8291015625,
+    "optimizer_state_mib": 28.125,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 14.0625,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 3686400,
+    "total_params": 138201408,
+    "step_seconds": 1.9774136709997947,
+    "weight_breakdown": {
+     "nf4_packed": 50.625,
+     "quant_scales": 6.3409423828125,
+     "unquantized_fp32": 122.196533203125,
+     "other": 0.0
+    },
+    "activation_mib": 3355.2666015625
+   },
+   "predicted": {
+    "weight_mib": 165.087158203125,
+    "lora_mib": 14.0625,
+    "optimizer_mib": 28.125,
+    "gradient_mib": 14.0625,
+    "activation_mib": 3342.0,
+    "overhead_mib": 675.3543579101563,
+    "total_mib": 4238.691516113281
+   },
+   "error_pct": {
+    "tensors": -0.37504162009788966,
+    "process": 7.995579887595938,
+    "activation": -0.3953963466367153
+   },
+   "model_config": {
+    "name": "SmolLM2-135M",
+    "num_params": 134515008,
+    "hidden_size": 576,
+    "num_layers": 30,
+    "num_attention_heads": 9,
+    "num_kv_heads": 3,
+    "intermediate_size": 1536,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=1, seq=4096, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 4096,
+    "batch_size": 1,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-135M-bs1-seq4096-flash-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 270.65283203125,
+    "resident_before_step_mib": 270.65283203125,
+    "peak_allocated_mib": 3148.10693359375,
+    "peak_reserved_mib": 3284.0,
+    "process_mib": 3424.875,
+    "peak_forward_mib": 2384.638671875,
+    "peak_backward_mib": 3148.10693359375,
+    "peak_optimizer_mib": 736.1845703125,
+    "optimizer_state_mib": 28.125,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 14.0625,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 3686400,
+    "total_params": 138201408,
+    "step_seconds": 0.8348605669999642,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 14.0625,
+     "other": 256.5670166015625
+    },
+    "activation_mib": 2835.2666015625
+   },
+   "predicted": {
+    "weight_mib": 256.5670166015625,
+    "lora_mib": 14.0625,
+    "optimizer_mib": 28.125,
+    "gradient_mib": 14.0625,
+    "activation_mib": 2823.0,
+    "overhead_mib": 653.9783508300782,
+    "total_mib": 3789.7953674316404
+   },
+   "error_pct": {
+    "tensors": -0.3903907094463857,
+    "process": 10.654998136622226,
+    "activation": -0.4326436729350228
+   },
+   "model_config": {
+    "name": "SmolLM2-135M",
+    "num_params": 134515008,
+    "hidden_size": 576,
+    "num_layers": 30,
+    "num_attention_heads": 9,
+    "num_kv_heads": 3,
+    "intermediate_size": 1536,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=512, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 512,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-135M-bs2-seq512-eager-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 179.29736328125,
+    "resident_before_step_mib": 179.29736328125,
+    "peak_allocated_mib": 1067.18896484375,
+    "peak_reserved_mib": 1192.0,
+    "process_mib": 1332.875,
+    "peak_forward_mib": 685.455078125,
+    "peak_backward_mib": 1067.18896484375,
+    "peak_optimizer_mib": 448.3056640625,
+    "optimizer_state_mib": 28.125,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 14.0625,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 3686400,
+    "total_params": 138201408,
+    "step_seconds": 0.42258099999980914,
+    "weight_breakdown": {
+     "nf4_packed": 50.625,
+     "quant_scales": 6.3409423828125,
+     "unquantized_fp32": 122.196533203125,
+     "other": 0.0
+    },
+    "activation_mib": 845.7041015625
+   },
+   "predicted": {
+    "weight_mib": 165.087158203125,
+    "lora_mib": 14.0625,
+    "optimizer_mib": 28.125,
+    "gradient_mib": 14.0625,
+    "activation_mib": 835.5,
+    "overhead_mib": 550.0293579101562,
+    "total_mib": 1606.8665161132812
+   },
+   "error_pct": {
+    "tensors": -0.9700069042731,
+    "process": 20.556429981302166,
+    "activation": -1.2065805928630566
+   },
+   "model_config": {
+    "name": "SmolLM2-135M",
+    "num_params": 134515008,
+    "hidden_size": 576,
+    "num_layers": 30,
+    "num_attention_heads": 9,
+    "num_kv_heads": 3,
+    "intermediate_size": 1536,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=512, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 512,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-135M-bs2-seq512-eager-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 270.65283203125,
+    "resident_before_step_mib": 270.65283203125,
+    "peak_allocated_mib": 1027.29443359375,
+    "peak_reserved_mib": 1104.0,
+    "process_mib": 1244.875,
+    "peak_forward_mib": 836.435546875,
+    "peak_backward_mib": 1027.29443359375,
+    "peak_optimizer_mib": 441.7236328125,
+    "optimizer_state_mib": 28.125,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 14.0625,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 3686400,
+    "total_params": 138201408,
+    "step_seconds": 0.2835490150000055,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 14.0625,
+     "other": 256.5670166015625
+    },
+    "activation_mib": 714.4541015625
+   },
+   "predicted": {
+    "weight_mib": 256.5670166015625,
+    "lora_mib": 14.0625,
+    "optimizer_mib": 28.125,
+    "gradient_mib": 14.0625,
+    "activation_mib": 705.75,
+    "overhead_mib": 548.1158508300781,
+    "total_mib": 1566.6828674316407
+   },
+   "error_pct": {
+    "tensors": -0.8495536145033468,
+    "process": 25.85061692391933,
+    "activation": -1.2182870171035853
+   },
+   "model_config": {
+    "name": "SmolLM2-135M",
+    "num_params": 134515008,
+    "hidden_size": 576,
+    "num_layers": 30,
+    "num_attention_heads": 9,
+    "num_kv_heads": 3,
+    "intermediate_size": 1536,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=512, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 512,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-135M-bs2-seq512-flash-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 179.29736328125,
+    "resident_before_step_mib": 179.29736328125,
+    "peak_allocated_mib": 1063.81396484375,
+    "peak_reserved_mib": 1194.0,
+    "process_mib": 1334.875,
+    "peak_forward_mib": 682.080078125,
+    "peak_backward_mib": 1063.81396484375,
+    "peak_optimizer_mib": 448.3056640625,
+    "optimizer_state_mib": 28.125,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 14.0625,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 3686400,
+    "total_params": 138201408,
+    "step_seconds": 0.3622544220002055,
+    "weight_breakdown": {
+     "nf4_packed": 50.625,
+     "quant_scales": 6.3409423828125,
+     "unquantized_fp32": 122.196533203125,
+     "other": 0.0
+    },
+    "activation_mib": 842.3291015625
+   },
+   "predicted": {
+    "weight_mib": 165.087158203125,
+    "lora_mib": 14.0625,
+    "optimizer_mib": 28.125,
+    "gradient_mib": 14.0625,
+    "activation_mib": 835.5,
+    "overhead_mib": 550.0293579101562,
+    "total_mib": 1606.8665161132812
+   },
+   "error_pct": {
+    "tensors": -0.6558295784028116,
+    "process": 20.375804184907295,
+    "activation": -0.8107403092012591
+   },
+   "model_config": {
+    "name": "SmolLM2-135M",
+    "num_params": 134515008,
+    "hidden_size": 576,
+    "num_layers": 30,
+    "num_attention_heads": 9,
+    "num_kv_heads": 3,
+    "intermediate_size": 1536,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=512, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 512,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-135M-bs2-seq512-flash-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 270.65283203125,
+    "resident_before_step_mib": 270.65283203125,
+    "peak_allocated_mib": 1026.91943359375,
+    "peak_reserved_mib": 1070.0,
+    "process_mib": 1210.875,
+    "peak_forward_mib": 836.060546875,
+    "peak_backward_mib": 1026.91943359375,
+    "peak_optimizer_mib": 441.7236328125,
+    "optimizer_state_mib": 28.125,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 14.0625,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 3686400,
+    "total_params": 138201408,
+    "step_seconds": 0.2717065240000238,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 14.0625,
+     "other": 256.5670166015625
+    },
+    "activation_mib": 714.0791015625
+   },
+   "predicted": {
+    "weight_mib": 256.5670166015625,
+    "lora_mib": 14.0625,
+    "optimizer_mib": 28.125,
+    "gradient_mib": 14.0625,
+    "activation_mib": 705.75,
+    "overhead_mib": 548.1158508300781,
+    "total_mib": 1566.6828674316407
+   },
+   "error_pct": {
+    "tensors": -0.8133468623685242,
+    "process": 29.38435985808946,
+    "activation": -1.1664116124214836
+   },
+   "model_config": {
+    "name": "SmolLM2-135M",
+    "num_params": 134515008,
+    "hidden_size": 576,
+    "num_layers": 30,
+    "num_attention_heads": 9,
+    "num_kv_heads": 3,
+    "intermediate_size": 1536,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-360M",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=1, seq=4096, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 4096,
+    "batch_size": 1,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-360M-bs1-seq4096-eager-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 388.2158203125,
+    "resident_before_step_mib": 388.2158203125,
+    "peak_allocated_mib": 5687.154296875,
+    "peak_reserved_mib": 8164.0,
+    "process_mib": 8304.875,
+    "peak_forward_mib": 2992.1689453125,
+    "peak_backward_mib": 5687.154296875,
+    "peak_optimizer_mib": 1302.49755859375,
+    "optimizer_state_mib": 50.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 25.0,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 6553600,
+    "total_params": 368374720,
+    "step_seconds": 6.222409138999865,
+    "weight_breakdown": {
+     "nf4_packed": 150.0,
+     "quant_scales": 18.763671875,
+     "unquantized_fp32": 205.238037109375,
+     "other": 0.0
+    },
+    "activation_mib": 5223.9384765625
+   },
+   "predicted": {
+    "weight_mib": 348.988037109375,
+    "lora_mib": 25.0,
+    "optimizer_mib": 50.0,
+    "gradient_mib": 25.0,
+    "activation_mib": 4975.0,
+    "overhead_mib": 766.1994018554688,
+    "total_mib": 6190.187438964844
+   },
+   "error_pct": {
+    "tensors": -4.627380338708774,
+    "process": -25.46320758632919,
+    "activation": -4.7653408951766325
+   },
+   "model_config": {
+    "name": "SmolLM2-360M",
+    "num_params": 361821120,
+    "hidden_size": 960,
+    "num_layers": 32,
+    "num_attention_heads": 15,
+    "num_kv_heads": 5,
+    "intermediate_size": 2560,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-360M",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=1, seq=4096, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 4096,
+    "batch_size": 1,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-360M-bs1-seq4096-eager-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 729.0732421875,
+    "resident_before_step_mib": 729.0732421875,
+    "peak_allocated_mib": 4908.51171875,
+    "peak_reserved_mib": 7304.0,
+    "process_mib": 7444.875,
+    "peak_forward_mib": 3027.7607421875,
+    "peak_backward_mib": 4908.51171875,
+    "peak_optimizer_mib": 1244.72998046875,
+    "optimizer_state_mib": 50.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 25.0,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 6553600,
+    "total_params": 368374720,
+    "step_seconds": 4.314978728000028,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 25.0,
+     "other": 690.1190185546875
+    },
+    "activation_mib": 4104.4384765625
+   },
+   "predicted": {
+    "weight_mib": 690.1190185546875,
+    "lora_mib": 25.0,
+    "optimizer_mib": 50.0,
+    "gradient_mib": 25.0,
+    "activation_mib": 3967.0,
+    "overhead_mib": 732.8559509277344,
+    "total_mib": 5489.974969482422
+   },
+   "error_pct": {
+    "tensors": -3.0842892687208683,
+    "process": -26.25833248399171,
+    "activation": -3.3485329929370957
+   },
+   "model_config": {
+    "name": "SmolLM2-360M",
+    "num_params": 361821120,
+    "hidden_size": 960,
+    "num_layers": 32,
+    "num_attention_heads": 15,
+    "num_kv_heads": 5,
+    "intermediate_size": 2560,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-360M",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=1, seq=4096, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 4096,
+    "batch_size": 1,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-360M-bs1-seq4096-flash-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 381.6142578125,
+    "resident_before_step_mib": 381.6142578125,
+    "peak_allocated_mib": 4017.841796875,
+    "peak_reserved_mib": 4518.0,
+    "process_mib": 4658.875,
+    "peak_forward_mib": 2496.87353515625,
+    "peak_backward_mib": 4017.841796875,
+    "peak_optimizer_mib": 1296.79443359375,
+    "optimizer_state_mib": 50.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 25.0,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 6553600,
+    "total_params": 368374720,
+    "step_seconds": 3.6098140439999042,
+    "weight_breakdown": {
+     "nf4_packed": 150.0,
+     "quant_scales": 18.763671875,
+     "unquantized_fp32": 205.238037109375,
+     "other": 0.0
+    },
+    "activation_mib": 3561.2275390625
+   },
+   "predicted": {
+    "weight_mib": 348.988037109375,
+    "lora_mib": 25.0,
+    "optimizer_mib": 50.0,
+    "gradient_mib": 25.0,
+    "activation_mib": 3552.0,
+    "overhead_mib": 695.0494018554688,
+    "total_mib": 4696.037438964844
+   },
+   "error_pct": {
+    "tensors": -0.419472956320308,
+    "process": 0.7976698015045287,
+    "activation": -0.25911119020856405
+   },
+   "model_config": {
+    "name": "SmolLM2-360M",
+    "num_params": 361821120,
+    "hidden_size": 960,
+    "num_layers": 32,
+    "num_attention_heads": 15,
+    "num_kv_heads": 5,
+    "intermediate_size": 2560,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "HuggingFaceTB/SmolLM2-360M",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=1, seq=4096, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 4096,
+    "batch_size": 1,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "SmolLM2-360M-bs1-seq4096-flash-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 729.0732421875,
+    "resident_before_step_mib": 729.0732421875,
+    "peak_allocated_mib": 3754.77734375,
+    "peak_reserved_mib": 3912.0,
+    "process_mib": 4052.875,
+    "peak_forward_mib": 2995.30908203125,
+    "peak_backward_mib": 3754.77734375,
+    "peak_optimizer_mib": 1244.72998046875,
+    "optimizer_state_mib": 50.0,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 25.0,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 6553600,
+    "total_params": 368374720,
+    "step_seconds": 1.5302631670000437,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 25.0,
+     "other": 690.1190185546875
+    },
+    "activation_mib": 2950.7041015625
+   },
+   "predicted": {
+    "weight_mib": 690.1190185546875,
+    "lora_mib": 25.0,
+    "optimizer_mib": 50.0,
+    "gradient_mib": 25.0,
+    "activation_mib": 2928.0,
+    "overhead_mib": 680.9059509277344,
+    "total_mib": 4399.0249694824215
+   },
+   "error_pct": {
+    "tensors": -0.9763115582960579,
+    "process": 8.540849877739173,
+    "activation": -0.769446911009389
+   },
+   "model_config": {
+    "name": "SmolLM2-360M",
+    "num_params": 361821120,
+    "hidden_size": 960,
+    "num_layers": 32,
+    "num_attention_heads": 15,
+    "num_kv_heads": 5,
+    "intermediate_size": 2560,
+    "vocab_size": 49152,
+    "head_dim": 64,
+    "tie_word_embeddings": true
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq1024-eager-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1075.552734375,
+    "resident_before_step_mib": 1075.552734375,
+    "peak_allocated_mib": 2876.3349609375,
+    "peak_reserved_mib": 3666.0,
+    "process_mib": 3806.875,
+    "peak_forward_mib": 2102.076171875,
+    "peak_backward_mib": 2876.3349609375,
+    "peak_optimizer_mib": 1511.31884765625,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 2.029203583999788,
+    "weight_breakdown": {
+     "nf4_packed": 462.0,
+     "quant_scales": 57.7593994140625,
+     "unquantized_fp32": 534.7265625,
+     "other": 0.0
+    },
+    "activation_mib": 1697.6572265625
+   },
+   "predicted": {
+    "weight_mib": 1020.1015625,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 1691.0,
+    "overhead_mib": 635.555078125,
+    "total_mib": 3484.156640625
+   },
+   "error_pct": {
+    "tensors": -0.9641922381828818,
+    "process": -8.477251272369072,
+    "activation": -0.3921419741475068
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 1024,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq1024-eager-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 2134.5517578125,
+    "resident_before_step_mib": 2134.5517578125,
+    "peak_allocated_mib": 3518.083984375,
+    "peak_reserved_mib": 4226.0,
+    "process_mib": 4366.875,
+    "peak_forward_mib": 3048.86572265625,
+    "peak_backward_mib": 3518.083984375,
+    "peak_optimizer_mib": 2429.31787109375,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 1.4231723419999298,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 34.375,
+     "other": 2098.17578125
+    },
+    "activation_mib": 1280.4072265625
+   },
+   "predicted": {
+    "weight_mib": 2098.17578125,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 1310.1999998092651,
+    "overhead_mib": 670.4187890529632,
+    "total_mib": 4216.294570112228
+   },
+   "error_pct": {
+    "tensors": 0.7899696768950782,
+    "process": -3.4482422759472615,
+    "activation": 2.3268201419598027
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq1024-flash-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1077.552734375,
+    "resident_before_step_mib": 1077.552734375,
+    "peak_allocated_mib": 2531.5849609375,
+    "peak_reserved_mib": 2896.0,
+    "process_mib": 3036.875,
+    "peak_forward_mib": 2047.61669921875,
+    "peak_backward_mib": 2531.5849609375,
+    "peak_optimizer_mib": 1513.81884765625,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 1.757800166999914,
+    "weight_breakdown": {
+     "nf4_packed": 462.0,
+     "quant_scales": 57.7593994140625,
+     "unquantized_fp32": 534.7265625,
+     "other": 0.0
+    },
+    "activation_mib": 1350.9072265625
+   },
+   "predicted": {
+    "weight_mib": 1020.1015625,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 1352.0,
+    "overhead_mib": 618.605078125,
+    "total_mib": 3128.206640625
+   },
+   "error_pct": {
+    "tensors": -0.8683650273131295,
+    "process": 3.007421794607947,
+    "activation": 0.08089181966112184
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=1024, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 1024,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq1024-flash-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 2134.5517578125,
+    "resident_before_step_mib": 2134.5517578125,
+    "peak_allocated_mib": 3287.833984375,
+    "peak_reserved_mib": 3532.0,
+    "process_mib": 3672.875,
+    "peak_forward_mib": 3045.86572265625,
+    "peak_backward_mib": 3287.833984375,
+    "peak_optimizer_mib": 2430.31787109375,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 1.150820149000083,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 34.375,
+     "other": 2098.17578125
+    },
+    "activation_mib": 1050.1572265625
+   },
+   "predicted": {
+    "weight_mib": 2098.17578125,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 1051.0,
+    "overhead_mib": 657.4587890625,
+    "total_mib": 3944.1345703125
+   },
+   "error_pct": {
+    "tensors": -0.035226934526019514,
+    "process": 7.385483315182244,
+    "activation": 0.08025211998575361
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=2048, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 2048,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq2048-eager-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1070.052734375,
+    "resident_before_step_mib": 1070.052734375,
+    "peak_allocated_mib": 6650.9912109375,
+    "peak_reserved_mib": 7840.0,
+    "process_mib": 7980.875,
+    "peak_forward_mib": 4076.974609375,
+    "peak_backward_mib": 6650.9912109375,
+    "peak_optimizer_mib": 1788.70947265625,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 6.09970855399979,
+    "weight_breakdown": {
+     "nf4_packed": 462.0,
+     "quant_scales": 57.7593994140625,
+     "unquantized_fp32": 534.7265625,
+     "other": 0.0
+    },
+    "activation_mib": 5477.8134765625
+   },
+   "predicted": {
+    "weight_mib": 1020.1015625,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 5686.0,
+    "overhead_mib": 835.305078125,
+    "total_mib": 7678.906640625
+   },
+   "error_pct": {
+    "tensors": 2.8959646081888346,
+    "process": -3.783649779942671,
+    "activation": 3.800540568390138
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=2048, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 2048,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq2048-eager-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 2134.5517578125,
+    "resident_before_step_mib": 2134.5517578125,
+    "peak_allocated_mib": 6616.115234375,
+    "peak_reserved_mib": 7662.0,
+    "process_mib": 7802.875,
+    "peak_forward_mib": 4704.0986328125,
+    "peak_backward_mib": 6616.115234375,
+    "peak_optimizer_mib": 2570.33349609375,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 4.472056405999979,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 34.375,
+     "other": 2098.17578125
+    },
+    "activation_mib": 4378.4384765625
+   },
+   "predicted": {
+    "weight_mib": 2098.17578125,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 4514.800000190735,
+    "overhead_mib": 830.6487890720368,
+    "total_mib": 7581.124570512771
+   },
+   "error_pct": {
+    "tensors": 2.030807238175733,
+    "process": -2.841906726523605,
+    "activation": 3.1143871121672566
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=2048, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 2048,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq2048-flash-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1073.552734375,
+    "resident_before_step_mib": 1073.552734375,
+    "peak_allocated_mib": 3895.8662109375,
+    "peak_reserved_mib": 4750.0,
+    "process_mib": 4890.875,
+    "peak_forward_mib": 2927.92919921875,
+    "peak_backward_mib": 3895.8662109375,
+    "peak_optimizer_mib": 1791.58447265625,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 4.550947525000083,
+    "weight_breakdown": {
+     "nf4_packed": 462.0,
+     "quant_scales": 57.7593994140625,
+     "unquantized_fp32": 534.7265625,
+     "other": 0.0
+    },
+    "activation_mib": 2719.1884765625
+   },
+   "predicted": {
+    "weight_mib": 1020.1015625,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 2704.0,
+    "overhead_mib": 686.205078125,
+    "total_mib": 4547.806640625
+   },
+   "error_pct": {
+    "tensors": -0.8795129653401154,
+    "process": -7.014457727400517,
+    "activation": -0.5585665242925979
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=2048, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 2048,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq2048-flash-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 2134.5517578125,
+    "resident_before_step_mib": 2134.5517578125,
+    "peak_allocated_mib": 4354.115234375,
+    "peak_reserved_mib": 4696.0,
+    "process_mib": 4836.875,
+    "peak_forward_mib": 3870.17822265625,
+    "peak_backward_mib": 4354.115234375,
+    "peak_optimizer_mib": 2570.33349609375,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 2.6180829160000485,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 34.375,
+     "other": 2098.17578125
+    },
+    "activation_mib": 2116.4384765625
+   },
+   "predicted": {
+    "weight_mib": 2098.17578125,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 2102.0,
+    "overhead_mib": 710.0087890625,
+    "total_mib": 5047.6845703125
+   },
+   "error_pct": {
+    "tensors": -0.37756127801150763,
+    "process": 4.3583836736012405,
+    "activation": -0.6822062971540208
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=512, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 512,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq512-eager-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1074.052734375,
+    "resident_before_step_mib": 1074.052734375,
+    "peak_allocated_mib": 1850.3193359375,
+    "peak_reserved_mib": 2216.0,
+    "process_mib": 2356.875,
+    "peak_forward_mib": 1606.33544921875,
+    "peak_backward_mib": 1850.3193359375,
+    "peak_optimizer_mib": 1370.81103515625,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 0.8167622969999684,
+    "weight_breakdown": {
+     "nf4_packed": 462.0,
+     "quant_scales": 57.7593994140625,
+     "unquantized_fp32": 534.7265625,
+     "other": 0.0
+    },
+    "activation_mib": 673.1416015625
+   },
+   "predicted": {
+    "weight_mib": 1020.1015625,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 676.0,
+    "overhead_mib": 584.805078125,
+    "total_mib": 2418.406640625
+   },
+   "error_pct": {
+    "tensors": -0.903507470997141,
+    "process": 2.6107299124900516,
+    "activation": 0.4246355344648243
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=512, fp16, adamw, ckpt, no FA",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "eager",
+    "attn_impl": "eager",
+    "seq_len": 512,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq512-eager-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 2134.5517578125,
+    "resident_before_step_mib": 2134.5517578125,
+    "peak_allocated_mib": 2757.193359375,
+    "peak_reserved_mib": 2908.0,
+    "process_mib": 3048.875,
+    "peak_forward_mib": 2635.20947265625,
+    "peak_backward_mib": 2757.193359375,
+    "peak_optimizer_mib": 2358.81005859375,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "n/a (not sdpa)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 0.5976587789999712,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 34.375,
+     "other": 2098.17578125
+    },
+    "activation_mib": 519.5166015625
+   },
+   "predicted": {
+    "weight_mib": 2098.17578125,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 525.5,
+    "overhead_mib": 631.1837890625,
+    "total_mib": 3392.3595703125
+   },
+   "error_pct": {
+    "tensors": 0.14443752598848325,
+    "process": 11.265944661965484,
+    "activation": 1.1517242027500774
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "QLoRA r=32 [q,k,v,o], bs=2, seq=512, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 512,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "nf4",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq512-flash-nf4.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 1077.052734375,
+    "resident_before_step_mib": 1077.052734375,
+    "peak_allocated_mib": 1849.3193359375,
+    "peak_reserved_mib": 2054.0,
+    "process_mib": 2194.875,
+    "peak_forward_mib": 1606.33544921875,
+    "peak_backward_mib": 1849.3193359375,
+    "peak_optimizer_mib": 1372.81103515625,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 0.8231868949997079,
+    "weight_breakdown": {
+     "nf4_packed": 462.0,
+     "quant_scales": 57.7593994140625,
+     "unquantized_fp32": 534.7265625,
+     "other": 0.0
+    },
+    "activation_mib": 669.1416015625
+   },
+   "predicted": {
+    "weight_mib": 1020.1015625,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 676.0,
+    "overhead_mib": 584.805078125,
+    "total_mib": 2418.406640625
+   },
+   "error_pct": {
+    "tensors": -0.8499220838748209,
+    "process": 10.184253801469328,
+    "activation": 1.0249547213153514
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  },
+  {
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "gpu": "Tesla T4",
+   "config": "LoRA r=32 [q,k,v,o], bs=2, seq=512, fp16, adamw, ckpt, attn=sdpa",
+   "run": {
+    "fitcheck_version": "0.3.0",
+    "gpu_key": "t4",
+    "gpu_name": "Tesla T4",
+    "kernel": "flash",
+    "attn_impl": "sdpa",
+    "seq_len": 512,
+    "batch_size": 2,
+    "precision": "fp16",
+    "quantization": "none",
+    "double_quant": false,
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq512-flash-none.json"
+   },
+   "measured": {
+    "cuda_context_mib": 140.875,
+    "cuda_context_init_mib": 104.875,
+    "after_load_allocated_mib": 2134.5517578125,
+    "resident_before_step_mib": 2134.5517578125,
+    "peak_allocated_mib": 2756.193359375,
+    "peak_reserved_mib": 2880.0,
+    "process_mib": 3020.875,
+    "peak_forward_mib": 2634.20947265625,
+    "peak_backward_mib": 2756.193359375,
+    "peak_optimizer_mib": 2358.81005859375,
+    "optimizer_state_mib": 68.75,
+    "optimizer_state_dtype": "float32",
+    "gradient_mib": 34.375,
+    "sdpa_backend": "EFFICIENT_ATTENTION (+ GQA expand shim)",
+    "trainable_params": 9011200,
+    "total_params": 1109059584,
+    "step_seconds": 0.5537615999999161,
+    "weight_breakdown": {
+     "nf4_packed": 0.0,
+     "quant_scales": 0.0,
+     "unquantized_fp32": 34.375,
+     "other": 2098.17578125
+    },
+    "activation_mib": 518.5166015625
+   },
+   "predicted": {
+    "weight_mib": 2098.17578125,
+    "lora_mib": 34.375,
+    "optimizer_mib": 68.75,
+    "gradient_mib": 34.375,
+    "activation_mib": 525.5,
+    "overhead_mib": 631.1837890625,
+    "total_mib": 3392.3595703125
+   },
+   "error_pct": {
+    "tensors": 0.1807718554307026,
+    "process": 12.29725064137047,
+    "activation": 1.3468032492028605
+   },
+   "model_config": {
+    "name": "TinyLlama-1.1B-Chat-v1.0",
+    "num_params": 1100048384,
+    "hidden_size": 2048,
+    "num_layers": 22,
+    "num_attention_heads": 32,
+    "num_kv_heads": 4,
+    "intermediate_size": 5632,
+    "vocab_size": 32000,
+    "head_dim": 64,
+    "tie_word_embeddings": false
+   }
+  }
+ ]
+}

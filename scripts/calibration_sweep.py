@@ -1,19 +1,3 @@
-"""Drive `measure.py` over the C_overhead calibration grid (task 9.3).
-
-One subprocess per row, on purpose. The CUDA context and the caching allocator's
-high-water mark are both process-scoped: running two configurations in one interpreter
-would measure the second one on top of whatever the first left in the pool, and the
-context reading would be whichever run touched the most kernels. A fresh process per
-row is the only way `cuda_context_mib` and `peak_reserved_mib` mean what they say.
-
-Writes one JSON file per row into `--out`, which is the shape
-`python -m fitcheck.calibrate <out>/*.json` expects. Rows that fail (OOM, a model that
-will not download) are reported and skipped rather than taking the sweep down with
-them.
-
-    python scripts/calibration_sweep.py --gpu t4
-    python scripts/calibration_sweep.py --gpu p100-16 --quant none
-"""
 from __future__ import annotations
 
 import argparse
@@ -25,37 +9,20 @@ from pathlib import Path
 
 MEASURE = Path(__file__).resolve().parent / "measure.py"
 
-# (model, batch_size, seq_len). Run under both kernels, so each line is two rows.
-#
-# Chosen to spread `W_base + A_act` as widely as 16 GB allows and to put four distinct
-# sequence lengths in every kernel group -- the sequence slope needs three levels and
-# six rows before `calibrate.py` will fit it at all, and seq 4096 is the row the audit
-# singles out as the worst fragmentation this project has measured.
 GRID: tuple[tuple[str, int, int], ...] = (
     ("HuggingFaceTB/SmolLM2-135M", 2, 512),
     ("HuggingFaceTB/SmolLM2-360M", 1, 4096),
     ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", 2, 512),
     ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", 2, 1024),
     ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", 2, 2048),
-    # 135M rather than 1.1B at seq 4096: the eager score matrix is 9*gamma*b*n_h*s^2,
-    # which for TinyLlama at 4096 is ~9.7 GiB on its own and would OOM a 14.9 GiB T4.
-    # The point of the row is the sequence length, not the model.
     ("HuggingFaceTB/SmolLM2-135M", 1, 4096),
     ("HuggingFaceTB/SmolLM2-1.7B", 4, 1024),
     ("Qwen/Qwen2.5-1.5B-Instruct", 2, 1024),
 )
 
-# Run this one three times per kernel. Its eager row is the outlier that decides
-# whether the T4 eager group can be fitted at all: it reserved 30.9% more than it
-# allocated while its SDPA twin reserved 11.9%, off an identical tensor peak. Three
-# repeats say whether that is a mechanism or run-to-run allocator variance, and no
-# amount of extra configurations will answer it -- only repeats of this one.
 REPEAT = ("HuggingFaceTB/SmolLM2-1.7B", 4, 1024)
 REPEATS = 3
 
-# One failed row is a data point -- an out-of-memory config is a real answer. Three in a
-# row is a broken environment saying the same thing over and over, and the remaining
-# rows would only say it again after paying for the model downloads.
 _ABORT_AFTER_FAILURES = 3
 
 
@@ -76,20 +43,22 @@ def _normalise_tag(tag: str) -> str:
     return f"-{trimmed}" if trimmed else ""
 
 
-# Run in a subprocess. It prints the stack description as JSON on success, and on
-# failure prints the traceback followed by the ROOT CAUSE as the last line -- the real
-# error in a transformers import chain sits fifty lines below the symptom, and a tail
-# of the traceback shows only the symptom. `Could not import module 'LlamaConfig'` is
-# the symptom; `operator torchvision::nms does not exist` is the cause.
 _PROBE = """
 import json, sys, traceback
 try:
     import torch, transformers, peft
+    try:
+        import bitsandbytes
+        bnb, bnb_error = bitsandbytes.__version__, None
+    except BaseException as bnb_failure:
+        bnb, bnb_error = None, "%s: %s" % (type(bnb_failure).__name__, bnb_failure)
     p = torch.cuda.get_device_properties(0)
     print(json.dumps({
         "torch": torch.__version__,
         "transformers": transformers.__version__,
         "peft": peft.__version__,
+        "bitsandbytes": bnb,
+        "bitsandbytes_error": bnb_error,
         "cuda_available": torch.cuda.is_available(),
         "gpu": p.name,
         "capability": "sm_%d%d" % (p.major, p.minor),
@@ -134,6 +103,29 @@ _TORCHVISION_MISMATCH_ADVICE = (
     "rows were taken on a different torch than the rest of the archive."
 )
 
+_BITSANDBYTES_MISSING_ADVICE = (
+    "bitsandbytes is NOT installed, and `--quant nf4` / `--quant int8` load the base\n"
+    "model through it. Kaggle and Colab ship torch, transformers and peft but not this\n"
+    "one, so an unquantized grid runs on a bare image and a quantized grid cannot.\n"
+    "\n    pip install bitsandbytes\n"
+    "\nWithout `-U`. A plain install leaves the image's torch alone -- bitsandbytes\n"
+    "only requires a torch, and the image already has one that satisfies it -- while\n"
+    "`-U` upgrades torch itself and takes torchvision down with it (see the torchvision\n"
+    "note above). No kernel restart is needed: every row runs in a fresh subprocess.\n"
+    "\nOr take the unquantized grid instead, which needs nothing installed:\n"
+    "\n    --quant none   (and drop --tag nf4)"
+)
+
+_BITSANDBYTES_BROKEN_ADVICE = (
+    "bitsandbytes is installed but will not import, so every quantized row dies in the\n"
+    "same place. The usual cause is a bitsandbytes built against a different torch or a\n"
+    "different CUDA than this image's. Reinstall it against the torch that is here:\n"
+    "\n    pip uninstall -y bitsandbytes && pip install bitsandbytes\n"
+    "\nNever `pip install -U torch` to satisfy it -- that breaks the image, and then\n"
+    "every row fails for a second, less obvious reason on top of this one.\n"
+    "\nOr run `--quant none`, which does not import bitsandbytes at all."
+)
+
 _BROKEN_TORCH_ADVICE = (
     "torch looks broken or mismatched with this image. The usual cause is a\n"
     "`pip install -U` that replaced the image's CUDA build with a generic PyPI one;\n"
@@ -151,6 +143,9 @@ def _diagnose(stderr: str) -> str:
     is wrong" is barely better than the twenty stack traces it replaced, and the
     bottom of an import chain like this one is fifty lines below the symptom.
     """
+
+    if "requires bitsandbytes" in stderr or "No module named 'bitsandbytes'" in stderr:
+        return _BITSANDBYTES_MISSING_ADVICE
     if "torchvision::nms" in stderr or "torchvision" in stderr and "operator" in stderr:
         return _TORCHVISION_MISMATCH_ADVICE
     if "torchao" in stderr:
@@ -186,10 +181,26 @@ def preflight(args: argparse.Namespace) -> str | None:
         print("PREFLIGHT FAILED -- torch imports, but sees no CUDA device.\n")
         print(_BROKEN_TORCH_ADVICE)
         return None
+    if args.quant != "none" and info["bitsandbytes"] is None:
+        failure = info["bitsandbytes_error"] or ""
+        print(
+            f"PREFLIGHT FAILED -- `--quant {args.quant}` needs bitsandbytes and it "
+            f"did not import.\n"
+        )
+        if failure:
+            print(f"  {failure}\n")
+        print(
+            _BITSANDBYTES_MISSING_ADVICE
+            if not failure or "No module named" in failure
+            else _BITSANDBYTES_BROKEN_ADVICE
+        )
+        return None
+
     print(
         f"{info['gpu']} ({info['capability']}, {info['total_mib']:,} MiB) | "
         f"torch {info['torch']} | transformers {info['transformers']} | "
-        f"peft {info['peft']}"
+        f"peft {info['peft']} | "
+        f"bitsandbytes {info['bitsandbytes'] or 'absent'}"
     )
     if info["capability"] not in info["arch_list"]:
         print(
@@ -226,10 +237,6 @@ def _row_args(
         "--json",
     ]
     if kernel == "flash":
-        # --flash-attn is the fitcheck knob; --attn-impl sdpa is the kernel that
-        # actually runs, because FA2 needs sm_80 and neither T4 nor P100 has it.
-        # SDPA's memory-efficient backend never materializes the score matrix, which
-        # is the branch fitcheck's flash_attn path predicts.
         command += ["--flash-attn", "--attn-impl", "sdpa"]
     return command
 
@@ -298,13 +305,12 @@ def main(argv: list[str] | None = None) -> int:
             failed.append(target.name)
             consecutive_failures += 1
             if consecutive_failures >= _ABORT_AFTER_FAILURES:
-                # An out-of-memory row is a data point; three in a row is a broken
-                # environment, and the next seventeen will say exactly the same thing.
                 print(
                     f"\nSTOPPING: {consecutive_failures} rows failed in a row. This is "
-                    f"an environment problem, not a memory limit -- fix the error above "
-                    f"and re-run. Rows already written are kept and will be skipped."
+                    f"an environment problem, not a memory limit. Rows already "
+                    f"written are kept and will be skipped.\n"
                 )
+                print(_diagnose(result.stderr))
                 break
             continue
 

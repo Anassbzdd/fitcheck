@@ -2,30 +2,28 @@ from __future__ import annotations
 import pytest
 from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.activations import (
+    _PROFILES,
     _ActivationParts,
     _activation_parts,
     estimate_activation_memory,
 )
+
+_GOLDEN_QUANT = "nf4"
 
 _GOLDEN_BATCH = 4
 _GOLDEN_SEQ = 2048
 _GOLDEN_VOCAB = 128_256
 
 
-_LOGITS = 4 * 4.0 * _GOLDEN_BATCH * _GOLDEN_SEQ * _GOLDEN_VOCAB / 1024**2  # 16,032
+_LOGITS = 4 * 4.0 * _GOLDEN_BATCH * _GOLDEN_SEQ * _GOLDEN_VOCAB / 1024**2  
 
-# Under checkpointing the peak is 2 * L * gamma * b * s * h (resident) plus whichever
-# of the LM-head hump or one layer's recompute is larger -- they never coexist.
-_CKPT_STORE = 2 * 2 * 32 * _GOLDEN_BATCH * _GOLDEN_SEQ * 4096 / 1024**2  # 4,096
-# bracket = 12h + 3*(n_h*d_k) + 1*(n_kv*d_k) + 3*d_ff = 105,472 for Llama-3.1-8B.
-# The hidden-width total of 15 is measured (task 9.2); see docs/SPEC.md Component 5.
-_SCORE_MATRIX = 1_024.0  # gamma * b * n_h * s^2, one copy
+_CKPT_STORE = 1 * 4.0 * 32 * _GOLDEN_BATCH * _GOLDEN_SEQ * 4096 / 1024**2
+_SCORE_MATRIX = 1_024.0 
 _A_LAYER_FLASH = 1_648.0
-_A_LAYER_NO_FLASH = _A_LAYER_FLASH + 9 * _SCORE_MATRIX      # ckpt: one layer's peak
-_A_LAYER_RETAINED = _A_LAYER_FLASH + 2.9 * _SCORE_MATRIX    # no ckpt: every layer keeps
+_A_LAYER_NO_FLASH = _A_LAYER_FLASH + 9 * _SCORE_MATRIX   
+_A_LAYER_RETAINED = _A_LAYER_FLASH + 2.9 * _SCORE_MATRIX  
 
-# Llama-3.1-8B has a 128k vocabulary, so the LM-head hump wins both ways here and
-# Flash Attention does not move A_act at all at this shape.
+
 _A_ACT_CKPT_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_FLASH)          # 20,128
 _A_ACT_CKPT_NO_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_NO_FLASH)    # 20,128
 _A_ACT_NO_CKPT_FLASH = 32 * _A_LAYER_FLASH + _LOGITS
@@ -82,9 +80,10 @@ def _estimate(
     grad_checkpoint: bool = True,
     flash_attn: bool = True,
     precision: str = "bf16",
+    quantization: str = _GOLDEN_QUANT,
 ) -> float:
     return estimate_activation_memory(
-        config, batch_size, seq_len, grad_checkpoint, flash_attn, precision
+        config, batch_size, seq_len, grad_checkpoint, flash_attn, precision, quantization
     )
 
 
@@ -160,18 +159,38 @@ def test_flash_attn_does_help_once_the_layer_hump_wins(llama: ModelConfig) -> No
     assert delta > 0
 
 
+def _ckpt_store_none(gamma: float) -> float:
+    return 1 * gamma * 32 * _GOLDEN_BATCH * _GOLDEN_SEQ * 4096 / 1024**2
+
+
+_LOGITS_NONE = 3.5 * 4.0 * _GOLDEN_BATCH * _GOLDEN_SEQ * _GOLDEN_VOCAB / 1024**2
+
+
 @pytest.mark.parametrize(
-    ("precision", "expected"),
-    [
-        ("bf16", _A_ACT_CKPT_FLASH),
-        ("fp16", _A_ACT_CKPT_FLASH),
-        ("fp32", 2 * _CKPT_STORE + max(_LOGITS, 2 * _A_LAYER_FLASH)),
-    ],
+    ("precision", "gamma"),
+    [("bf16", 2.0), ("fp16", 2.0), ("fp32", 4.0)],
 )
 def test_scales_with_compute_dtype_never_hardcoded_two(
-    llama: ModelConfig, precision: str, expected: float
+    llama: ModelConfig, precision: str, gamma: float
 ) -> None:
-    assert _estimate(llama, precision=precision) == pytest.approx(expected, rel=1e-9)
+    expected = _ckpt_store_none(gamma) + max(
+        _LOGITS_NONE, (gamma / 2.0) * _A_LAYER_FLASH
+    )
+    assert _estimate(
+        llama, precision=precision, quantization="none"
+    ) == pytest.approx(expected, rel=1e-9)
+
+
+def test_quantized_base_pins_the_checkpoint_store_to_fp32(llama: ModelConfig) -> None:
+    bf16 = _parts(llama)
+    fp32 = _activation_parts(
+        llama, _GOLDEN_BATCH, _GOLDEN_SEQ, True, 4.0, _PROFILES["nf4"]
+    )
+
+    assert bf16.checkpoint_store_bytes == fp32.checkpoint_store_bytes
+    assert fp32.checkpoint_store_bytes / 1024**2 == pytest.approx(_CKPT_STORE, rel=1e-9)
+    # The layer bracket still scales, so the profile is not ignoring gamma outright.
+    assert fp32.layer_bytes == pytest.approx(2 * bf16.layer_bytes, rel=1e-9)
 
 
 def test_reads_intermediate_size_from_config_instead_of_assuming_4h(
@@ -306,8 +325,12 @@ def test_rejects_non_boolean_flags_and_unsupported_precision(llama: ModelConfig)
         _estimate(llama, precision="fp4")
 
 
-def _parts(config: ModelConfig, *, flash_attn: bool = True) -> _ActivationParts:
-    return _activation_parts(config, _GOLDEN_BATCH, _GOLDEN_SEQ, flash_attn, 2.0)
+def _parts(
+    config: ModelConfig, *, flash_attn: bool = True, quantization: str = _GOLDEN_QUANT
+) -> _ActivationParts:
+    return _activation_parts(
+        config, _GOLDEN_BATCH, _GOLDEN_SEQ, flash_attn, 2.0, _PROFILES[quantization]
+    )
 
 
 def test_activation_parts_are_the_golden_terms(llama: ModelConfig) -> None:
@@ -383,3 +406,63 @@ def test_no_checkpointing_branch_is_measured_not_derived(llama: ModelConfig) -> 
     assert _estimate(llama, flash_attn=True, grad_checkpoint=False) == pytest.approx(
         _A_ACT_NO_CKPT_FLASH, rel=1e-9
     )
+
+
+# ---------------------------------------------------------------------------------
+# The unquantized profile (task 9.3, measured 2026-09-15)
+# ---------------------------------------------------------------------------------
+
+
+def test_unquantized_profile_is_the_three_measured_constants() -> None:
+    """These three are the correction, and they are the whole of it.
+
+    Before 2026-09-15 fitcheck billed every run with the QLoRA constants (2 checkpoint
+    tensors per layer at gamma, 4 logits copies, c=9). Refitting the same structure to
+    the 16 `--quant none` rows of the T4 sweep returns 0.90L / 3.56 copies / c=7.30, and
+    to the 16 nf4 rows 1.93L / 4.04 copies / c=9.15 -- the shipped set, unmoved. So the
+    constants were never wrong, only unconditional.
+    """
+    none, nf4 = _PROFILES["none"], _PROFILES["nf4"]
+
+    assert (none.checkpoint_tensors_per_layer, none.logits_copies) == (1, 3.5)
+    assert none.eager_attention_copies == 7.4
+    assert none.checkpoint_bytes_per_element is None
+
+    assert (nf4.checkpoint_tensors_per_layer, nf4.logits_copies) == (1, 4)
+    assert nf4.eager_attention_copies == 9
+    assert nf4.checkpoint_bytes_per_element == 4.0
+
+
+def test_quantizing_the_base_raises_activation_memory_at_equal_gamma(
+    llama: ModelConfig,
+) -> None:
+    """Same compute dtype, same shape -- nf4 still holds more. Measured, not an artefact.
+
+    TinyLlama-1.1B bs=2 seq=2048 flash: 1.33 MiB of activation per token under nf4
+    against 1.04 under `--quant none`, both at gamma=2. peft's kbit prep upcasts, and
+    fitcheck used to bill every run at the quantized rate.
+    """
+    quantized = _estimate(llama, quantization="nf4")
+    plain = _estimate(llama, quantization="none")
+
+    assert quantized > plain
+    # The store doubles (gamma 2 -> FP32) and the logits go 3.5 -> 4 copies.
+    assert quantized - plain == pytest.approx(
+        (_CKPT_STORE - _ckpt_store_none(2.0)) + (_LOGITS - _LOGITS_NONE), rel=1e-9
+    )
+
+
+def test_rejects_an_unknown_quantization(llama: ModelConfig) -> None:
+    with pytest.raises(ValueError, match="Unsupported quantization 'fp8'"):
+        _estimate(llama, quantization="fp8")
+    with pytest.raises(ValueError, match="quantization must be a string"):
+        _estimate(llama, quantization=4)
+
+
+def test_int8_keeps_the_pre_correction_checkpoint_store(llama: ModelConfig) -> None:
+    """Pinned on purpose: no int8 row exists, and the archived one already reads low."""
+    int8 = _PROFILES["int8"]
+
+    assert int8.checkpoint_tensors_per_layer == 2
+    assert int8.checkpoint_bytes_per_element is None
+    assert (int8.logits_copies, int8.eager_attention_copies) == (4, 9)

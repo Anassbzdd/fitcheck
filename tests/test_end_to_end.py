@@ -8,6 +8,7 @@ import pytest
 
 from fitcheck.config_parser import ModelConfig, fetch_model_config
 from fitcheck.estimator import (
+    activation_breakdown,
     InferenceReport,
     MemoryReport,
     ServingConfig,
@@ -312,12 +313,16 @@ def test_int8_bills_activations_at_fp32(
             int8.grad_checkpoint,
             int8.flash_attn,
             "fp32",
+            "int8",
         ),
         rel=1e-9,
     )
 
     # Only the gamma-scaled terms move. A_logits is fp32 on every path, and it
     # wins the max() here, so the checkpoint store is the whole of the increase.
+    # int8 keeps its pre-2026-09-15 constants (2 checkpoint tensors per layer, 4 logits
+    # copies, c=9) on purpose: there is no int8 row in the calibration sweep and the one
+    # archived int8 measurement already under-predicts. See memory/activations._PROFILES.
     assert estimate(llama_model, int8, get_gpu("4090")).activation_mib == 24_224.0
     assert estimate(llama_model, qlora_training, get_gpu("4090")).activation_mib == 20_128.0
 
@@ -506,3 +511,21 @@ def test_serving_report_is_json_serializable_for_ci(
     payload = json.dumps(asdict(serving_report))
 
     assert json.loads(payload)["fits"] is True
+
+
+@pytest.mark.parametrize("quantization", ["none", "nf4", "int8"])
+def test_activation_breakdown_uses_the_same_profile_as_the_total(
+    llama_model: ModelConfig, qlora_training: TrainingConfig, quantization: str
+) -> None:
+    """display.py renders the breakdown beside the total; they must agree.
+
+    The breakdown reaches _activation_parts on its own path, so a profile threaded into
+    one and not the other would show a split that does not add up to the A_act above it.
+    """
+    training = replace(qlora_training, quantization=quantization)
+    parts = activation_breakdown(llama_model, training)
+
+    assert parts["checkpointed_mib"] == pytest.approx(
+        estimate(llama_model, training, get_gpu("4090")).activation_mib, rel=1e-9
+    )
+    assert parts["resident_hump_mib"] == max(parts["logits_mib"], parts["layer_mib"])

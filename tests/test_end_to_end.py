@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict, replace
-from typing import Any, Callable
+from typing import Any
 
 import pytest
-
 from fitcheck.config_parser import ModelConfig, fetch_model_config
 from fitcheck.estimator import (
-    activation_breakdown,
     InferenceReport,
     MemoryReport,
     ServingConfig,
     TrainingConfig,
+    activation_breakdown,
     estimate,
     estimate_inference,
     estimate_warnings,
@@ -145,7 +145,9 @@ def test_max_batch_size_is_not_linear_extrapolation(
     assert at_5 - at_4 == pytest.approx(5_283.60, abs=0.01)
 
 
-def test_max_batch_size_adapts_to_a_smaller_gpu(golden_report: MemoryReport, llama_model: ModelConfig, qlora_training: TrainingConfig) -> None:
+def test_max_batch_size_adapts_to_a_smaller_gpu(
+    golden_report: MemoryReport, llama_model: ModelConfig, qlora_training: TrainingConfig
+) -> None:
     on_3060 = estimate(llama_model, qlora_training, get_gpu("3060-12"))
 
     assert on_3060.max_batch_size == 0

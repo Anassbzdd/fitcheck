@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import pytest
 from fitcheck.memory.weights import QuantizationConfig, estimate_weight_memory
 from fitcheck.utils import bytes_to_mib
@@ -52,13 +53,13 @@ def test_estimate_weight_memory_llama_31_8b_qlora_matches_worked_example() -> No
     assert result == pytest.approx(7_753, rel=0.05)
 
 
-def test_unquantized_slice_is_ignored_without_quantization() -> None: 
+def test_unquantized_slice_is_ignored_without_quantization() -> None:
     plain = estimate_weight_memory(1_000_000, "bf16")
     with_arg = estimate_weight_memory(1_000_000, "bf16", unquantized_params=400_000)
     assert plain == with_arg
 
 
-def test_unquantized_slice_costs_fp32_not_the_quantized_rate() -> None: 
+def test_unquantized_slice_costs_fp32_not_the_quantized_rate() -> None:
     flat = estimate_weight_memory(1_000_000, "nf4", QuantizationConfig(enabled=True))
     split = estimate_weight_memory(
         1_000_000, "nf4", QuantizationConfig(enabled=True), unquantized_params=200_000
@@ -155,7 +156,7 @@ def test_estimate_weight_memory_no_quantization_config_has_no_overhead() -> None
         num_params, "fp16", QuantizationConfig(enabled=False)
     )
     expected_mib = bytes_to_mib(round(num_params * 2))
-    assert without_config == with_disabled_config
+    assert without_config == with_disabled_config == expected_mib
 
 
 @pytest.mark.parametrize("precision", ["fp32", "fp16", "bf16"])

@@ -47,7 +47,7 @@ sweep.
 
 ## The bar for a merge
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 331
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 505
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the floor.
   The `-m "not network"` filter is not optional: it skips the one test that fetches the gated
   `meta-llama/Llama-3.1-8B` for real, which fails without an `HF_TOKEN`. The offline tests cover
@@ -59,8 +59,21 @@ sweep.
   how this project got a 36% error once already.
 
 - Type hints and docstrings on public functions, dataclasses for configs, MiB returned as `float`.
-  Linting and type checking aren't wired up yet; if you want to add `ruff` and `mypy` configs,
-  that's a welcome PR on its own.
+
+- **`ruff check .` and `mypy --strict fitcheck/` are both clean.** CI runs them as their own job,
+  so a PR that fails either one does not merge. Both come with `pip install -e ".[dev]"`:
+
+  ```bash
+  ruff check .              # add --fix for the mechanical ones
+  mypy --strict fitcheck/
+  ```
+
+  The configuration lives in `[tool.ruff]` and `[tool.mypy]` in `pyproject.toml`. Two deliberate
+  choices there: the notebooks are excluded, because they are dated measurement artifacts rather
+  than maintained source, and `RUF001-003` are off, because the formulas are written with the same
+  symbols `docs/SPEC.md` uses (γ, ×) and ASCII lookalikes would make the two disagree. `--strict`
+  covers `fitcheck/` only — `scripts/measure.py` imports `torch`, which is not installed in CI and
+  must never become a dependency of the package.
 
 ## Two constraints that are not negotiable
 

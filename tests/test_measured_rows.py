@@ -14,7 +14,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from fitcheck.config_parser import ModelConfig
 from fitcheck.estimator import TrainingConfig, estimate
 from fitcheck.gpu_db import get_gpu

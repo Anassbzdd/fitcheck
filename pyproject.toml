@@ -36,6 +36,10 @@ dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "httpx>=0.27",
+    # Floors are the versions the rule set and the strict run were verified against;
+    # a lint tool that drifts below them reports a different set of findings.
+    "ruff>=0.16",
+    "mypy>=2.3",
 ]
  
 [project.scripts]
@@ -60,3 +64,41 @@ addopts = "--cov=fitcheck"
 markers = [
     "network: tests that make real network calls to Hugging Face Hub",
 ]
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["fitcheck", "scripts", "tests"]
+# The notebooks are measurement artifacts — they record what a specific GPU did on a
+# specific day and are re-run, not refactored. Linting them would invite edits that
+# invalidate their saved outputs.
+extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import order
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    # The formulas are written with their real symbols (gamma, mu, the multiplication
+    # sign). Renaming them to ASCII lookalikes would make the code disagree with SPEC.md.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+# An aliased member should not be torn out into a second import statement from the
+# same module (estimator.py imports one private helper under a readable name).
+combine-as-imports = true
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["fitcheck"]

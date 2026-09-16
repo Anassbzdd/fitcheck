@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Sequence
+from typing import Any
 
 import click
 from click.core import ParameterSource

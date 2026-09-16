@@ -32,7 +32,7 @@ from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu, list_gpus
 
 try:
     __version__ = version("fitcheck-llm")
-except PackageNotFoundError: 
+except PackageNotFoundError:
     __version__ = "0.0.0.dev0"
 
 __all__ = [
@@ -56,8 +56,8 @@ __all__ = [
     "estimate",
     "estimate_inference",
     "estimate_warnings",
-    "inference_warnings",
     "fetch_model_config",
     "get_gpu",
+    "inference_warnings",
     "list_gpus",
 ]

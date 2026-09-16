@@ -1,6 +1,8 @@
 # Component 1
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
 
 _DEFAULT_QUANT_BLOCK_SIZE = 64

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable, Sequence
+from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
 from shlex import split as shell_split
-from typing import Callable, Sequence
+from types import ModuleType
+from typing import Any
 
 import click
 from click.core import ParameterSource
@@ -30,8 +33,8 @@ from fitcheck.config_parser import (
 from fitcheck.display import (
     _ASCII_GLYPHS,
     _UNICODE_GLYPHS,
-    _Glyphs,
     _config_line,
+    _Glyphs,
     _gpu_line,
     _model_line,
     _serving_line,
@@ -55,10 +58,10 @@ from fitcheck.estimator import (
 )
 from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu
 
-try:
-    import readline
-except ImportError:
-    pass
+# Imported only for the side effect: it gives the prompt arrow-key history and line
+# editing. Absent on a stock Windows Python, where the REPL still works without it.
+with suppress(ImportError):
+    import readline  # noqa: F401
 
 _PROMPT = "[bold cyan]fitcheck[/bold cyan] > "
 _TIGHT_HEADROOM_FRACTION = 0.20
@@ -158,7 +161,9 @@ class _Session:
 _SESSION_COMMANDS: dict[str, click.Command] = {}
 
 
-def _cli_module():
+def _cli_module() -> ModuleType:
+    # Imported lazily: cli.py builds its commands from this module, so importing it at
+    # module scope would close the cycle.
     from fitcheck import cli
 
     return cli
@@ -249,7 +254,7 @@ def _training_from_args(session: _Session, ctx: click.Context) -> TrainingConfig
                 "contradict each other."
             )
 
-    def sticky(name: str) -> object:
+    def sticky(name: str) -> Any:
         return params[name] if _typed(ctx, name) else getattr(current, _FIELDS[name])
 
     def flag(name: str) -> bool:
@@ -325,7 +330,7 @@ def _serving_from_args(session: _Session, ctx: click.Context) -> ServingConfig:
     if _typed(ctx, "double_quant") and _typed(ctx, "no_double_quant"):
         raise _ReplError("--double-quant and --no-double-quant contradict each other.")
 
-    def sticky(name: str) -> object:
+    def sticky(name: str) -> Any:
         field_name = _SERVING_FIELDS[name]
         return params[name] if _typed(ctx, name) else getattr(current, field_name)
 
@@ -564,7 +569,8 @@ def _sweep_from_args(session: _Session, ctx: click.Context) -> SweepSpec:
         if _typed(ctx, name):
             return tuple(cli._parse_int_list(params[name], flag))
         if current is not None:
-            return getattr(current, name)
+            stored: tuple[int, ...] = getattr(current, name)
+            return stored
         return fallback
 
     if _typed(ctx, "seq_lens"):
@@ -864,8 +870,8 @@ def _render_optimize(session: _Session, result: _Result) -> Panel:
                     (f"{batch_size}", "bold green"),
                     (
                         f"   {_mib(at_recommended.headroom_mib)} MiB "
-                        f"({_percent(at_recommended.headroom_mib, at_recommended.gpu_capacity_mib)})"
-                        " left",
+                        f"({_percent(at_recommended.headroom_mib, at_recommended.gpu_capacity_mib)}"
+                        ") left",
                         "dim",
                     ),
                 ),
@@ -1293,13 +1299,13 @@ def run_repl(
         except click.ClickException as error:
             _print_error(session, error.format_message())
         except click.exceptions.Exit:
-            pass 
+            pass
         except click.Abort:
             _print_error(session, "aborted")
         except KeyboardInterrupt:
             session.console.print()
             _print_error(session, "interrupted")
-        except Exception as error: 
+        except Exception as error:
             _print_error(session, f"{type(error).__name__}: {error}")
 
     session.console.print("Goodbye!")

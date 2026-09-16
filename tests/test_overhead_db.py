@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu, gpu_key_for
 from fitcheck.overhead_db import (
     DEFAULT_OVERHEAD_PROFILE,
@@ -89,7 +88,7 @@ def test_the_db_is_empty_until_the_sweep_lands() -> None:
 
 
 def test_gpu_key_for_finds_the_key_of_every_database_card() -> None:
-    for key, spec in GPU_DB.items():
+    for spec in GPU_DB.values():
         found = gpu_key_for(spec)
         assert found is not None
         # `h100` and `h100-80` are the same card under two names, so the reverse

@@ -62,7 +62,7 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 | `--explain` + savings hints | P0 | The "where did my VRAM go" teaching path |
 | `pip install fitcheck-llm` | P0 | PyPI published on day 5 |
 | Unit tests with `pytest` | P0 | ≥80% coverage on `memory/` modules |
-| GitHub Actions CI | P0 | Two jobs: `test` (pytest on 3.10/3.11/3.12, coverage badge) and `floor` (lowest declared dependency versions on 3.10 — see §3.9) |
+| GitHub Actions CI | P0 | Three jobs: `lint` (`ruff check .` + `mypy --strict fitcheck/` — see §3.10), `test` (pytest on 3.10/3.11/3.12, coverage badge) and `floor` (lowest declared dependency versions on 3.10 — see §3.9) |
 
 ### Stretch — v0.2+ (Post-MVP)
 
@@ -1658,10 +1658,12 @@ Runtime dependencies stay at three. A fourth is a decision, not a detail.
 | `rich` | `>=13.0` | Tables, panels and the verdict styling in `display.py` |
 | `huggingface-hub` | `>=0.25` | `config_parser.py` does `from huggingface_hub.errors import GatedRepoError`. That module does not exist before 0.22, and it does not export `GatedRepoError` until 0.25. The Hub parameter count (§3.3) needs `HfApi.model_info(..., expand=[...])` and `ModelInfo.safetensors.total`; both are present in 0.25.0, so it does not raise the floor |
 
-The `dev` extra is `pytest>=7.4`, `pytest-cov>=4.1` and `httpx>=0.27`. `httpx` is there because
-`tests/test_config_parser.py` builds a fake 403 response with it. It used to work undeclared, purely
-because `huggingface-hub` 1.x happens to pull it in; at the declared floor the hub still uses
-`requests`, so without the explicit entry the suite would not even collect.
+The `dev` extra is `pytest>=7.4`, `pytest-cov>=4.1`, `httpx>=0.27`, `ruff>=0.16` and `mypy>=2.3`.
+`httpx` is there because `tests/test_config_parser.py` builds a fake 403 response with it. It used
+to work undeclared, purely because `huggingface-hub` 1.x happens to pull it in; at the declared
+floor the hub still uses `requests`, so without the explicit entry the suite would not even collect.
+The two tool floors are the versions the configuration in §3.10 was verified against: a linter that
+drifts below them reports a different set of findings, which makes "clean" mean something else.
 
 **A declared floor is a promise, so CI tests it.** Each floor above was found by installing that
 exact version in a clean environment and importing, not by guessing:
@@ -1689,6 +1691,50 @@ than on ours.
 
 ---
 
+### 3.10 — Lint and type checking
+
+`ruff check .` and `mypy --strict fitcheck/` are both clean, and the `lint` CI job runs them on every
+push and PR. The annotations were always there — `from __future__ import annotations` at the top of
+every module, frozen dataclasses for all three configs, `_validate_*` helpers on every public
+estimator. This is what makes them binding.
+
+**Configuration lives in `pyproject.toml`**, not in separate dotfiles:
+
+| Block | Setting | Why |
+|:---|:---|:---|
+| `[tool.ruff]` | `line-length = 100`, `target-version = "py310"` | The width the source was already written to, and the declared floor |
+| `[tool.ruff]` | `extend-exclude = ["*.ipynb"]` | The notebooks are dated measurement artifacts — they record what one GPU did on one day, and their saved outputs are the evidence. Linting invites edits that invalidate them |
+| `[tool.ruff.lint]` | `select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RUF"]` | Errors, imports, modern syntax, bugbear, comprehensions, simplifications, and ruff's own checks |
+| `[tool.ruff.lint]` | `ignore = ["RUF001", "RUF002", "RUF003"]` | The formulas are written with the same symbols this document uses (γ, ×). Renaming them to ASCII lookalikes would make the code and the spec disagree |
+| `[tool.ruff.lint.isort]` | `combine-as-imports = true` | `estimator.py` imports one private helper under a readable alias; it should not be torn into a second statement from the same module |
+| `[tool.mypy]` | `python_version = "3.10"`, `strict = true`, `files = ["fitcheck"]` | Check against the declared floor, not the CI runner's interpreter |
+
+**`--strict` covers `fitcheck/` only.** `scripts/measure.py` imports `torch`, `peft` and
+`bitsandbytes`, which are not installed in CI and must never become dependencies of the package
+(§3.9). Type-checking the harness would require them in the lint environment, which is exactly the
+coupling the project forbids.
+
+**What the first pass actually found.** No bug, which is the honest result to report — the
+annotations were accurate. What `--strict` did surface was three places where a type was wider than
+the invariant it stood for:
+
+- `advisor.py` reads `anchor.lora_rank`, declared `int | None`, as an `int` throughout `_ceilings`
+  and `_prices`. `advise()` refuses a full-fine-tuning config at the door and `_anchor_config` always
+  fills the rank from the validated sweep, so the value is never `None` there. A private
+  `_anchor_rank()` now states that invariant instead of leaving it implicit.
+- `estimator.py`'s `_validate_positive_int` and `_validate_flag` were annotated as taking `int` and
+  `bool`. They exist to *check* values that may be anything — their bodies test `isinstance` — so
+  `object` is the honest parameter type, and the narrowing is the return.
+- `repl.py`'s `_cli_module()` had no return annotation (the lazy import that breaks the
+  `cli` ↔ `repl` cycle) and its `sticky()` helpers returned `object`, which cannot be passed to
+  `int()`. The values come from `click`'s `ctx.params`, so they are `Any`.
+
+Everything else was mechanical: import order, `typing.Iterable` → `collections.abc`, trailing
+whitespace, and `zip(..., strict=True)` on two pairings in `calibrate.py` that are length-equal by
+construction.
+
+---
+
 ## Section 4: Definition of Done
 
 ### v0.1 (MVP) — done when all 6 bullets are true
@@ -1704,7 +1750,7 @@ than on ours.
 
 4. **`pytest` passes with ≥80% line coverage** on all `memory/` modules, including at least one end-to-end test (known config → expected MiB ± tolerance).
 
-5. **CI is green** — GitHub Actions runs `pytest --cov` on 3.10 / 3.11 / 3.12 for every push and PR, badge in the README. §2 marks this P0; a red badge on day one costs more trust than a missing feature. A second job, `floor`, resolves every direct dependency to its lowest declared version and runs the offline suite there (§3.9) — the matrix job always resolves to the newest release, so only `floor` can catch a wrong pin.
+5. **CI is green** — GitHub Actions runs `pytest --cov` on 3.10 / 3.11 / 3.12 for every push and PR, badge in the README. §2 marks this P0; a red badge on day one costs more trust than a missing feature. A second job, `floor`, resolves every direct dependency to its lowest declared version and runs the offline suite there (§3.9) — the matrix job always resolves to the newest release, so only `floor` can catch a wrong pin. A third job, `lint`, runs `ruff check .` and `mypy --strict fitcheck/` (§3.10); all three gate a PR.
 
 6. **README is complete** — includes: what it does (with screenshot of terminal output), comparison table vs. existing tools, installation instructions, usage examples (both modes), the validation matrix *with its columns still TBD*, and "how it works" linking to this spec.
 

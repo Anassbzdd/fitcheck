@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import inspect
+
 import pytest
 from fitcheck.memory.overhead import estimate_overhead
 from fitcheck.overhead_db import (
@@ -79,16 +81,16 @@ def test_seq_len_does_not_move_an_uncalibrated_card() -> None:
 
 
 def _profile(**overrides: object) -> OverheadProfile:
-    fields = dict(
-        gpu="Test GPU",
-        kernel="eager",
-        base_context_mib=140.0,
-        fragmentation=0.20,
-        fragmentation_per_octave=0.0,
-        seq_len_min=512,
-        seq_len_max=4096,
-        runs=8,
-    )
+    fields = {
+        "gpu": "Test GPU",
+        "kernel": "eager",
+        "base_context_mib": 140.0,
+        "fragmentation": 0.20,
+        "fragmentation_per_octave": 0.0,
+        "seq_len_min": 512,
+        "seq_len_max": 4096,
+        "runs": 8,
+    }
     fields.update(overrides)
     return OverheadProfile(**fields)  # type: ignore[arg-type]
 

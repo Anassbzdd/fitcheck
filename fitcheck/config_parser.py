@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import GatedRepoError
@@ -175,7 +176,7 @@ def _count_params(fields: _ParsedFields) -> int:
         fields.num_kv_heads,
         fields.head_dim,
     )
-    mlp_params = 3 * fields.hidden_size * fields.intermediate_size  
+    mlp_params = 3 * fields.hidden_size * fields.intermediate_size
     norm_params = 2 * fields.hidden_size
     embedding_params = fields.vocab_size * fields.hidden_size
     lm_head_params = 0 if fields.tie_word_embeddings else embedding_params
@@ -183,7 +184,7 @@ def _count_params(fields: _ParsedFields) -> int:
     return (
         embedding_params
         + fields.num_layers * (attention_params + mlp_params + norm_params)
-        + fields.hidden_size 
+        + fields.hidden_size
         + lm_head_params
     )
 
@@ -191,7 +192,7 @@ def _count_params(fields: _ParsedFields) -> int:
 def _reported_param_count(model_id: str, token: str | None) -> int | None:
     try:
         info = HfApi(token=token).model_info(model_id, expand=["safetensors"])
-    except Exception: 
+    except Exception:
         return None
     total = getattr(getattr(info, "safetensors", None), "total", None)
     if isinstance(total, bool) or not isinstance(total, int) or total <= 0:

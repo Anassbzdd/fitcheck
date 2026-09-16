@@ -146,7 +146,7 @@ def _diagnose(stderr: str) -> str:
 
     if "requires bitsandbytes" in stderr or "No module named 'bitsandbytes'" in stderr:
         return _BITSANDBYTES_MISSING_ADVICE
-    if "torchvision::nms" in stderr or "torchvision" in stderr and "operator" in stderr:
+    if "torchvision::nms" in stderr or ("torchvision" in stderr and "operator" in stderr):
         return _TORCHVISION_MISMATCH_ADVICE
     if "torchao" in stderr:
         return _TORCHAO_ADVICE

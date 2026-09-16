@@ -1,8 +1,9 @@
 # Orchestrator: calls all 6 components, returns MemoryReport
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
-from typing import Callable, Iterable
+from typing import Any
 
 from fitcheck.config_parser import ModelConfig
 from fitcheck.gpu_db import GpuSpec, gpu_key_for
@@ -127,13 +128,13 @@ class _Components:
         )
 
 
-def _validate_positive_int(value: int, name: str) -> int:
+def _validate_positive_int(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return value
 
 
-def _validate_flag(value: bool, name: str) -> bool:
+def _validate_flag(value: object, name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be a boolean")
     return value
@@ -358,7 +359,7 @@ def _savings_hints(
     gpu_key: str | None = None,
 ) -> list[str]:
 
-    def delta(**overrides: object) -> str:
+    def delta(**overrides: Any) -> str:
         variant = replace(training, **overrides)
         return _format_delta(
             _compute_components(config, variant, gpu_key).total_mib - baseline_mib
@@ -369,7 +370,10 @@ def _savings_hints(
     if training.optimizer.strip().casefold() != "adam8bit":
         hints.append(f"{training.optimizer} -> adam8bit: {delta(optimizer='adam8bit')}")
 
-    for attribute, flag in (("flash_attn", "--flash-attn"), ("grad_checkpoint", "--grad-checkpoint")):
+    for attribute, flag in (
+        ("flash_attn", "--flash-attn"),
+        ("grad_checkpoint", "--grad-checkpoint"),
+    ):
         is_on = getattr(training, attribute)
         hints.append(
             f"{flag} {'OFF' if is_on else 'ON'}: {delta(**{attribute: not is_on})} "

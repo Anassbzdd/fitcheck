@@ -1,15 +1,17 @@
 from __future__ import annotations
+
 import inspect
+
 import pytest
 from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.inference import InferenceMemory, estimate_inference_memory
 from fitcheck.utils import bytes_to_mib
 
 _LLAMA_31_8B_PARAMS = 8_030_261_248
-_W_BASE_FP16 = bytes_to_mib(_LLAMA_31_8B_PARAMS * 2) 
+_W_BASE_FP16 = bytes_to_mib(_LLAMA_31_8B_PARAMS * 2)
 
 _KV_2048_FP16 = 256.0
-_KV_BYTES_PER_TOKEN_FP16 = 2 * 32 * 8 * 128 * 2 
+_KV_BYTES_PER_TOKEN_FP16 = 2 * 32 * 8 * 128 * 2
 
 
 def _model_config(

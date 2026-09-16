@@ -1,6 +1,8 @@
 # Component 2
 from __future__ import annotations
-from typing import Iterable
+
+from collections.abc import Iterable
+
 from fitcheck.config_parser import ModelConfig
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
 

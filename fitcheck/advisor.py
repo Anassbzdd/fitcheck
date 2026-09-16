@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from itertools import product
-from typing import Iterable, Sequence
 
 from fitcheck.config_parser import ModelConfig
 from fitcheck.estimator import (
@@ -235,15 +235,27 @@ def _total_at(
     ).total_mib
 
 
+def _anchor_rank(anchor: TrainingConfig) -> int:
+    """The anchor's LoRA rank.
+
+    `advise` refuses a full-fine-tuning config and `_anchor_config` always fills the rank
+    from the validated sweep, so this is never None here -- the guard states that.
+    """
+    if anchor.lora_rank is None:
+        raise ValueError("advise requires a LoRA config: lora_rank must not be None")
+    return anchor.lora_rank
+
+
 def _ceilings(
     config: ModelConfig, anchor: TrainingConfig, gpu: GpuSpec
 ) -> list[AxisCeiling]:
     usable_mib = float(gpu.usable_mib)
     gpu_key = gpu_key_for(gpu)
+    anchor_rank = _anchor_rank(anchor)
 
     max_batch = _largest_fitting(
         lambda batch_size: _total_at(
-            config, anchor, batch_size, anchor.seq_len, anchor.lora_rank, gpu_key
+            config, anchor, batch_size, anchor.seq_len, anchor_rank, gpu_key
         ),
         usable_mib,
     )
@@ -268,12 +280,12 @@ def _ceilings(
         AxisCeiling(
             axis=_AXIS_BATCH,
             max_value=max_batch,
-            total_mib_at_max=total_at_ceiling(max_batch, anchor.lora_rank),
+            total_mib_at_max=total_at_ceiling(max_batch, anchor_rank),
         ),
         AxisCeiling(
             axis=_AXIS_TOKENS,
             max_value=max_batch * anchor.seq_len,
-            total_mib_at_max=total_at_ceiling(max_batch, anchor.lora_rank),
+            total_mib_at_max=total_at_ceiling(max_batch, anchor_rank),
         ),
         AxisCeiling(
             axis=_AXIS_RANK,
@@ -286,12 +298,14 @@ def _ceilings(
 def _prices(
     config: ModelConfig, anchor: TrainingConfig, gpu_key: str | None = None
 ) -> list[AxisPrice]:
+    anchor_rank = _anchor_rank(anchor)
+
     def at(batch_size: int, lora_rank: int) -> float:
         return _total_at(
             config, anchor, batch_size, anchor.seq_len, lora_rank, gpu_key
         )
 
-    baseline_mib = at(anchor.batch_size, anchor.lora_rank)
+    baseline_mib = at(anchor.batch_size, anchor_rank)
     tokens = anchor.batch_size * anchor.seq_len
     prices: list[AxisPrice] = []
 
@@ -305,19 +319,19 @@ def _prices(
             )
         )
 
-    if anchor.lora_rank > 1:
-        halved_rank = anchor.lora_rank // 2
+    if anchor_rank > 1:
+        halved_rank = anchor_rank // 2
         add(
             _AXIS_RANK,
-            anchor.lora_rank,
+            anchor_rank,
             halved_rank,
             at(anchor.batch_size, halved_rank),
         )
     add(
         _AXIS_RANK,
-        anchor.lora_rank,
-        anchor.lora_rank * 2,
-        at(anchor.batch_size, anchor.lora_rank * 2),
+        anchor_rank,
+        anchor_rank * 2,
+        at(anchor.batch_size, anchor_rank * 2),
     )
 
     if anchor.batch_size > 1:
@@ -326,13 +340,13 @@ def _prices(
             _AXIS_TOKENS,
             tokens,
             halved_batch * anchor.seq_len,
-            at(halved_batch, anchor.lora_rank),
+            at(halved_batch, anchor_rank),
         )
     add(
         _AXIS_TOKENS,
         tokens,
         anchor.batch_size * 2 * anchor.seq_len,
-        at(anchor.batch_size * 2, anchor.lora_rank),
+        at(anchor.batch_size * 2, anchor_rank),
     )
 
     return prices

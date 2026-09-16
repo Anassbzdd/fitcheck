@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import inspect
+
 import pytest
 from fitcheck.memory.gradients import estimate_gradient_memory
 from fitcheck.utils import bytes_to_mib
@@ -62,7 +64,7 @@ def test_estimate_gradient_memory_takes_no_accumulation_argument() -> None:
     assert not any("accum" in name for name in parameters)
 
 
-def test_gradient_dtype_follows_the_parameter_not_the_compute_dtype() -> None: 
+def test_gradient_dtype_follows_the_parameter_not_the_compute_dtype() -> None:
     compute_dtype = estimate_gradient_memory(_GOLDEN_LORA_PARAMS, "bf16")
     fp32_params = estimate_gradient_memory(_GOLDEN_LORA_PARAMS, "bf16", "fp32")
 

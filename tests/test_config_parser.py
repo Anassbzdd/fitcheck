@@ -1,16 +1,19 @@
 from __future__ import annotations
+
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
 import httpx
 import pytest
-from huggingface_hub.errors import GatedRepoError
 from fitcheck import config_parser
 from fitcheck.config_parser import (
     UnsupportedModelError,
     _reported_param_count,
     fetch_model_config,
 )
+from huggingface_hub.errors import GatedRepoError
 
 
 @pytest.mark.network
@@ -59,9 +62,10 @@ def test_fetch_model_config_defaults_missing_kv_heads_to_mha(
     expected_embedding_params = config.vocab_size * config.hidden_size
     expected = (
         expected_embedding_params
-        + config.num_layers * (expected_attention_params + expected_mlp_params + expected_norm_params)
+        + config.num_layers
+        * (expected_attention_params + expected_mlp_params + expected_norm_params)
         + config.hidden_size
-        + expected_embedding_params  
+        + expected_embedding_params
     )
     assert config.num_params == expected
 
@@ -594,7 +598,7 @@ def test_hub_count_is_preferred_over_the_derived_one(
     fake_config_download: Callable[..., None],
     llama_31_8b_config: dict[str, Any],
 ) -> None:
-    hub_count = _LLAMA_31_8B_PARAMS + 57_344 
+    hub_count = _LLAMA_31_8B_PARAMS + 57_344
 
     fake_config_download(llama_31_8b_config, hub_param_count=hub_count)
 

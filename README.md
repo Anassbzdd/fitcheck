@@ -778,7 +778,7 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 371
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 505
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the
   floor. The `-m "not network"` filter is not optional: it skips the one test that fetches the
   gated `meta-llama/Llama-3.1-8B` for real, which fails without an `HF_TOKEN`. The offline
@@ -787,8 +787,8 @@ The bar for a merge:
   Llama-3.1-8B golden numbers in the SPEC appendix are the reference set — if a change moves
   them, say so explicitly in the PR description.
 - Type hints and docstrings on public functions, dataclasses for configs, MiB returned as
-  `float`. Linting and type checking aren't wired up yet; if you want to add `ruff` and `mypy`
-  configs, that's a welcome PR on its own.
+  `float`. `ruff check .` and `mypy --strict fitcheck/` are both clean and both gate PRs in CI;
+  they install with `pip install -e ".[dev]"`.
 
 [CONTRIBUTING.md](https://github.com/Anassbzdd/fitcheck/blob/main/CONTRIBUTING.md) has the full version, including the two non-negotiable
 constraints (no `torch` in the package, `config.json` only).

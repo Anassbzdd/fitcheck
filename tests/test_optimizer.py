@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import pytest
 from fitcheck.memory.optimizer import estimate_optimizer_memory
 from fitcheck.utils import bytes_to_mib

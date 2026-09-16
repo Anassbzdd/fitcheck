@@ -235,7 +235,9 @@ def _usage_bar(report: MemoryReport | InferenceReport, verdict_style: str, glyph
     return bar
 
 
-def _verdict_line(report: MemoryReport | InferenceReport, verdict_style: str, glyphs: _Glyphs) -> Text:
+def _verdict_line(
+    report: MemoryReport | InferenceReport, verdict_style: str, glyphs: _Glyphs
+) -> Text:
     headroom = _percent(
         _fraction(report.headroom_mib, report.gpu_capacity_mib), decimals=0
     )
@@ -588,7 +590,7 @@ def _activation_detail_table(
     table.add_section()
     if training.grad_checkpoint:
         table.add_row(
-            f"L x A_layer + A_logits, no checkpointing (NOT paid)",
+            "L x A_layer + A_logits, no checkpointing (NOT paid)",
             Text(_mib(parts["all_layers_mib"]), style=_STYLE_LABEL),
         )
         table.add_row(f"Checkpoint store (2L x {gamma_bsh})", _mib(parts["checkpoint_store_mib"]))

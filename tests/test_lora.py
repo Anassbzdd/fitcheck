@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import pytest
 from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.lora import (
@@ -77,7 +78,9 @@ def mqa_config() -> ModelConfig:
 def test_estimate_lora_memory_llama_31_8b_qkvo_matches_worked_example(
     llama_31_8b: ModelConfig,
 ) -> None:
-    result = estimate_lora_memory(llama_31_8b, rank=64, targets=LORA_TARGETS_STANDARD, precision="bf16")
+    result = estimate_lora_memory(
+        llama_31_8b, rank=64, targets=LORA_TARGETS_STANDARD, precision="bf16"
+    )
 
     total_params = 32 * 1_703_936
     assert total_params == 54_525_952
@@ -137,10 +140,18 @@ def test_estimate_lora_memory_target_presets_scale_with_target_count(
     assert result > 0
 
 
-def test_estimate_lora_memory_full_targets_exceed_standard_targets(llama_31_8b: ModelConfig) -> None:
-    minimal = estimate_lora_memory(llama_31_8b, rank=16, targets=LORA_TARGETS_MINIMAL, precision="bf16")
-    standard = estimate_lora_memory(llama_31_8b, rank=16, targets=LORA_TARGETS_STANDARD, precision="bf16")
-    full = estimate_lora_memory(llama_31_8b, rank=16, targets=LORA_TARGETS_FULL, precision="bf16")
+def test_estimate_lora_memory_full_targets_exceed_standard_targets(
+    llama_31_8b: ModelConfig,
+) -> None:
+    minimal = estimate_lora_memory(
+        llama_31_8b, rank=16, targets=LORA_TARGETS_MINIMAL, precision="bf16"
+    )
+    standard = estimate_lora_memory(
+        llama_31_8b, rank=16, targets=LORA_TARGETS_STANDARD, precision="bf16"
+    )
+    full = estimate_lora_memory(
+        llama_31_8b, rank=16, targets=LORA_TARGETS_FULL, precision="bf16"
+    )
 
     assert minimal < standard < full
 
@@ -156,8 +167,12 @@ def test_estimate_lora_memory_mlp_targets_use_intermediate_size(llama_31_8b: Mod
 
 
 def test_estimate_lora_memory_scales_linearly_with_rank(llama_31_8b: ModelConfig) -> None:
-    r16 = estimate_lora_memory(llama_31_8b, rank=16, targets=LORA_TARGETS_STANDARD, precision="bf16")
-    r32 = estimate_lora_memory(llama_31_8b, rank=32, targets=LORA_TARGETS_STANDARD, precision="bf16")
+    r16 = estimate_lora_memory(
+        llama_31_8b, rank=16, targets=LORA_TARGETS_STANDARD, precision="bf16"
+    )
+    r32 = estimate_lora_memory(
+        llama_31_8b, rank=32, targets=LORA_TARGETS_STANDARD, precision="bf16"
+    )
 
     assert r32 == pytest.approx(r16 * 2, rel=1e-9)
 
@@ -178,9 +193,13 @@ def test_estimate_lora_memory_respects_precision(
 
 
 @pytest.mark.parametrize("bad_rank", [0, -1, True, 12.5, "16"])
-def test_estimate_lora_memory_rejects_invalid_rank(llama_31_8b: ModelConfig, bad_rank: object) -> None:
+def test_estimate_lora_memory_rejects_invalid_rank(
+    llama_31_8b: ModelConfig, bad_rank: object
+) -> None:
     with pytest.raises(ValueError, match="rank must be a positive integer"):
-        estimate_lora_memory(llama_31_8b, rank=bad_rank, targets=LORA_TARGETS_MINIMAL, precision="bf16")
+        estimate_lora_memory(
+            llama_31_8b, rank=bad_rank, targets=LORA_TARGETS_MINIMAL, precision="bf16"
+        )
 
 
 def test_estimate_lora_memory_rejects_empty_targets(llama_31_8b: ModelConfig) -> None:

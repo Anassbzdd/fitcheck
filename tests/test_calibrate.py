@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
-
 from fitcheck.calibrate import (
     DEFAULT_MIN_RUNS,
     CalibrationError,
@@ -150,12 +150,12 @@ def test_a_run_with_no_gpu_key_is_refused() -> None:
 
 
 def test_a_run_with_an_unknown_kernel_is_refused() -> None:
-    with pytest.raises(CalibrationError, match="run.kernel"):
+    with pytest.raises(CalibrationError, match=re.escape("run.kernel")):
         parse_run(_payload(kernel="sdpa"))
 
 
 def test_a_run_with_a_bad_seq_len_is_refused() -> None:
-    with pytest.raises(CalibrationError, match="run.seq_len"):
+    with pytest.raises(CalibrationError, match=re.escape("run.seq_len")):
         parse_run(_payload(seq_len=0))
 
 
@@ -177,10 +177,10 @@ def test_load_runs_reports_the_file_that_could_not_be_read(tmp_path: Path) -> No
     broken = tmp_path / "broken.json"
     broken.write_text("{not json", encoding="utf-8")
 
-    with pytest.raises(CalibrationError, match="broken.json"):
+    with pytest.raises(CalibrationError, match=re.escape("broken.json")):
         load_runs([broken])
 
-    with pytest.raises(CalibrationError, match="missing.json"):
+    with pytest.raises(CalibrationError, match=re.escape("missing.json")):
         load_runs([tmp_path / "missing.json"])
 
 
@@ -344,7 +344,9 @@ def test_score_grades_the_shipped_constants_without_fitting() -> None:
     scored = score(runs)
 
     assert set(scored) == {("t4", "eager")}
-    for run, error in zip(sorted(runs, key=lambda r: r.basis_mib), scored[("t4", "eager")]):
+    for run, error in zip(
+        sorted(runs, key=lambda r: r.basis_mib), scored[("t4", "eager")], strict=True
+    ):
         predicted = run.tensors_mib + estimate_overhead(
             run.weight_mib, run.activation_mib, DEFAULT_OVERHEAD_PROFILE, run.seq_len
         )
@@ -377,7 +379,7 @@ def test_the_emitted_literal_evaluates_back_to_the_fitted_profiles() -> None:
     result = calibrate(_synthetic_group())
     namespace: dict[str, object] = {"OverheadProfile": OverheadProfile}
 
-    exec(render_python(result), namespace)  # noqa: S102 - the input is our own render
+    exec(render_python(result), namespace)
 
     rebuilt = namespace["OVERHEAD_DB"]
     assert rebuilt == {key: fit.profile for key, fit in result.fits.items()}
@@ -416,7 +418,7 @@ def _write(tmp_path: Path, runs: list[dict[str, object]]) -> Path:
 
 def _payloads_spanning_sizes() -> list[dict[str, object]]:
     payloads = []
-    for index, activation in enumerate((1_000.0, 2_000.0, 4_000.0, 8_000.0, 12_000.0)):
+    for activation in (1_000.0, 2_000.0, 4_000.0, 8_000.0, 12_000.0):
         payload = _payload()
         payload["predicted"] = {  # type: ignore[index]
             "weight_mib": 1_000.0,

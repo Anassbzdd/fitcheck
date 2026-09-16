@@ -4,10 +4,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from math import log2
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from fitcheck.memory.overhead import estimate_overhead
 from fitcheck.overhead_db import (
@@ -236,7 +237,7 @@ def _solve(matrix: list[list[float]], target: list[float]) -> list[float] | None
             sum(row[i] * row[j] for row in matrix)
             for j in range(columns)
         ]
-        + [sum(row[i] * y for row, y in zip(matrix, target))]
+        + [sum(row[i] * y for row, y in zip(matrix, target, strict=True))]
         for i in range(columns)
     ]
 
@@ -451,7 +452,7 @@ def render_report(result: CalibrationResult) -> str:
             f"    {'model':<26} {'seq':>5} {'W+A':>9} {'measured':>9} "
             f"{'frag':>7} {'err':>7}"
         )
-        for run, error in zip(fit.runs, fit.errors_pct):
+        for run, error in zip(fit.runs, fit.errors_pct, strict=True):
             lines.append(
                 f"    {run.model_id.split('/')[-1][:26]:<26} {run.seq_len:>5} "
                 f"{run.basis_mib:>9,.0f} {run.process_mib:>9,.0f} "

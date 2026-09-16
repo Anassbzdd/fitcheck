@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 _MIB_IN_BYTES = 1024**2
 _PRECISION_BYTES: dict[str, float] = {
     "fp32": 4.0,

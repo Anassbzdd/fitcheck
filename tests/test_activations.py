@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 import pytest
 from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.activations import (
     _PROFILES,
-    _ActivationParts,
     _activation_parts,
+    _ActivationParts,
     estimate_activation_memory,
 )
 
@@ -15,13 +16,13 @@ _GOLDEN_SEQ = 2048
 _GOLDEN_VOCAB = 128_256
 
 
-_LOGITS = 4 * 4.0 * _GOLDEN_BATCH * _GOLDEN_SEQ * _GOLDEN_VOCAB / 1024**2  
+_LOGITS = 4 * 4.0 * _GOLDEN_BATCH * _GOLDEN_SEQ * _GOLDEN_VOCAB / 1024**2
 
 _CKPT_STORE = 1 * 4.0 * 32 * _GOLDEN_BATCH * _GOLDEN_SEQ * 4096 / 1024**2
-_SCORE_MATRIX = 1_024.0 
+_SCORE_MATRIX = 1_024.0
 _A_LAYER_FLASH = 1_648.0
-_A_LAYER_NO_FLASH = _A_LAYER_FLASH + 9 * _SCORE_MATRIX   
-_A_LAYER_RETAINED = _A_LAYER_FLASH + 2.9 * _SCORE_MATRIX  
+_A_LAYER_NO_FLASH = _A_LAYER_FLASH + 9 * _SCORE_MATRIX
+_A_LAYER_RETAINED = _A_LAYER_FLASH + 2.9 * _SCORE_MATRIX
 
 
 _A_ACT_CKPT_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_FLASH)          # 20,128

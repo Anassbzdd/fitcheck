@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import pytest
 from fitcheck.gpu_db import get_gpu
 

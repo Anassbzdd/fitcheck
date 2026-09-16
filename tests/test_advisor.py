@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Any, Callable
+from typing import Any
 
 import pytest
-
 from fitcheck.advisor import (
     DEFAULT_BATCH_SIZES,
     DEFAULT_LORA_RANKS,
     AxisCeiling,
     FrontierPoint,
     SweepSpec,
+    _anchor_rank,
     _dominates,
     advise,
 )
@@ -492,6 +493,20 @@ def test_advise_rejects_a_full_fine_tuning_base(
         )
 
 
+def test_the_anchor_rank_guard_states_what_advise_already_enforces(
+    qlora_base: TrainingConfig,
+) -> None:
+    """`_ceilings` and `_prices` read the anchor rank as an `int`.
+
+    That holds only because `advise` refuses a rank-less base and `_anchor_config` fills
+    the rank from the validated sweep, so the guard is unreachable through the public
+    entry point -- this calls it directly to keep the invariant tested, not assumed.
+    """
+    assert _anchor_rank(qlora_base) == qlora_base.lora_rank
+    with pytest.raises(ValueError, match="lora_rank must not be None"):
+        _anchor_rank(replace(qlora_base, lora_rank=None))
+
+
 def test_advise_rejects_a_bad_fixed_axis_before_the_sweep(
     llama_model: ModelConfig, qlora_base: TrainingConfig, sweep: SweepSpec
 ) -> None:
@@ -526,6 +541,6 @@ def test_axes_are_deduplicated_and_sorted(
 
 
 def test_default_axes_are_positive_and_ordered() -> None:
-    assert DEFAULT_BATCH_SIZES == tuple(sorted(DEFAULT_BATCH_SIZES))
-    assert DEFAULT_LORA_RANKS == tuple(sorted(DEFAULT_LORA_RANKS))
+    assert tuple(sorted(DEFAULT_BATCH_SIZES)) == DEFAULT_BATCH_SIZES
+    assert tuple(sorted(DEFAULT_LORA_RANKS)) == DEFAULT_LORA_RANKS
     assert all(value > 0 for value in DEFAULT_BATCH_SIZES + DEFAULT_LORA_RANKS)

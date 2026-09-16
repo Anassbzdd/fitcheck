@@ -476,11 +476,24 @@ three real bugs, and the gaps that remain are listed rather than hidden.
 
 ## Validation
 
-**33 real training and serving runs on one Tesla T4 (sm_75), FP16 compute.** Every run loads the real
-model, applies real LoRA adapters, and runs real steps — nothing here is simulated. Reproducible from
-[`fitcheck.ipynb`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck.ipynb) and
-[`fitcheck_infer.ipynb`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck_infer.ipynb) with
-[`scripts/measure.py`](https://github.com/Anassbzdd/fitcheck/blob/main/scripts/measure.py).
+**Real training and serving runs on one Tesla T4 (sm_75), FP16 compute.** Every run loads the real
+model, applies real LoRA adapters, and runs real steps — nothing here is simulated. Three things
+produce and check these numbers, and they are deliberately separate:
+
+| | what it does | when you run it |
+|:---|:---|:---|
+| [`scripts/measure.py`](https://github.com/Anassbzdd/fitcheck/blob/main/scripts/measure.py) | measures **one** configuration and prints predicted vs measured, `--json` for an archivable row | always — everything below is a loop around it |
+| [`scripts/calibration_sweep.py`](https://github.com/Anassbzdd/fitcheck/blob/main/scripts/calibration_sweep.py) | drives the whole calibration grid unattended, one JSON row per configuration | to calibrate a **new card** |
+| [`fitcheck.ipynb`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck.ipynb) | the Kaggle harness: stack preflight and repair, then the **out-of-sample validation** — six models the calibration never saw, with predictions registered before measuring, plus the cells that re-score the archived rows against the current code | to check the shipped constants still hold |
+
+[`fitcheck_infer.ipynb`](https://github.com/Anassbzdd/fitcheck/blob/main/fitcheck_infer.ipynb) is the
+same idea for the serving table.
+
+**The archive is the source of truth, not the notebooks.** Every measured row lives in
+[`data/measurements/`](https://github.com/Anassbzdd/fitcheck/tree/main/data/measurements) with its
+provenance, and the measured half never changes when a formula does — so the tables below can be
+regenerated from the archive with no GPU at all. That is what the last two cells of `fitcheck.ipynb`
+do. A row that is not in the archive is the only kind that needs the card again.
 
 **Library versions are part of the result.** Attention internals change between majors, so mixing rows
 from different stacks in one table without saying so would be misleading. The 23 newer rows ran on:

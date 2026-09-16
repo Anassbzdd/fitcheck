@@ -1,6 +1,8 @@
 # Component 5
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 from fitcheck.config_parser import ModelConfig
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
 

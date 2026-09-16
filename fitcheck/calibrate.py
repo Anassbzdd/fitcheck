@@ -21,6 +21,7 @@ from fitcheck.overhead_db import (
 DEFAULT_MIN_RUNS = 4
 _MIN_SEQ_LEVELS_FOR_SLOPE = 3
 _MIN_RUNS_FOR_SLOPE = 6
+_MIN_RUNS_PER_HUMP_BRANCH = 3
 
 _KERNELS = ("eager", "flash")
 
@@ -46,10 +47,13 @@ class CalibrationRun:
     context_mib: float
     process_mib: float
     fitcheck_version: str
+    quantization: str = "none"
+    logits_mib: float | None = None
+    layer_mib: float | None = None
 
     @property
-    def key(self) -> tuple[str, str]:
-        return (self.gpu_key, self.kernel)
+    def key(self) -> tuple[str, str, str]:
+        return (self.gpu_key, self.kernel, self.quantization)
 
     @property
     def basis_mib(self) -> float:
@@ -58,6 +62,31 @@ class CalibrationRun:
     @property
     def residual_mib(self) -> float:
         return self.process_mib - self.tensors_mib
+
+    @property
+    def has_humps(self) -> bool:
+        return self.logits_mib is not None and self.layer_mib is not None
+
+    @property
+    def hump_mib(self) -> float:
+        """min(A_logits, A_layer) -- the leftover the allocator over-reserves for."""
+        if self.logits_mib is None or self.layer_mib is None:
+            raise CalibrationError(f"{self.source}: row carries no activation humps")
+        return min(self.logits_mib, self.layer_mib)
+
+    @property
+    def layer_wins(self) -> bool:
+        if self.logits_mib is None or self.layer_mib is None:
+            raise CalibrationError(f"{self.source}: row carries no activation humps")
+        return self.layer_mib > self.logits_mib
+
+    @property
+    def over_reserve_mib(self) -> float:
+        """What the fit actually explains: process minus tensors minus the context.
+
+        `context_mib` is measured, not fitted, so it comes straight off the row.
+        """
+        return self.process_mib - self.tensors_mib - self.context_mib
 
     @property
     def fragmentation(self) -> float:
@@ -93,8 +122,8 @@ class GroupFit:
 
 @dataclass(frozen=True)
 class CalibrationResult:
-    fits: dict[tuple[str, str], GroupFit]
-    skipped: dict[tuple[str, str], tuple[CalibrationRun, ...]]
+    fits: dict[tuple[str, str, str], GroupFit]
+    skipped: dict[tuple[str, str, str], tuple[CalibrationRun, ...]]
 
     @property
     def worst_abs_pct(self) -> float:
@@ -166,6 +195,22 @@ def parse_run(payload: dict[str, Any], source: str = "<memory>") -> CalibrationR
         _require(payload, "predicted", "overhead_mib"), "overhead_mib"
     )
 
+    quantization = run.get("quantization", "none")
+    if not isinstance(quantization, str) or not quantization.strip():
+        raise CalibrationError(
+            f"{source}: 'run.quantization' must be a non-empty string, "
+            f"got {quantization!r}"
+        )
+
+    # Rows measured before task 9.3 do not carry the activation humps. They stay
+    # usable -- the fit falls back to the legacy proportional form for their group.
+    logits_mib = predicted.get("activation_logits_mib")
+    layer_mib = predicted.get("activation_layer_mib")
+    if logits_mib is not None:
+        logits_mib = _as_float(logits_mib, "activation_logits_mib")
+    if layer_mib is not None:
+        layer_mib = _as_float(layer_mib, "activation_layer_mib")
+
     return CalibrationRun(
         source=source,
         model_id=str(payload.get("model_id", "?")),
@@ -182,6 +227,9 @@ def parse_run(payload: dict[str, Any], source: str = "<memory>") -> CalibrationR
         context_mib=context_mib,
         process_mib=reserved_mib + context_mib,
         fitcheck_version=str(run.get("fitcheck_version", "?")),
+        quantization=quantization.strip().casefold(),
+        logits_mib=logits_mib,
+        layer_mib=layer_mib,
     )
 
 
@@ -293,13 +341,64 @@ def _fit_coefficients(
     return base, fragmentation, slope
 
 
+def _origin_slope(runs: Sequence[CalibrationRun]) -> float | None:
+    """Least squares through the origin: over_reserve = F * min(A_logits, A_layer).
+
+    No intercept, because the intercept is the CUDA context and that is measured on
+    every row rather than fitted. Letting it float was the pre-9.3 defect: the
+    constant column is collinear with the size column, so the two traded against each
+    other and a single dropped row could move F by 172%.
+    """
+    denominator = sum(run.hump_mib**2 for run in runs)
+    if denominator <= 0.0:
+        return None
+    numerator = sum(run.hump_mib * run.over_reserve_mib for run in runs)
+    return max(numerator / denominator, 0.0)
+
+
+def _fit_hump(
+    runs: Sequence[CalibrationRun],
+) -> tuple[float, float | None] | None:
+    """Fit the hump form, splitting by which hump wins the checkpointed peak.
+
+    The leftover is a different shape depending on which one wins -- the LM-head
+    logits are one enormous block, a layer's activations are many medium ones -- so
+    they get separate coefficients whenever both branches have enough rows. With only
+    one branch populated (every `flash` group, where the score matrix is gone and
+    `A_layer` always loses) a single pooled coefficient is fitted and the layer-win
+    slot is left empty for `fragmentation_for` to fall back on.
+    """
+    logits_win = [run for run in runs if not run.layer_wins]
+    layer_win = [run for run in runs if run.layer_wins]
+
+    if (
+        len(logits_win) >= _MIN_RUNS_PER_HUMP_BRANCH
+        and len(layer_win) >= _MIN_RUNS_PER_HUMP_BRANCH
+    ):
+        first = _origin_slope(logits_win)
+        second = _origin_slope(layer_win)
+        if first is None or second is None:
+            return None
+        return first, second
+
+    pooled = _origin_slope(runs)
+    if pooled is None:
+        return None
+    return pooled, None
+
+
 def _errors_pct(
     runs: Sequence[CalibrationRun], profile: OverheadProfile
 ) -> tuple[float, ...]:
     errors = []
     for run in runs:
         predicted = run.tensors_mib + estimate_overhead(
-            run.weight_mib, run.activation_mib, profile, run.seq_len
+            run.weight_mib,
+            run.activation_mib,
+            profile,
+            run.seq_len,
+            logits_mib=run.logits_mib,
+            layer_mib=run.layer_mib,
         )
         errors.append(100.0 * (predicted - run.process_mib) / run.process_mib)
     return tuple(errors)
@@ -315,6 +414,14 @@ def fit_group(
         raise CalibrationError("cannot fit an empty group")
 
     ordered = sorted(runs, key=lambda run: (run.seq_len, run.model_id))
+
+    # Preferred: the measured form. Needs every row to carry both activation humps,
+    # which means every row was produced by measure.py at task 9.3 or later.
+    if all(run.has_humps for run in ordered):
+        hump = _fit_hump(ordered)
+        if hump is not None:
+            return _hump_group_fit(ordered, hump, safety_mib, source)
+
     with_slope = (
         len({run.seq_len for run in ordered}) >= _MIN_SEQ_LEVELS_FOR_SLOPE
         and len(ordered) >= _MIN_RUNS_FOR_SLOPE
@@ -342,6 +449,7 @@ def fit_group(
     profile = OverheadProfile(
         gpu=ordered[0].gpu_name,
         kernel=ordered[0].kernel,
+        quantization=ordered[0].quantization,
         base_context_mib=round(base + safety_mib, 2),
         fragmentation=round(fragmentation, 5),
         fragmentation_per_octave=round(slope, 5),
@@ -358,6 +466,42 @@ def fit_group(
         worst_under_pct=round(min([e for e in errors if e < 0] or [0.0]), 1),
     )
 
+    return GroupFit(profile=profile, runs=tuple(ordered), errors_pct=errors)
+
+
+def _hump_group_fit(
+    ordered: Sequence[CalibrationRun],
+    hump: tuple[float, float | None],
+    safety_mib: float,
+    source: str,
+) -> GroupFit:
+    logits_win_f, layer_win_f = hump
+
+    # The CUDA context is measured on every row, not fitted. Taking the largest keeps
+    # the profile on the conservative side if rows from two sessions ever disagree;
+    # on the 66 T4 rows behind the shipped profiles they are identical at 140.875.
+    context_mib = max(run.context_mib for run in ordered)
+
+    profile = OverheadProfile(
+        gpu=ordered[0].gpu_name,
+        kernel=ordered[0].kernel,
+        quantization=ordered[0].quantization,
+        base_context_mib=round(context_mib + safety_mib, 3),
+        hump_fragmentation_logits_win=round(logits_win_f, 4),
+        hump_fragmentation_layer_win=(
+            None if layer_win_f is None else round(layer_win_f, 4)
+        ),
+        seq_len_min=min(run.seq_len for run in ordered),
+        seq_len_max=max(run.seq_len for run in ordered),
+        runs=len(ordered),
+        source=source or _default_source(ordered),
+    )
+    errors = _errors_pct(ordered, profile)
+    profile = replace(
+        profile,
+        worst_over_pct=round(max([e for e in errors if e > 0] or [0.0]), 1),
+        worst_under_pct=round(min([e for e in errors if e < 0] or [0.0]), 1),
+    )
     return GroupFit(profile=profile, runs=tuple(ordered), errors_pct=errors)
 
 
@@ -391,12 +535,12 @@ def calibrate(
     if isinstance(safety_mib, bool) or not isinstance(safety_mib, (int, float)):
         raise ValueError("safety_mib must be a number")
 
-    groups: dict[tuple[str, str], list[CalibrationRun]] = {}
+    groups: dict[tuple[str, str, str], list[CalibrationRun]] = {}
     for run in runs:
         groups.setdefault(run.key, []).append(run)
 
-    fits: dict[tuple[str, str], GroupFit] = {}
-    skipped: dict[tuple[str, str], tuple[CalibrationRun, ...]] = {}
+    fits: dict[tuple[str, str, str], GroupFit] = {}
+    skipped: dict[tuple[str, str, str], tuple[CalibrationRun, ...]] = {}
     for key in sorted(groups):
         group = groups[key]
         if len(group) < min_runs:
@@ -409,18 +553,18 @@ def calibrate(
 
 def score(
     runs: Iterable[CalibrationRun],
-    profiles: dict[tuple[str, str], OverheadProfile] | None = None,
-) -> dict[tuple[str, str], tuple[float, ...]]:
-    grouped: dict[tuple[str, str], list[CalibrationRun]] = {}
+    profiles: dict[tuple[str, str, str], OverheadProfile] | None = None,
+) -> dict[tuple[str, str, str], tuple[float, ...]]:
+    grouped: dict[tuple[str, str, str], list[CalibrationRun]] = {}
     for run in runs:
         grouped.setdefault(run.key, []).append(run)
 
-    scored: dict[tuple[str, str], tuple[float, ...]] = {}
+    scored: dict[tuple[str, str, str], tuple[float, ...]] = {}
     for key, group in sorted(grouped.items()):
         if profiles is not None:
             profile = profiles.get(key, DEFAULT_OVERHEAD_PROFILE)
         else:
-            profile = get_overhead_profile(key[0], key[1] == "flash")
+            profile = get_overhead_profile(key[0], key[1] == "flash", key[2])
         scored[key] = _errors_pct(group, profile)
     return scored
 
@@ -435,13 +579,42 @@ def render_report(result: CalibrationResult) -> str:
 
     for key, fit in sorted(result.fits.items()):
         profile = fit.profile
-        lines.append(f"{key[0]} / {key[1]}  ({profile.runs} runs)")
-        lines.append(f"  base context          {profile.base_context_mib:>10,.1f} MiB")
-        lines.append(f"  fragmentation @{REFERENCE_SEQ_LEN:<5} {profile.fragmentation:>10.4f}")
+        lines.append(f"{key[0]} / {key[1]} / quant={key[2]}  ({profile.runs} runs)")
         lines.append(
-            f"  per octave of seq     {profile.fragmentation_per_octave:>10.4f}"
-            f"   (seq {profile.seq_len_min}-{profile.seq_len_max})"
+            f"  base context          {profile.base_context_mib:>10,.3f} MiB"
+            f"   (MEASURED, not fitted)"
         )
+        if profile.uses_hump_form:
+            lines.append(
+                f"  F, logits hump wins   "
+                f"{profile.hump_fragmentation_logits_win:>10.4f}"
+            )
+            if profile.hump_fragmentation_layer_win is None:
+                lines.append(
+                    "  F, layer hump wins            -- no rows; "
+                    "falls back to the logits-win coefficient"
+                )
+            else:
+                lines.append(
+                    f"  F, layer hump wins    "
+                    f"{profile.hump_fragmentation_layer_win:>10.4f}"
+                )
+            lines.append(
+                f"  form                  C_overhead = B + F * min(A_logits, A_layer)"
+                f"   (seq {profile.seq_len_min}-{profile.seq_len_max})"
+            )
+        else:
+            lines.append(
+                f"  fragmentation @{REFERENCE_SEQ_LEN:<5} {profile.fragmentation:>10.4f}"
+            )
+            lines.append(
+                f"  per octave of seq     {profile.fragmentation_per_octave:>10.4f}"
+                f"   (seq {profile.seq_len_min}-{profile.seq_len_max})"
+            )
+            lines.append(
+                "  form                  LEGACY B + F * (W_base + A_act) -- these rows"
+                " carry no activation humps"
+            )
         lines.append(
             f"  process error         worst {fit.worst_abs_pct:+.1f}%  "
             f"mean {fit.mean_abs_pct:.1f}%  "
@@ -449,20 +622,21 @@ def render_report(result: CalibrationResult) -> str:
         )
         lines.append("")
         lines.append(
-            f"    {'model':<26} {'seq':>5} {'W+A':>9} {'measured':>9} "
+            f"    {'model':<26} {'seq':>5} {'min hump':>9} {'measured':>9} "
             f"{'frag':>7} {'err':>7}"
         )
         for run, error in zip(fit.runs, fit.errors_pct, strict=True):
+            size = run.hump_mib if run.has_humps else run.basis_mib
             lines.append(
                 f"    {run.model_id.split('/')[-1][:26]:<26} {run.seq_len:>5} "
-                f"{run.basis_mib:>9,.0f} {run.process_mib:>9,.0f} "
+                f"{size:>9,.0f} {run.process_mib:>9,.0f} "
                 f"{100 * run.fragmentation:>6.1f}% {error:>+6.1f}%"
             )
         lines.append("")
 
     for key, group in sorted(result.skipped.items()):
         lines.append(
-            f"{key[0]} / {key[1]}  SKIPPED -- {len(group)} run(s), "
+            f"{key[0]} / {key[1]} / quant={key[2]}  SKIPPED -- {len(group)} run(s), "
             f"below the minimum. Not fitted, so this pair keeps the default profile."
         )
 
@@ -474,17 +648,30 @@ def render_report(result: CalibrationResult) -> str:
 
 def render_python(result: CalibrationResult) -> str:
     """The `OVERHEAD_DB` literal, ready to paste into `fitcheck/overhead_db.py`."""
-    lines = ["OVERHEAD_DB: dict[tuple[str, str], OverheadProfile] = {"]
+    lines = ["OVERHEAD_DB: dict[tuple[str, str, str], OverheadProfile] = {"]
     for key, fit in sorted(result.fits.items()):
         profile = fit.profile
-        lines.append(f'    ("{key[0]}", "{key[1]}"): OverheadProfile(')
+        lines.append(
+            f'    ("{key[0]}", "{key[1]}", "{key[2]}"): OverheadProfile('
+        )
         lines.append(f'        gpu="{profile.gpu}",')
         lines.append(f'        kernel="{profile.kernel}",')
+        lines.append(f'        quantization="{profile.quantization}",')
         lines.append(f"        base_context_mib={profile.base_context_mib},")
-        lines.append(f"        fragmentation={profile.fragmentation},")
-        lines.append(
-            f"        fragmentation_per_octave={profile.fragmentation_per_octave},"
-        )
+        if profile.uses_hump_form:
+            lines.append(
+                f"        hump_fragmentation_logits_win="
+                f"{profile.hump_fragmentation_logits_win},"
+            )
+            lines.append(
+                f"        hump_fragmentation_layer_win="
+                f"{profile.hump_fragmentation_layer_win},"
+            )
+        else:
+            lines.append(f"        fragmentation={profile.fragmentation},")
+            lines.append(
+                f"        fragmentation_per_octave={profile.fragmentation_per_octave},"
+            )
         lines.append(f"        seq_len_min={profile.seq_len_min},")
         lines.append(f"        seq_len_max={profile.seq_len_max},")
         lines.append(f"        runs={profile.runs},")
@@ -496,7 +683,7 @@ def render_python(result: CalibrationResult) -> str:
     return "\n".join(lines)
 
 
-def render_check(scored: dict[tuple[str, str], tuple[float, ...]]) -> str:
+def render_check(scored: dict[tuple[str, str, str], tuple[float, ...]]) -> str:
     lines = [f"{'group':<18} {'runs':>5} {'worst':>8} {'mean':>8}"]
     worst_overall = 0.0
     for key, errors in sorted(scored.items()):

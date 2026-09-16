@@ -45,16 +45,34 @@ def _fragmentation_at(profile: OverheadProfile, seq_len: int | None) -> float:
     return max(fragmentation, 0.0)
 
 
+def _validate_hump(value: float | None, name: str) -> float | None:
+    if value is None:
+        return None
+    return _validate_memory(value, name)
+
+
 def estimate_overhead(
     weight_memory: float,
     activation_memory: float,
     profile: OverheadProfile | None = None,
     seq_len: int | None = None,
+    logits_mib: float | None = None,
+    layer_mib: float | None = None,
 ) -> float:
     base_weights = _validate_memory(weight_memory, "weight_memory")
     activations = _validate_memory(activation_memory, "activation_memory")
     resolved_profile = _validate_profile(profile)
     resolved_seq_len = _validate_seq_len(seq_len)
+    logits = _validate_hump(logits_mib, "logits_mib")
+    layer = _validate_hump(layer_mib, "layer_mib")
+
+    if resolved_profile.uses_hump_form:
+        if logits is not None and layer is not None:
+            fragmentation = resolved_profile.fragmentation_for(logits, layer)
+            return resolved_profile.base_context_mib + fragmentation * min(
+                logits, layer
+            )
+        resolved_profile = DEFAULT_OVERHEAD_PROFILE
 
     fragmentation = _fragmentation_at(resolved_profile, resolved_seq_len)
 

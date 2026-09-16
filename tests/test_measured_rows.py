@@ -114,3 +114,102 @@ def test_unquantized_rows_are_the_half_that_moved() -> None:
         assert as_quantized.activation_mib > estimate(
             config, training, gpu
         ).activation_mib
+
+
+# ---------------------------------------------------------------------------------
+# C_overhead: the shipped T4 profiles, held against the rows that produced them
+# ---------------------------------------------------------------------------------
+
+_PHASE3 = _ARCHIVE / "t4-phase3-2026-09-16.json"
+
+# The calibration is asymmetric on purpose. Over-predicting costs a conservative
+# "doesn't fit"; under-predicting costs an OOM in a real training run. So the two
+# directions get different budgets, and the tight one is the dangerous one.
+_MAX_UNDER_PREDICTION_PCT = 8.0
+_MAX_OVER_PREDICTION_PCT = 14.0
+_MAX_MEAN_PROCESS_ERROR_PCT = 5.0
+
+
+def _all_overhead_rows() -> list[dict]:
+    """Every archived row that can score the C_overhead profiles.
+
+    Needs `model_config` (to rebuild the estimate offline) and gradient checkpointing
+    (the hump form only exists under a `max()`, which only checkpointing creates).
+    """
+    rows: list[dict] = []
+    for path in (_SWEEP, _PHASE3):
+        for row in json.loads(path.read_text(encoding="utf-8"))["runs"]:
+            if "model_config" in row and row["run"].get("grad_checkpoint"):
+                rows.append(row)
+    return rows
+
+
+def _process_error_pct(row: dict) -> float:
+    run = row["run"]
+    predicted = estimate(
+        ModelConfig(**row["model_config"]), _training(run), get_gpu(run["gpu_key"])
+    )
+    measured = row["measured"]["peak_reserved_mib"] + row["measured"]["cuda_context_mib"]
+    return 100.0 * (predicted.total_mib - measured) / measured
+
+
+def test_the_shipped_profiles_never_under_predict_a_measured_row_by_more_than_8pct() -> None:
+    """The OOM direction. This is the gate that actually protects a user.
+
+    An over-prediction tells someone their config will not fit when it would have.
+    An under-prediction tells them it will fit, and then training dies part way in.
+    """
+    worst = min(_process_error_pct(row) for row in _all_overhead_rows())
+
+    assert worst > -_MAX_UNDER_PREDICTION_PCT, (
+        f"a measured row is under-predicted by {worst:.1f}%, past the "
+        f"{_MAX_UNDER_PREDICTION_PCT}% budget -- some F is too low"
+    )
+
+
+def test_the_shipped_profiles_reproduce_every_measured_row() -> None:
+    errors = [(_process_error_pct(row), row) for row in _all_overhead_rows()]
+    assert len(errors) >= 49
+
+    worst_over, over_row = max(errors, key=lambda pair: pair[0])
+    mean = sum(abs(error) for error, _ in errors) / len(errors)
+
+    assert worst_over < _MAX_OVER_PREDICTION_PCT, (
+        f"{over_row['model_id']} {over_row['run']['quantization']}/"
+        f"{over_row['run']['kernel']} over-predicted by {worst_over:.1f}%"
+    )
+    assert mean < _MAX_MEAN_PROCESS_ERROR_PCT
+
+
+def test_the_t4_profiles_beat_the_uncalibrated_default() -> None:
+    """Shipping constants has to be better than not shipping them, row by row.
+
+    The default bills 500 MiB of context (the real figure is 140.875) plus a flat 5%
+    of W_base + A_act, which has nothing to do with how the allocator actually behaves.
+    """
+    from fitcheck.memory.overhead import estimate_overhead
+    from fitcheck.overhead_db import DEFAULT_OVERHEAD_PROFILE
+
+    rows = _all_overhead_rows()
+    calibrated = [abs(_process_error_pct(row)) for row in rows]
+
+    uncalibrated = []
+    for row in rows:
+        run = row["run"]
+        predicted = estimate(
+            ModelConfig(**row["model_config"]), _training(run), get_gpu(run["gpu_key"])
+        )
+        tensors = predicted.total_mib - predicted.overhead_mib
+        default_total = tensors + estimate_overhead(
+            predicted.weight_mib,
+            predicted.activation_mib,
+            DEFAULT_OVERHEAD_PROFILE,
+            run["seq_len"],
+        )
+        measured = (
+            row["measured"]["peak_reserved_mib"] + row["measured"]["cuda_context_mib"]
+        )
+        uncalibrated.append(abs(100.0 * (default_total - measured) / measured))
+
+    assert max(calibrated) < max(uncalibrated)
+    assert sum(calibrated) / len(calibrated) < sum(uncalibrated) / len(uncalibrated)

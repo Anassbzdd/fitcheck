@@ -667,12 +667,11 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
 # ---------------------------------------------------------------------------------
 
 
-def predict(args: argparse.Namespace, targets: list[str]):
-    from fitcheck.config_parser import fetch_model_config
-    from fitcheck.estimator import TrainingConfig, estimate
-    from fitcheck.gpu_db import get_gpu
+def training_config(args: argparse.Namespace, targets: list[str]):
+    """The one place the CLI flags become a fitcheck TrainingConfig."""
+    from fitcheck.estimator import TrainingConfig
 
-    training = TrainingConfig(
+    return TrainingConfig(
         precision=args.precision,
         quantization=args.quant,
         double_quant=args.double_quant,
@@ -685,6 +684,14 @@ def predict(args: argparse.Namespace, targets: list[str]):
         grad_checkpoint=args.grad_checkpoint,
         flash_attn=args.flash_attn,
     )
+
+
+def predict(args: argparse.Namespace, targets: list[str]):
+    from fitcheck.config_parser import fetch_model_config
+    from fitcheck.estimator import estimate
+    from fitcheck.gpu_db import get_gpu
+
+    training = training_config(args, targets)
     model_config = fetch_model_config(args.model_id)
     return model_config, estimate(model_config, training, get_gpu(args.gpu))
 
@@ -958,6 +965,19 @@ def main(argv: list[str] | None = None) -> int:
                 "overhead_mib": report.overhead_mib,
                 "total_mib": report.total_mib,
             }
+            # The two humps that compete for the checkpointed peak. C_overhead is
+            # calibrated against min(A_logits, A_layer), so a row without these cannot
+            # be fitted with the measured form -- only with the legacy fallback.
+            if model_config is not None:
+                from fitcheck.estimator import activation_breakdown
+
+                breakdown = activation_breakdown(
+                    model_config, training_config(args, targets)
+                )
+                payload["predicted"]["activation_logits_mib"] = breakdown["logits_mib"]
+                payload["predicted"]["activation_layer_mib"] = breakdown["layer_mib"]
+            # Embedded so the archive can be re-scored and re-fitted with no network.
+            payload["model_config"] = asdict(model_config)
             payload["measured"]["activation_mib"] = _measured_activation_mib(m)
             payload["error_pct"] = {
                 "tensors": _error_pct(

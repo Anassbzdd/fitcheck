@@ -115,7 +115,7 @@ def _payload(**run_overrides: object) -> dict[str, object]:
 def test_parse_run_reduces_a_measure_py_payload_to_the_fit_inputs() -> None:
     run = parse_run(_payload())
 
-    assert run.key == ("t4", "eager")
+    assert run.key == ("t4", "eager", "none")
     assert run.basis_mib == pytest.approx(4_000.0)
     # tensors = predicted total minus the overhead the prediction already carried.
     assert run.tensors_mib == pytest.approx(5_000.0)
@@ -296,14 +296,14 @@ def test_groups_are_fitted_separately_per_gpu_and_kernel() -> None:
 
     result = calibrate(runs)
 
-    assert set(result.fits) == {("t4", "eager"), ("t4", "flash"), ("p100", "eager")}
-    assert result.fits[("t4", "eager")].profile.fragmentation == pytest.approx(
+    assert set(result.fits) == {("t4", "eager", "none"), ("t4", "flash", "none"), ("p100", "eager", "none")}
+    assert result.fits[("t4", "eager", "none")].profile.fragmentation == pytest.approx(
         0.25, abs=1e-3
     )
-    assert result.fits[("t4", "flash")].profile.fragmentation == pytest.approx(
+    assert result.fits[("t4", "flash", "none")].profile.fragmentation == pytest.approx(
         0.08, abs=1e-3
     )
-    assert result.fits[("p100", "eager")].profile.fragmentation == pytest.approx(
+    assert result.fits[("p100", "eager", "none")].profile.fragmentation == pytest.approx(
         0.12, abs=1e-3
     )
 
@@ -317,9 +317,9 @@ def test_a_group_below_the_minimum_is_skipped_not_fitted() -> None:
 
     result = calibrate(runs, min_runs=DEFAULT_MIN_RUNS)
 
-    assert set(result.fits) == {("t4", "eager")}
-    assert set(result.skipped) == {("t4", "flash")}
-    assert len(result.skipped[("t4", "flash")]) == 2
+    assert set(result.fits) == {("t4", "eager", "none")}
+    assert set(result.skipped) == {("t4", "flash", "none")}
+    assert len(result.skipped[("t4", "flash", "none")]) == 2
 
 
 @pytest.mark.parametrize("bad_value", [1, 0, -3, True, "4", 4.0])
@@ -343,9 +343,9 @@ def test_score_grades_the_shipped_constants_without_fitting() -> None:
 
     scored = score(runs)
 
-    assert set(scored) == {("t4", "eager")}
+    assert set(scored) == {("t4", "eager", "none")}
     for run, error in zip(
-        sorted(runs, key=lambda r: r.basis_mib), scored[("t4", "eager")], strict=True
+        sorted(runs, key=lambda r: r.basis_mib), scored[("t4", "eager", "none")], strict=True
     ):
         predicted = run.tensors_mib + estimate_overhead(
             run.weight_mib, run.activation_mib, DEFAULT_OVERHEAD_PROFILE, run.seq_len
@@ -365,7 +365,7 @@ def test_score_can_grade_a_candidate_profile_instead() -> None:
         runs=len(runs),
     )
 
-    errors = score(runs, {("t4", "eager"): perfect})[("t4", "eager")]
+    errors = score(runs, {("t4", "eager", "none"): perfect})[("t4", "eager", "none")]
 
     assert max(abs(error) for error in errors) < 1e-9
 
@@ -490,7 +490,8 @@ def test_the_archived_t4_rows_parse_and_group_as_expected() -> None:
     runs = load_runs([_T4_ROWS])
 
     assert len(runs) == 10
-    assert {run.key for run in runs} == {("t4", "eager"), ("t4", "flash")}
+    # The archive is QLoRA, so quantization -- now part of the key -- is nf4.
+    assert {run.key for run in runs} == {("t4", "eager", "nf4"), ("t4", "flash", "nf4")}
     # The measured CUDA context is nowhere near the 500 MiB the default profile bills.
     assert all(130.0 <= run.context_mib <= 150.0 for run in runs)
     # And the measured fragmentation is nowhere near the flat 5% either.
@@ -506,9 +507,9 @@ def test_the_archived_t4_rows_fit_and_the_flash_group_meets_the_budget() -> None
     """
     result = calibrate(load_runs([_T4_ROWS]))
 
-    assert set(result.fits) == {("t4", "eager"), ("t4", "flash")}
-    assert result.fits[("t4", "flash")].worst_abs_pct < 8.0
-    assert result.fits[("t4", "eager")].worst_abs_pct > 8.0
+    assert set(result.fits) == {("t4", "eager", "nf4"), ("t4", "flash", "nf4")}
+    assert result.fits[("t4", "flash", "nf4")].worst_abs_pct < 8.0
+    assert result.fits[("t4", "eager", "nf4")].worst_abs_pct > 8.0
 
 
 def test_fitting_the_archived_rows_beats_the_constants_fitcheck_ships() -> None:

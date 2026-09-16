@@ -54,6 +54,8 @@ def test_estimate_overhead_takes_the_two_sizes_then_the_calibration() -> None:
         "activation_memory",
         "profile",
         "seq_len",
+        "logits_mib",
+        "layer_mib",
     ]
 
 

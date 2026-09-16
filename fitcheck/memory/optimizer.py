@@ -1,5 +1,6 @@
 # Component 3
 from __future__ import annotations
+
 from fitcheck.utils import bytes_to_mib, optimizer_bytes_per_param, precision_to_bytes
 
 _MASTER_WEIGHT_BYTES_PER_PARAM = 4

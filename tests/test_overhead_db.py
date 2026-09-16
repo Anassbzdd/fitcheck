@@ -7,6 +7,7 @@ from fitcheck.overhead_db import (
     KERNEL_EAGER,
     KERNEL_FLASH,
     OVERHEAD_DB,
+    QUANTIZATIONS,
     OverheadProfile,
     get_overhead_profile,
     kernel_name,
@@ -57,11 +58,16 @@ def test_get_overhead_profile_rejects_a_non_string_key(bad_value: object) -> Non
         get_overhead_profile(bad_value)
 
 
-def test_every_shipped_profile_is_keyed_by_a_real_gpu_and_kernel() -> None:
-    for (gpu_key, kernel), profile in list_overhead_profiles():
+def test_every_shipped_profile_is_keyed_by_a_real_gpu_kernel_and_quant() -> None:
+    for (gpu_key, kernel, quantization), profile in list_overhead_profiles():
         assert gpu_key in GPU_DB, f"{gpu_key} is not a GPU_DB key"
         assert kernel in (KERNEL_EAGER, KERNEL_FLASH)
+        assert quantization in QUANTIZATIONS
         assert isinstance(profile, OverheadProfile)
+        # The key must agree with what the profile says about itself, or a lookup
+        # returns a profile describing a different configuration.
+        assert profile.kernel == kernel
+        assert profile.quantization == quantization
 
 
 def test_every_shipped_profile_is_physical_and_says_what_it_came_from() -> None:
@@ -73,13 +79,58 @@ def test_every_shipped_profile_is_physical_and_says_what_it_came_from() -> None:
         assert profile.seq_len_min <= profile.seq_len_max
 
 
-def test_the_db_is_empty_until_the_sweep_lands() -> None:
-    """Task 9.3's remaining half. Delete this test when profiles ship.
+def test_the_shipped_profiles_are_the_t4_calibration_of_task_9_3() -> None:
+    """Replaces `test_the_db_is_empty_until_the_sweep_lands`.
 
-    It is here so that populating OVERHEAD_DB is a deliberate act with a test to
-    update, rather than something that slips in half-finished.
+    Four profiles landed on 2026-09-16 from 66 measured T4 rows. Quantization is part
+    of the key because F differs by 2-3x between `none` and `nf4` at the same kernel,
+    which `torch.cuda.memory_stats()` traced to an 8x difference in large-pool segment
+    count. Changing any of these silently would move every T4 estimate.
     """
-    assert OVERHEAD_DB == {}
+    assert set(OVERHEAD_DB) == {
+        ("t4", "flash", "none"),
+        ("t4", "flash", "nf4"),
+        ("t4", "eager", "none"),
+        ("t4", "eager", "nf4"),
+    }
+    for profile in OVERHEAD_DB.values():
+        assert profile.uses_hump_form
+        # Measured, not fitted: mem_get_info minus memory_reserved, on all 66 rows.
+        assert profile.base_context_mib == 140.875
+        # S was measured to be zero (t = +0.4, -0.1, +0.5, -0.2), so no profile
+        # carries a sequence slope.
+        assert profile.fragmentation_per_octave == 0.0
+
+
+def test_the_flash_profiles_have_no_layer_win_coefficient() -> None:
+    """`A_layer` loses the max() in every flash row ever measured.
+
+    A layer-win under Flash Attention needs roughly `vocab < 3.75 * hidden_size`.
+    No measured model is that shape, so the coefficient is honestly absent rather
+    than guessed, and `fragmentation_for` falls back to the logits-win value.
+    """
+    for kernel, expected in (("flash", None), ("eager", float)):
+        for quantization in ("none", "nf4"):
+            profile = OVERHEAD_DB[("t4", kernel, quantization)]
+            if expected is None:
+                assert profile.hump_fragmentation_layer_win is None
+            else:
+                assert isinstance(profile.hump_fragmentation_layer_win, float)
+
+
+def test_quantization_is_part_of_the_lookup() -> None:
+    """The whole point of the 3-part key: same card, same kernel, different F."""
+    none = get_overhead_profile("t4", True, "none")
+    nf4 = get_overhead_profile("t4", True, "nf4")
+
+    assert none is not nf4
+    assert none.hump_fragmentation_logits_win != nf4.hump_fragmentation_logits_win
+
+
+def test_an_unmeasured_quantization_falls_back_to_the_default() -> None:
+    """`int8` has no measured row at all, so it must not borrow nf4's constants."""
+    assert get_overhead_profile("t4", True, "int8") is DEFAULT_OVERHEAD_PROFILE
+    assert get_overhead_profile("t4", False, "int8") is DEFAULT_OVERHEAD_PROFILE
 
 
 # ---------------------------------------------------------------------------------

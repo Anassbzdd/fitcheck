@@ -284,6 +284,19 @@ def _compute_components(
         training.quantization,
     )
 
+    logits_mib = layer_mib = None
+    if training.grad_checkpoint:
+        parts = _activation_parts(
+            config,
+            training.batch_size,
+            training.seq_len,
+            training.flash_attn,
+            precision_to_bytes(_activation_precision(training)),
+            _activation_profile_for(training.quantization),
+        )
+        logits_mib = bytes_to_mib(parts.logits_bytes)
+        layer_mib = bytes_to_mib(parts.layer_bytes)
+
     return _Components(
         weight_mib=weight_mib,
         lora_mib=lora_mib,
@@ -293,8 +306,12 @@ def _compute_components(
         overhead_mib=estimate_overhead(
             weight_mib,
             activation_mib,
-            get_overhead_profile(gpu_key, training.flash_attn),
+            get_overhead_profile(
+                gpu_key, training.flash_attn, training.quantization
+            ),
             training.seq_len,
+            logits_mib=logits_mib,
+            layer_mib=layer_mib,
         ),
     )
 

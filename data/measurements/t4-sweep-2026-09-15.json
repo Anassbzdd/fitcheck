@@ -1,5 +1,5 @@
 {
- "_provenance": "40 rows from the T4 calibration sweep of 2026-09-15, emitted by `scripts/measure.py --json` via `scripts/calibration_sweep.py` and archived from the notebook's runs.zip. ONE Kaggle session, one stack: Tesla T4 (sm_75, 14,912 MiB), torch 2.14.0+cu130 / transformers 5.17.0 / peft 0.20.0, torchvision and torchaudio UNINSTALLED (the image shipped a torchvision built against a different torch, so `import transformers` died on `operator torchvision::nms does not exist`; nothing here measures an image model). `measured.cuda_context_mib` is 140.875 on all 40 rows, which is how you can tell they are one session. LoRA r=32 [q,k,v,o], fp16, AdamW fp32, gradient checkpointing ON for every row. 8 of the 40 are deliberate repeats of SmolLM2-1.7B bs=4 seq=1024 (suffix -r2/-r3, 3 per kernel per quant): they came back BIT-IDENTICAL, so the allocator noise floor on this card is zero and the 30.9% eager fragmentation is a mechanism, not variance. Exclude the repeats before fitting C_overhead or they carry 3x weight. The measured half is verbatim. The predicted half is recomputed with fitcheck 0.3.0: these rows are what identified the per-quantization activation profiles, so the predictions they were emitted with are the pre-correction ones and must not be reused. Measurements do not change when the formulas do. Each row also carries the `model_config` it was measured with, so the archive can be re-scored and re-fitted with no network access at all.",
+ "_provenance": "40 rows from the T4 calibration sweep of 2026-09-15, emitted by `scripts/measure.py --json` via `scripts/calibration_sweep.py` and archived from the notebook's runs.zip. ONE Kaggle session, one stack: Tesla T4 (sm_75, 14,912 MiB), torch 2.14.0+cu130 / transformers 5.17.0 / peft 0.20.0, torchvision and torchaudio UNINSTALLED (the image shipped a torchvision built against a different torch, so `import transformers` died on `operator torchvision::nms does not exist`; nothing here measures an image model). `measured.cuda_context_mib` is 140.875 on all 40 rows, which is how you can tell they are one session. LoRA r=32 [q,k,v,o], fp16, AdamW fp32, gradient checkpointing ON for every row. 8 of the 40 are deliberate repeats of SmolLM2-1.7B bs=4 seq=1024 (suffix -r2/-r3, 3 per kernel per quant): they came back BIT-IDENTICAL, so the allocator noise floor on this card is zero and the 30.9% eager fragmentation is a mechanism, not variance. Exclude the repeats before fitting C_overhead or they carry 3x weight. The measured half is verbatim. The predicted half is recomputed with fitcheck 0.3.0: these rows are what identified the per-quantization activation profiles, so the predictions they were emitted with are the pre-correction ones and must not be reused. Measurements do not change when the formulas do. Each row also carries the `model_config` it was measured with, so the archive can be re-scored and re-fitted with no network access at all. `activation_logits_mib` / `activation_layer_mib` were backfilled on 2026-09-16 from the embedded model_config: the C_overhead fit is now keyed on min(A_logits, A_layer) and needs both. Derived, not re-measured -- the measured half of every row is untouched.",
  "runs": [
   {
    "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
@@ -60,7 +60,9 @@
     "gradient_mib": 33.25,
     "activation_mib": 5084.0,
     "overhead_mib": 833.8729248046875,
-    "total_mib": 7644.3314208984375
+    "total_mib": 7644.3314208984375,
+    "activation_logits_mib": 4748.0,
+    "activation_layer_mib": 628.0
    },
    "error_pct": {
     "tensors": -0.41065074358822773,
@@ -139,7 +141,9 @@
     "gradient_mib": 33.25,
     "activation_mib": 4322.5,
     "overhead_mib": 863.3450683593751,
-    "total_mib": 8263.246435546875
+    "total_mib": 8263.246435546875,
+    "activation_logits_mib": 4154.5,
+    "activation_layer_mib": 551.2
    },
    "error_pct": {
     "tensors": -0.07977795093036255,
@@ -218,7 +222,9 @@
     "gradient_mib": 33.25,
     "activation_mib": 5084.0,
     "overhead_mib": 833.8729248046875,
-    "total_mib": 7644.3314208984375
+    "total_mib": 7644.3314208984375,
+    "activation_logits_mib": 4748.0,
+    "activation_layer_mib": 196.0
    },
    "error_pct": {
     "tensors": -0.2520263804918237,
@@ -297,7 +303,9 @@
     "gradient_mib": 33.25,
     "activation_mib": 4322.5,
     "overhead_mib": 863.3450683593751,
-    "total_mib": 8263.246435546875
+    "total_mib": 8263.246435546875,
+    "activation_logits_mib": 4154.5,
+    "activation_layer_mib": 196.0
    },
    "error_pct": {
     "tensors": -0.02578022450960511,
@@ -376,7 +384,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3840.0,
     "overhead_mib": 754.419140625,
-    "total_mib": 6034.801953125
+    "total_mib": 6034.801953125,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 2752.0
    },
    "error_pct": {
     "tensors": -0.3188183185403157,
@@ -455,7 +465,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3840.0,
     "overhead_mib": 754.419140625,
-    "total_mib": 6034.801953125
+    "total_mib": 6034.801953125,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 2752.0
    },
    "error_pct": {
     "tensors": -0.3188183185403157,
@@ -534,7 +546,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3840.0,
     "overhead_mib": 754.419140625,
-    "total_mib": 6034.801953125
+    "total_mib": 6034.801953125,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 2752.0
    },
    "error_pct": {
     "tensors": -0.3188183185403157,
@@ -613,7 +627,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3072.0,
     "overhead_mib": 816.8095703125,
-    "total_mib": 7345.0009765625
+    "total_mib": 7345.0009765625,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 2342.4
    },
    "error_pct": {
     "tensors": -0.13090057263398186,
@@ -692,7 +708,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3072.0,
     "overhead_mib": 816.8095703125,
-    "total_mib": 7345.0009765625
+    "total_mib": 7345.0009765625,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 2342.4
    },
    "error_pct": {
     "tensors": -0.13090057263398186,
@@ -771,7 +789,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3072.0,
     "overhead_mib": 816.8095703125,
-    "total_mib": 7345.0009765625
+    "total_mib": 7345.0009765625,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 2342.4
    },
    "error_pct": {
     "tensors": -0.13090057263398186,
@@ -850,7 +870,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3840.0,
     "overhead_mib": 754.419140625,
-    "total_mib": 6034.801953125
+    "total_mib": 6034.801953125,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 448.0
    },
    "error_pct": {
     "tensors": -0.016826854624481927,
@@ -929,7 +951,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3840.0,
     "overhead_mib": 754.419140625,
-    "total_mib": 6034.801953125
+    "total_mib": 6034.801953125,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 448.0
    },
    "error_pct": {
     "tensors": -0.016826854624481927,
@@ -1008,7 +1032,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3840.0,
     "overhead_mib": 754.419140625,
-    "total_mib": 6034.801953125
+    "total_mib": 6034.801953125,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 448.0
    },
    "error_pct": {
     "tensors": -0.016826854624481927,
@@ -1087,7 +1113,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3072.0,
     "overhead_mib": 816.8095703125,
-    "total_mib": 7345.0009765625
+    "total_mib": 7345.0009765625,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 448.0
    },
    "error_pct": {
     "tensors": -0.008525993360494855,
@@ -1166,7 +1194,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3072.0,
     "overhead_mib": 816.8095703125,
-    "total_mib": 7345.0009765625
+    "total_mib": 7345.0009765625,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 448.0
    },
    "error_pct": {
     "tensors": -0.008525993360494855,
@@ -1245,7 +1275,9 @@
     "gradient_mib": 48.0,
     "activation_mib": 3072.0,
     "overhead_mib": 816.8095703125,
-    "total_mib": 7345.0009765625
+    "total_mib": 7345.0009765625,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 448.0
    },
    "error_pct": {
     "tensors": -0.008525993360494855,
@@ -1324,7 +1356,9 @@
     "gradient_mib": 14.0625,
     "activation_mib": 3342.0,
     "overhead_mib": 675.3543579101563,
-    "total_mib": 4238.691516113281
+    "total_mib": 4238.691516113281,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 2697.0
    },
    "error_pct": {
     "tensors": -3.150897415429231,
@@ -1403,7 +1437,9 @@
     "gradient_mib": 14.0625,
     "activation_mib": 2823.0,
     "overhead_mib": 653.9783508300782,
-    "total_mib": 3789.7953674316404
+    "total_mib": 3789.7953674316404,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 2236.2000000000003
    },
    "error_pct": {
     "tensors": -1.392717852482297,
@@ -1482,7 +1518,9 @@
     "gradient_mib": 14.0625,
     "activation_mib": 3342.0,
     "overhead_mib": 675.3543579101563,
-    "total_mib": 4238.691516113281
+    "total_mib": 4238.691516113281,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 105.0
    },
    "error_pct": {
     "tensors": -0.37504162009788966,
@@ -1561,7 +1599,9 @@
     "gradient_mib": 14.0625,
     "activation_mib": 2823.0,
     "overhead_mib": 653.9783508300782,
-    "total_mib": 3789.7953674316404
+    "total_mib": 3789.7953674316404,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 105.0
    },
    "error_pct": {
     "tensors": -0.3903907094463857,
@@ -1640,7 +1680,9 @@
     "gradient_mib": 14.0625,
     "activation_mib": 835.5,
     "overhead_mib": 550.0293579101562,
-    "total_mib": 1606.8665161132812
+    "total_mib": 1606.8665161132812,
+    "activation_logits_mib": 768.0,
+    "activation_layer_mib": 107.25
    },
    "error_pct": {
     "tensors": -0.9700069042731,
@@ -1719,7 +1761,9 @@
     "gradient_mib": 14.0625,
     "activation_mib": 705.75,
     "overhead_mib": 548.1158508300781,
-    "total_mib": 1566.6828674316407
+    "total_mib": 1566.6828674316407,
+    "activation_logits_mib": 672.0,
+    "activation_layer_mib": 92.85000000000001
    },
    "error_pct": {
     "tensors": -0.8495536145033468,
@@ -1798,7 +1842,9 @@
     "gradient_mib": 14.0625,
     "activation_mib": 835.5,
     "overhead_mib": 550.0293579101562,
-    "total_mib": 1606.8665161132812
+    "total_mib": 1606.8665161132812,
+    "activation_logits_mib": 768.0,
+    "activation_layer_mib": 26.25
    },
    "error_pct": {
     "tensors": -0.6558295784028116,
@@ -1877,7 +1923,9 @@
     "gradient_mib": 14.0625,
     "activation_mib": 705.75,
     "overhead_mib": 548.1158508300781,
-    "total_mib": 1566.6828674316407
+    "total_mib": 1566.6828674316407,
+    "activation_logits_mib": 672.0,
+    "activation_layer_mib": 26.25
    },
    "error_pct": {
     "tensors": -0.8133468623685242,
@@ -1956,7 +2004,9 @@
     "gradient_mib": 25.0,
     "activation_mib": 4975.0,
     "overhead_mib": 766.1994018554688,
-    "total_mib": 6190.187438964844
+    "total_mib": 6190.187438964844,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 4495.0
    },
    "error_pct": {
     "tensors": -4.627380338708774,
@@ -2035,7 +2085,9 @@
     "gradient_mib": 25.0,
     "activation_mib": 3967.0,
     "overhead_mib": 732.8559509277344,
-    "total_mib": 5489.974969482422
+    "total_mib": 5489.974969482422,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 3727.0
    },
    "error_pct": {
     "tensors": -3.0842892687208683,
@@ -2114,7 +2166,9 @@
     "gradient_mib": 25.0,
     "activation_mib": 3552.0,
     "overhead_mib": 695.0494018554688,
-    "total_mib": 4696.037438964844
+    "total_mib": 4696.037438964844,
+    "activation_logits_mib": 3072.0,
+    "activation_layer_mib": 175.0
    },
    "error_pct": {
     "tensors": -0.419472956320308,
@@ -2193,7 +2247,9 @@
     "gradient_mib": 25.0,
     "activation_mib": 2928.0,
     "overhead_mib": 680.9059509277344,
-    "total_mib": 4399.0249694824215
+    "total_mib": 4399.0249694824215,
+    "activation_logits_mib": 2688.0,
+    "activation_layer_mib": 175.0
    },
    "error_pct": {
     "tensors": -0.9763115582960579,
@@ -2272,7 +2328,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 1691.0,
     "overhead_mib": 635.555078125,
-    "total_mib": 3484.156640625
+    "total_mib": 3484.156640625,
+    "activation_logits_mib": 1000.0,
+    "activation_layer_mib": 1339.0
    },
    "error_pct": {
     "tensors": -0.9641922381828818,
@@ -2351,7 +2409,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 1310.1999998092651,
     "overhead_mib": 670.4187890529632,
-    "total_mib": 4216.294570112228
+    "total_mib": 4216.294570112228,
+    "activation_logits_mib": 875.0,
+    "activation_layer_mib": 1134.2
    },
    "error_pct": {
     "tensors": 0.7899696768950782,
@@ -2430,7 +2490,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 1352.0,
     "overhead_mib": 618.605078125,
-    "total_mib": 3128.206640625
+    "total_mib": 3128.206640625,
+    "activation_logits_mib": 1000.0,
+    "activation_layer_mib": 187.0
    },
    "error_pct": {
     "tensors": -0.8683650273131295,
@@ -2509,7 +2571,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 1051.0,
     "overhead_mib": 657.4587890625,
-    "total_mib": 3944.1345703125
+    "total_mib": 3944.1345703125,
+    "activation_logits_mib": 875.0,
+    "activation_layer_mib": 187.0
    },
    "error_pct": {
     "tensors": -0.035226934526019514,
@@ -2588,7 +2652,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 5686.0,
     "overhead_mib": 835.305078125,
-    "total_mib": 7678.906640625
+    "total_mib": 7678.906640625,
+    "activation_logits_mib": 2000.0,
+    "activation_layer_mib": 4982.0
    },
    "error_pct": {
     "tensors": 2.8959646081888346,
@@ -2667,7 +2733,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 4514.800000190735,
     "overhead_mib": 830.6487890720368,
-    "total_mib": 7581.124570512771
+    "total_mib": 7581.124570512771,
+    "activation_logits_mib": 1750.0,
+    "activation_layer_mib": 4162.8
    },
    "error_pct": {
     "tensors": 2.030807238175733,
@@ -2746,7 +2814,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 2704.0,
     "overhead_mib": 686.205078125,
-    "total_mib": 4547.806640625
+    "total_mib": 4547.806640625,
+    "activation_logits_mib": 2000.0,
+    "activation_layer_mib": 374.0
    },
    "error_pct": {
     "tensors": -0.8795129653401154,
@@ -2825,7 +2895,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 2102.0,
     "overhead_mib": 710.0087890625,
-    "total_mib": 5047.6845703125
+    "total_mib": 5047.6845703125,
+    "activation_logits_mib": 1750.0,
+    "activation_layer_mib": 374.0
    },
    "error_pct": {
     "tensors": -0.37756127801150763,
@@ -2904,7 +2976,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 676.0,
     "overhead_mib": 584.805078125,
-    "total_mib": 2418.406640625
+    "total_mib": 2418.406640625,
+    "activation_logits_mib": 500.0,
+    "activation_layer_mib": 381.5
    },
    "error_pct": {
     "tensors": -0.903507470997141,
@@ -2983,7 +3057,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 525.5,
     "overhead_mib": 631.1837890625,
-    "total_mib": 3392.3595703125
+    "total_mib": 3392.3595703125,
+    "activation_logits_mib": 437.5,
+    "activation_layer_mib": 330.3
    },
    "error_pct": {
     "tensors": 0.14443752598848325,
@@ -3062,7 +3138,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 676.0,
     "overhead_mib": 584.805078125,
-    "total_mib": 2418.406640625
+    "total_mib": 2418.406640625,
+    "activation_logits_mib": 500.0,
+    "activation_layer_mib": 93.5
    },
    "error_pct": {
     "tensors": -0.8499220838748209,
@@ -3141,7 +3219,9 @@
     "gradient_mib": 34.375,
     "activation_mib": 525.5,
     "overhead_mib": 631.1837890625,
-    "total_mib": 3392.3595703125
+    "total_mib": 3392.3595703125,
+    "activation_logits_mib": 437.5,
+    "activation_layer_mib": 93.5
    },
    "error_pct": {
     "tensors": 0.1807718554307026,

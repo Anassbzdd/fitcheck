@@ -620,40 +620,104 @@ what makes Flash Attention worthless at that shape.
 - **Memory fragmentation**: PyTorch's caching allocator reserves blocks; actual usable memory is ~91-97% of reported VRAM, depending on the card
 - **Workspace buffers**: cuBLAS/cuDNN allocate temporary workspace for GEMM/convolution operations
 
-This is modeled as a constant + small percentage:
+**This is the one component you cannot check on paper, and knowing why matters more than the
+numbers.** The other five are derivations: a tensor has a shape and a dtype, and multiplying them
+out gives an answer that is either right or wrong. The CUDA context and the caching allocator's
+behaviour are not properties of your model at all — they belong to a driver, a card, and a kernel.
 
-$$\text{Overhead} = \text{base\_context} + f(s) \times (W_{base} + A_{act})$$
+#### The first thing to know: half of this is measured, not fitted
 
-The percentage tracks $W_{base}$ specifically, not $W_{base} + W_{lora}$ — the adapters are too small to
-move it, and pinning the definition keeps the term reproducible.
+$$C_{overhead} = \underbrace{B}_{\text{measured}} + \underbrace{F}_{\text{fitted}} \times
+\min\!\left(A_{logits},\, A_{layer}\right)$$
 
-**This is the one component you cannot check on paper, and knowing why matters more than the two
-numbers.** The other five are derivations: a tensor has a shape and a dtype, and multiplying them out
-gives an answer that is either right or wrong. The CUDA context and the caching allocator's
-fragmentation are not properties of your model at all — they belong to a driver, a card, and a
-kernel. A Tesla T4 measures **133–147 MiB** of context; the 500 in the original formula was a guess
-from before anyone ran the experiment. Measured `reserved / allocated` ran anywhere from **7% to
-49%** against the flat 5%, worst at long sequences and under eager attention, both of which churn
-large short-lived blocks that the allocator rounds up and then cannot reuse.
+$B$ is the CUDA context, and you can read it directly:
 
-So these constants are **fitted, not derived**, per (GPU, attention kernel):
+```python
+free, total = torch.cuda.mem_get_info()
+context = total - free - torch.cuda.memory_reserved()   # device memory not in the allocator
+```
 
-$$f(s) = \text{frag} + \text{frag\_per\_octave} \times \log_2\!\left(\frac{s}{2048}\right)$$
+On a Tesla T4 that returns **140.875 MiB**, on every single one of 66 runs. The 500 in the original
+formula was a guess made before anyone ran the experiment.
 
-`fitcheck/calibrate.py` reads archived `scripts/measure.py --json` runs and solves for both at once,
-by least squares on the residual *(measured process total − predicted tensors)*. Fitting them
-separately is the trap: the 500 MiB context is far too generous and the 5% fragmentation far too
-mean, and the two errors partly cancel — so correcting either one alone makes the total visibly
-worse. The result is data in `fitcheck/overhead_db.py`, shaped like `gpu_db.py`. A card nobody has
-measured falls back to the original 500 + 5%, which errs high: for a tool whose job is avoiding OOM,
-a false "fits" costs the user far more than a false "doesn't fit".
+**The mistake worth learning from is that fitcheck used to *fit* this number.** It is right there in
+every measurement, and the regression was solving for it anyway. That does more damage than waste:
+in `residual = B + F × size`, the constant column and the size column are correlated, so $B$ and $F$
+trade against each other. Drop one row and $F$ moved by up to **172%**. The fits returned intercepts
+of 697 and 760 MiB for a context that is 141. Two quantities that are individually meaningless can
+still sum to something that scores well, and a least-squares fit will happily find them.
 
-> **The honest status.** `OVERHEAD_DB` is still empty. The fit, the archive and the acceptance check
-> all exist; what does not exist is a card whose rows earn a profile. On the ten archived T4 rows the
-> flash group fits to 6.1% and the eager group only to 13.9%, and that group turns on a single run
-> whose allocator reserved 30.9% more than it handed out while its SDPA twin reserved 11.9% off an
-> identical tensor peak. Telling a mechanism from allocator variance needs repeats; a *per-card*
-> constant needs more than one card. Both are measurements, not code — which is the general shape of
+> **The general lesson: never fit a parameter you have already measured.** If your data contains a
+> quantity directly, pin it. Every degree of freedom you hand a regression is one it will use to
+> absorb error from somewhere else.
+
+#### The second thing: fragmentation tracks the *loser*, not the total
+
+The obvious model — "the allocator wastes some percentage of what you allocate" — is wrong, and
+usefully so. On `--quant none` with eager attention it scored $R^2 = -0.042$: literally worse than
+ignoring the inputs and predicting the average.
+
+Here is what is actually happening. Recall from Component 5 that under gradient checkpointing the
+activation peak is a **max**, not a sum:
+
+$$A_{act} = \text{store} + \max\!\left(A_{logits},\, A_{layer}\right)$$
+
+Those two humps are not just different sizes — they are different *shapes*:
+
+| | what it is | how it allocates |
+|:---|:---|:---|
+| $A_{logits}$ | the $(b, s, V)$ logits tensor, ×4 FP32 copies | **one enormous block** |
+| $A_{layer}$ | a dozen $(b, s, h)$ tensors, per layer | **many medium blocks** |
+
+PyTorch's caching allocator does not return memory to the driver when a tensor is freed. It keeps
+the *segment*. And a segment shaped for one pattern cannot serve the other — you cannot carve one
+32 GiB logits block out of forty 8 MiB layer-activation segments, or vice versa.
+
+So when the peak arrives, whichever hump **lost** the `max()` is still sitting there in cached
+segments, useless. **That leftover is the over-reservation.** It is why the term is
+$\min(A_{logits}, A_{layer})$: the loser is the smaller one, by definition.
+
+Once you see it, the data is obvious in hindsight. Qwen2.5-1.5B has a 152k vocabulary, so its logits
+hump dwarfs its layer hump — the loser is tiny — and it had the **lowest** fragmentation in all four
+measured groups. SmolLM2-360M at sequence 4096 has two humps of nearly equal size — the loser is
+huge — and it had the highest, reserving 49% more than it allocated.
+
+#### The third thing: quantization changes the *segments*, not just the weights
+
+$F$ turned out to differ by 2–3× between `--quant none` and `--quant nf4` on the same card and
+kernel. That is not noise, and `torch.cuda.memory_stats()` says why:
+
+| | large-pool segments held at peak |
+|:---|---:|
+| `--quant none` | **99 – 154** |
+| `--quant nf4` | **15 – 25** |
+
+Unquantized fp16 weights arrive as ~150 separate large tensors, each getting its own fully-occupied
+segment — no spare room anywhere. NF4's packed weights get carved out of a handful of big segments
+that end up heavily split, leaving capacity that later absorbs transient activations for free.
+
+So quantization is part of the profile key `(GPU, kernel, quantization)`, on a measured physical
+basis rather than because splitting the fit improved the numbers.
+
+#### Where the honesty lives
+
+`fitcheck/calibrate.py` fits $F$ by least squares **through the origin** — no intercept, because the
+intercept is $B$ and $B$ is measured. The result is data in `fitcheck/overhead_db.py`, shaped like
+`gpu_db.py`. Anything unmeasured — another card, `--quant int8`, checkpointing off, inference —
+falls back to the original 500 + 5%, which errs high: for a tool whose job is avoiding OOM, a false
+"fits" costs the user far more than a false "doesn't fit".
+
+There is also no sequence-slope term any more. There used to be one, and it was an artifact: both
+humps grow with sequence length and *swap which one wins*, which looks like a sequence trend until
+you model the swap. Fitted against the corrected form, the slope comes out at $t$ = +0.4, −0.1,
++0.5, −0.2 — indistinguishable from zero in every group.
+
+> **The honest status.** Four T4 profiles ship, fitted on 66 rows, validated on 12 held-out rows
+> from models never in the fit (worst under-prediction −6.2%, mean 2.9%, none outside ±8%). What is
+> still missing is **a second card** — every row is a Tesla T4, and $B$ is card-specific by
+> construction — plus `--quant int8`, which has no measured row at all, and the un-checkpointed
+> branch, where the `max()` this whole mechanism rests on does not exist. All three fall back to the
+> default rather than guessing. That is measurement work, not code, which is the general shape of
 > this component's remaining error.
 
 ## Code Architecture
@@ -679,7 +743,7 @@ fitcheck/
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
-├── overhead_db.py           # (GPU, kernel) → OverheadProfile — the fitted C_overhead constants
+├── overhead_db.py           # (GPU, kernel, quant) → OverheadProfile — fitted C_overhead constants
 ├── calibrate.py             # Phase 3: fits overhead_db.py from measure.py --json runs
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/

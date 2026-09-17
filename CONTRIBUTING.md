@@ -32,13 +32,27 @@ to a model. It is fitted per (GPU, attention kernel) and shipped as data in
 
 ```bash
 python scripts/calibration_sweep.py --gpu <key>      # ~20 rows, unattended, one process each
-python -m fitcheck.calibrate runs/*.json             # see the fit and its residuals
-python -m fitcheck.calibrate runs/*.json --emit-python   # the OVERHEAD_DB entry to paste
+python -m fitcheck.calibrate runs/*.json             # ad-hoc look at the fit and its residuals
 ```
 
-Commit the row files under `data/measurements/` alongside the entry — see the README there for the
-format and for what makes a row usable. A fitted profile without its rows in the repo is a number
-nobody can check.
+Then commit the rows and **declare them**. `data/measurements/manifest.json` gives every archived
+row a role — `calibration`, `holdout`, `repeat` or `excluded` (with a reason) — and only
+`calibration` rows are fitted. Add one entry per row, then:
+
+```bash
+python -m fitcheck.calibrate data/measurements/manifest.json            # the fit and its residuals
+python -m fitcheck.calibrate data/measurements/manifest.json --emit-python   # the OVERHEAD_DB literal
+python -m fitcheck.calibrate data/measurements/manifest.json --check    # grade what now ships
+```
+
+Paste the `--emit-python` output over the `OVERHEAD_DB` literal in `fitcheck/overhead_db.py`.
+**Do not hand-edit it**: `tests/test_manifest.py` re-runs that command and compares character for
+character, so a typed coefficient fails CI. It also fails if the archive and the manifest disagree
+by a single row, or if a manifest entry no longer matches the measurement it points at.
+
+See the README under `data/measurements/` for the row format and for what makes a row fittable. A
+fitted profile without its rows in the repo is a number nobody can check; a row without a declared
+role is a number that can change the fit without anybody deciding it should.
 
 The paths with **no measured row at all** are listed under "What is not measured" in the README.
 The largest gaps: any card that is not a T4 (which is also what `C_overhead` needs before a

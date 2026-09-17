@@ -1,0 +1,1989 @@
+{
+ "schema_version": 1,
+ "manifest_id": "2026-09-17",
+ "what": "The declared role of every archived measurement row. fitcheck.calibrate reads this file, not a glob, so a repeat, a hold-out or a legacy row cannot wander into a fit. Roles: 'calibration' (fitted), 'holdout' (scored, never fitted), 'repeat' (a re-run of a config already declared), 'excluded' (unusable, with a reason).",
+ "fitted_command": "python -m fitcheck.calibrate data/measurements/manifest.json --emit-python",
+ "roles": {
+  "calibration": "fitted by `python -m fitcheck.calibrate`; every shipped coefficient traces back to these rows",
+  "holdout": "never fitted; scored with --role holdout --check to grade the shipped constants out of sample",
+  "repeat": "a re-measurement of a config already present under another run_id; kept as evidence, never fitted",
+  "excluded": "cannot be used, for the reason on the row"
+ },
+ "sessions": {
+  "t4-2026-09-01": {
+   "measured_on": "2026-09-01",
+   "gpu_name": "Tesla T4",
+   "capability": "sm_75",
+   "total_mib": 14912,
+   "torch": "2.10.0+cu128",
+   "transformers": "5.0.0",
+   "peft": "0.19.1",
+   "bitsandbytes": null,
+   "cuda_context_mib": 140.875,
+   "emitted_by": "transcribed from fitcheck.ipynb cell outputs; predates measure.py --json"
+  },
+  "t4-2026-09-15": {
+   "measured_on": "2026-09-15",
+   "gpu_name": "Tesla T4",
+   "capability": "sm_75",
+   "total_mib": 14912,
+   "torch": "2.14.0+cu130",
+   "transformers": "5.17.0",
+   "peft": "0.20.0",
+   "bitsandbytes": null,
+   "cuda_context_mib": 140.875,
+   "emitted_by": "scripts/measure.py --json via scripts/calibration_sweep.py"
+  },
+  "t4-2026-09-16": {
+   "measured_on": "2026-09-16",
+   "gpu_name": "Tesla T4",
+   "capability": "sm_75",
+   "total_mib": 14912,
+   "torch": "2.10.0+cu128",
+   "transformers": "5.0.0",
+   "peft": "0.19.1",
+   "bitsandbytes": "0.50.2",
+   "cuda_context_mib": 140.875,
+   "emitted_by": "scripts/measure.py --json"
+  }
+ },
+ "known_gaps": [
+  "The 12-row out-of-sample hold-out quoted in docs/SPEC.md was produced by fitcheck.ipynb (VALIDATION 1-4) and written to validation.zip inside the Kaggle session. That archive was never committed, so no row here carries role 'holdout'. Until it is re-run and archived, the hold-out figures in the docs are historical and are labelled as such."
+ ],
+ "rows": [
+  {
+   "run_id": "t4-2026-09-01-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq512",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 0,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq1024",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 1,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq2048",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 2,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 2048
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq512",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 3,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq1024",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 4,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq2048",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 5,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 2048
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 6,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 7,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-eager-nf4-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs2-seq1024",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 8,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-01-flash-nf4-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs2-seq1024",
+   "role": "excluded",
+   "session": "t4-2026-09-01",
+   "file": "t4-qlora-2026-09-01.json",
+   "index": 9,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": null,
+   "fitcheck_version": "0.3.0",
+   "reason": "measured before task 9.3: the row carries no predicted.activation_logits_mib / activation_layer_mib and no embedded model_config, so it can neither be fitted with the hump form nor re-scored offline"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 0,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:72676b0bf7ecc1b4eda7f6072491a79698c2b92cbd51d32527a04dd6f059777b",
+   "fitcheck_version": "0.3.0",
+   "source_file": "Qwen2-5-1-5B-Instruct-bs2-seq1024-eager-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 1,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:72676b0bf7ecc1b4eda7f6072491a79698c2b92cbd51d32527a04dd6f059777b",
+   "fitcheck_version": "0.3.0",
+   "source_file": "Qwen2-5-1-5B-Instruct-bs2-seq1024-eager-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 2,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:72676b0bf7ecc1b4eda7f6072491a79698c2b92cbd51d32527a04dd6f059777b",
+   "fitcheck_version": "0.3.0",
+   "source_file": "Qwen2-5-1-5B-Instruct-bs2-seq1024-flash-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 3,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:72676b0bf7ecc1b4eda7f6072491a79698c2b92cbd51d32527a04dd6f059777b",
+   "fitcheck_version": "0.3.0",
+   "source_file": "Qwen2-5-1-5B-Instruct-bs2-seq1024-flash-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024",
+   "role": "repeat",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 4,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-nf4-r2.json",
+   "reason": "deliberate bit-identical repeat of t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024; kept as the allocator noise-floor evidence, never fitted (it would carry 3x weight)"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024#2",
+   "role": "repeat",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 5,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-nf4-r3.json",
+   "reason": "deliberate bit-identical repeat of t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024; kept as the allocator noise-floor evidence, never fitted (it would carry 3x weight)"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024#3",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 6,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024",
+   "role": "repeat",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 7,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-none-r2.json",
+   "reason": "deliberate bit-identical repeat of t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024; kept as the allocator noise-floor evidence, never fitted (it would carry 3x weight)"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024#2",
+   "role": "repeat",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 8,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-none-r3.json",
+   "reason": "deliberate bit-identical repeat of t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024; kept as the allocator noise-floor evidence, never fitted (it would carry 3x weight)"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024#3",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 9,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-eager-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024",
+   "role": "repeat",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 10,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-nf4-r2.json",
+   "reason": "deliberate bit-identical repeat of t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024; kept as the allocator noise-floor evidence, never fitted (it would carry 3x weight)"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024#2",
+   "role": "repeat",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 11,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-nf4-r3.json",
+   "reason": "deliberate bit-identical repeat of t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024; kept as the allocator noise-floor evidence, never fitted (it would carry 3x weight)"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024#3",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 12,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024",
+   "role": "repeat",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 13,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-none-r2.json",
+   "reason": "deliberate bit-identical repeat of t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024; kept as the allocator noise-floor evidence, never fitted (it would carry 3x weight)"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024#2",
+   "role": "repeat",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 14,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-none-r3.json",
+   "reason": "deliberate bit-identical repeat of t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024; kept as the allocator noise-floor evidence, never fitted (it would carry 3x weight)"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs4-seq1024#3",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 15,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-1-7B-bs4-seq1024-flash-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-135M-bs1-seq4096",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 16,
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 4096
+   },
+   "model_config_sha256": "sha256:82446a9a21d1a16c7958c75f1cdb4345fbda2f38e6312e91a0cea52d512c89ac",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-135M-bs1-seq4096-eager-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-135M-bs1-seq4096",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 17,
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 4096
+   },
+   "model_config_sha256": "sha256:82446a9a21d1a16c7958c75f1cdb4345fbda2f38e6312e91a0cea52d512c89ac",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-135M-bs1-seq4096-eager-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-135M-bs1-seq4096",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 18,
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 4096
+   },
+   "model_config_sha256": "sha256:82446a9a21d1a16c7958c75f1cdb4345fbda2f38e6312e91a0cea52d512c89ac",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-135M-bs1-seq4096-flash-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-135M-bs1-seq4096",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 19,
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 4096
+   },
+   "model_config_sha256": "sha256:82446a9a21d1a16c7958c75f1cdb4345fbda2f38e6312e91a0cea52d512c89ac",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-135M-bs1-seq4096-flash-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-135M-bs2-seq512",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 20,
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": "sha256:82446a9a21d1a16c7958c75f1cdb4345fbda2f38e6312e91a0cea52d512c89ac",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-135M-bs2-seq512-eager-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-135M-bs2-seq512",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 21,
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": "sha256:82446a9a21d1a16c7958c75f1cdb4345fbda2f38e6312e91a0cea52d512c89ac",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-135M-bs2-seq512-eager-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-135M-bs2-seq512",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 22,
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": "sha256:82446a9a21d1a16c7958c75f1cdb4345fbda2f38e6312e91a0cea52d512c89ac",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-135M-bs2-seq512-flash-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-135M-bs2-seq512",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 23,
+   "model_id": "HuggingFaceTB/SmolLM2-135M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": "sha256:82446a9a21d1a16c7958c75f1cdb4345fbda2f38e6312e91a0cea52d512c89ac",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-135M-bs2-seq512-flash-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-360M-bs1-seq4096",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 24,
+   "model_id": "HuggingFaceTB/SmolLM2-360M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 4096
+   },
+   "model_config_sha256": "sha256:a6109cdc3d0949ae0fe952c04870245cedc2d7ac71922992fbdb7324b7ef4481",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-360M-bs1-seq4096-eager-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-360M-bs1-seq4096",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 25,
+   "model_id": "HuggingFaceTB/SmolLM2-360M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 4096
+   },
+   "model_config_sha256": "sha256:a6109cdc3d0949ae0fe952c04870245cedc2d7ac71922992fbdb7324b7ef4481",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-360M-bs1-seq4096-eager-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-360M-bs1-seq4096",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 26,
+   "model_id": "HuggingFaceTB/SmolLM2-360M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 4096
+   },
+   "model_config_sha256": "sha256:a6109cdc3d0949ae0fe952c04870245cedc2d7ac71922992fbdb7324b7ef4481",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-360M-bs1-seq4096-flash-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-360M-bs1-seq4096",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 27,
+   "model_id": "HuggingFaceTB/SmolLM2-360M",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 4096
+   },
+   "model_config_sha256": "sha256:a6109cdc3d0949ae0fe952c04870245cedc2d7ac71922992fbdb7324b7ef4481",
+   "fitcheck_version": "0.3.0",
+   "source_file": "SmolLM2-360M-bs1-seq4096-flash-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 28,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq1024-eager-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 29,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq1024-eager-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 30,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq1024-flash-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 31,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq1024-flash-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 32,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq2048-eager-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 33,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq2048-eager-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 34,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq2048-flash-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 35,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq2048-flash-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq512",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 36,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq512-eager-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-eager-none-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq512",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 37,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq512-eager-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq512",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 38,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq512-flash-nf4.json"
+  },
+  {
+   "run_id": "t4-2026-09-15-flash-none-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq512",
+   "role": "calibration",
+   "session": "t4-2026-09-15",
+   "file": "t4-sweep-2026-09-15.json",
+   "index": 39,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 512
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0",
+   "source_file": "TinyLlama-1-1B-Chat-v1-0-bs2-seq512-flash-none.json"
+  },
+  {
+   "run_id": "t4-2026-09-16-eager-nf4-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs1-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 0,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:72676b0bf7ecc1b4eda7f6072491a79698c2b92cbd51d32527a04dd6f059777b",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-eager-none-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs1-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 1,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:72676b0bf7ecc1b4eda7f6072491a79698c2b92cbd51d32527a04dd6f059777b",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-nf4-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs1-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 2,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:72676b0bf7ecc1b4eda7f6072491a79698c2b92cbd51d32527a04dd6f059777b",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-none-fp16-adamw-r32-ckpt-Qwen_Qwen2.5-1.5B-Instruct-bs1-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 3,
+   "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:72676b0bf7ecc1b4eda7f6072491a79698c2b92cbd51d32527a04dd6f059777b",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-eager-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs1-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 4,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-eager-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs1-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 5,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-nf4-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs1-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 6,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-none-fp16-adamw-r32-ckpt-HuggingFaceTB_SmolLM2-1.7B-bs1-seq2048",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 7,
+   "model_id": "HuggingFaceTB/SmolLM2-1.7B",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "none",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 2048
+   },
+   "model_config_sha256": "sha256:358ad0614573a2ceb13c240d0096a3c8bcb8ac613c8c66606e940ee92a9b3898",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs1-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 8,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs1-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 9,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs12-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 10,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 12,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 11,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs2-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 12,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 2,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs4-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 13,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs4-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 14,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 4,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-eager-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs8-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 15,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 8,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-16-flash-nf4-fp16-adamw-r32-ckpt-TinyLlama_TinyLlama-1.1B-Chat-v1.0-bs8-seq1024",
+   "role": "calibration",
+   "session": "t4-2026-09-16",
+   "file": "t4-phase3-2026-09-16.json",
+   "index": 16,
+   "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 32,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 8,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
+   "fitcheck_version": "0.3.0"
+  }
+ ]
+}

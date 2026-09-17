@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Iterable, Sequence
@@ -24,6 +25,11 @@ _MIN_RUNS_FOR_SLOPE = 6
 _MIN_RUNS_PER_HUMP_BRANCH = 3
 
 _KERNELS = ("eager", "flash")
+
+MANIFEST_NAME = "manifest.json"
+MANIFEST_SCHEMA_VERSION = 1
+ROLES = ("calibration", "holdout", "repeat", "excluded")
+DEFAULT_ROLES = ("calibration",)
 
 
 class CalibrationError(ValueError):
@@ -50,6 +56,13 @@ class CalibrationRun:
     quantization: str = "none"
     logits_mib: float | None = None
     layer_mib: float | None = None
+    run_id: str = ""
+    role: str = ""
+    provenance: str = ""
+
+    @property
+    def label(self) -> str:
+        return self.run_id or self.source
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -243,14 +256,207 @@ def parse_runs(payload: Any, source: str = "<memory>") -> list[CalibrationRun]:
     raise CalibrationError(f"{source}: expected a JSON object or array of objects")
 
 
-def load_runs(paths: Iterable[str | Path]) -> list[CalibrationRun]:
+# ---------------------------------------------------------------------------------
+# The manifest: which archived rows are allowed to be fitted
+# ---------------------------------------------------------------------------------
+
+
+def is_manifest(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and "schema_version" in payload
+        and isinstance(payload.get("rows"), list)
+    )
+
+
+def _model_config_sha256(row: dict[str, Any]) -> str | None:
+    config = row.get("model_config")
+    if config is None:
+        return None
+    blob = json.dumps(config, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _check_identity(entry: dict[str, Any], row: dict[str, Any], run_id: str) -> None:
+    declared_model = entry.get("model_id")
+    if declared_model is not None and declared_model != row.get("model_id"):
+        raise CalibrationError(
+            f"{run_id}: manifest says model_id {declared_model!r}, the archived row "
+            f"says {row.get('model_id')!r}. The manifest is stale."
+        )
+
+    run = row.get("run")
+    identity = entry.get("identity") or {}
+    if identity and not isinstance(run, dict):
+        raise CalibrationError(f"{run_id}: the archived row has no 'run' block")
+    for field, declared in identity.items():
+        actual = run.get(field) if isinstance(run, dict) else None
+        if isinstance(declared, list):
+            actual = list(actual) if isinstance(actual, list) else actual
+        if declared != actual:
+            raise CalibrationError(
+                f"{run_id}: manifest declares {field}={declared!r}, the archived row "
+                f"has {actual!r}. The manifest is stale."
+            )
+
+    declared_hash = entry.get("model_config_sha256")
+    actual_hash = _model_config_sha256(row)
+    if declared_hash != actual_hash:
+        raise CalibrationError(
+            f"{run_id}: the archived model_config does not match the manifest "
+            f"({declared_hash} vs {actual_hash}). The measurement changed underneath "
+            f"the declaration."
+        )
+
+
+def load_manifest(
+    path: str | Path, roles: Iterable[str] = DEFAULT_ROLES
+) -> list[CalibrationRun]:
+    path = Path(path)
+    wanted = tuple(roles)
+    for name in wanted:
+        if name not in ROLES:
+            raise CalibrationError(f"unknown role {name!r}; expected one of {ROLES}")
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise CalibrationError(f"{path}: cannot read ({error})") from error
+    except json.JSONDecodeError as error:
+        raise CalibrationError(f"{path}: not valid JSON ({error})") from error
+
+    if not is_manifest(payload):
+        raise CalibrationError(f"{path}: not a manifest (no schema_version / rows)")
+
+    version = payload.get("schema_version")
+    if version != MANIFEST_SCHEMA_VERSION:
+        raise CalibrationError(
+            f"{path}: manifest schema_version {version!r}, this fitcheck reads "
+            f"{MANIFEST_SCHEMA_VERSION}"
+        )
+
+    manifest_id = str(payload.get("manifest_id", path.stem))
+    provenance = f"manifest {manifest_id}"
+    cache: dict[Path, list[dict[str, Any]]] = {}
+
     runs: list[CalibrationRun] = []
+    seen: set[str] = set()
+    for position, entry in enumerate(payload["rows"]):
+        if not isinstance(entry, dict):
+            raise CalibrationError(f"{path}: rows[{position}] is not an object")
+
+        run_id = entry.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise CalibrationError(f"{path}: rows[{position}] has no run_id")
+        if run_id in seen:
+            raise CalibrationError(f"{path}: duplicate run_id {run_id!r}")
+        seen.add(run_id)
+
+        role = entry.get("role")
+        if role not in ROLES:
+            raise CalibrationError(
+                f"{run_id}: role {role!r} is not one of {ROLES}"
+            )
+        if role == "excluded" and not entry.get("reason"):
+            raise CalibrationError(
+                f"{run_id}: an excluded row must say why it is excluded"
+            )
+        if role not in wanted:
+            continue
+
+        source_file = entry.get("file")
+        index = entry.get("index")
+        if not isinstance(source_file, str) or not isinstance(index, int):
+            raise CalibrationError(
+                f"{run_id}: needs 'file' and an integer 'index' into its 'runs' array"
+            )
+
+        target = path.parent / source_file
+        if target not in cache:
+            try:
+                document = json.loads(target.read_text(encoding="utf-8"))
+            except OSError as error:
+                raise CalibrationError(
+                    f"{run_id}: cannot read {target} ({error})"
+                ) from error
+            except json.JSONDecodeError as error:
+                raise CalibrationError(
+                    f"{run_id}: {target} is not valid JSON ({error})"
+                ) from error
+            rows = document.get("runs") if isinstance(document, dict) else document
+            if not isinstance(rows, list):
+                raise CalibrationError(f"{run_id}: {target} holds no 'runs' array")
+            cache[target] = rows
+
+        rows = cache[target]
+        if not 0 <= index < len(rows):
+            raise CalibrationError(
+                f"{run_id}: index {index} is outside {source_file} "
+                f"({len(rows)} rows)"
+            )
+
+        row = rows[index]
+        _check_identity(entry, row, run_id)
+        runs.append(
+            replace(
+                parse_run(row, f"{source_file}[{index}]"),
+                run_id=run_id,
+                role=role,
+                provenance=provenance,
+            )
+        )
+
+    if not runs:
+        raise CalibrationError(
+            f"{path}: no rows with role {'/'.join(wanted)}. "
+            f"The manifest declares {len(payload['rows'])} rows in total."
+        )
+    return runs
+
+
+def _manifest_coverage(path: Path, payload: dict[str, Any]) -> set[Path]:
+    covered: set[Path] = set()
+    for entry in payload.get("rows", []):
+        if isinstance(entry, dict) and isinstance(entry.get("file"), str):
+            covered.add((path.parent / entry["file"]).resolve())
+    return covered
+
+
+def load_runs(
+    paths: Iterable[str | Path], roles: Iterable[str] = DEFAULT_ROLES
+) -> list[CalibrationRun]:
+    resolved: list[Path] = []
     for path in paths:
         path = Path(path)
+        if path.is_dir():
+            path = path / MANIFEST_NAME
+        resolved.append(path)
+
+    manifests: list[Path] = []
+    covered: set[Path] = set()
+    for path in resolved:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if is_manifest(payload):
+            manifests.append(path)
+            covered |= _manifest_coverage(path, payload)
+
+    runs: list[CalibrationRun] = []
+    for path in manifests:
+        runs.extend(load_manifest(path, roles))
+
+    for path in resolved:
+        if path in manifests:
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as error:
             raise CalibrationError(f"{path}: cannot read ({error})") from error
+
+        if path.resolve() in covered:
+            continue
 
         try:
             runs.extend(parse_runs(json.loads(text), str(path)))
@@ -415,6 +621,22 @@ def fit_group(
 
     ordered = sorted(runs, key=lambda run: (run.seq_len, run.model_id))
 
+    # A single hump-less row used to drag its whole group onto the legacy
+    # proportional form, quietly, and the group would still report the full row
+    # count. Refuse instead: mixing the two forms is a decision, and it is the
+    # manifest's to make.
+    legacy = [run for run in ordered if not run.has_humps]
+    if legacy and len(legacy) != len(ordered):
+        names = ", ".join(run.label for run in legacy[:3])
+        more = "" if len(legacy) <= 3 else f", +{len(legacy) - 3} more"
+        raise CalibrationError(
+            f"{ordered[0].gpu_key}/{ordered[0].kernel}/quant={ordered[0].quantization}: "
+            f"{len(legacy)} of {len(ordered)} rows carry no activation humps "
+            f"({names}{more}). The hump form and the legacy proportional form cannot "
+            f"be fitted together -- exclude the older rows in the manifest, or fit "
+            f"them as their own group."
+        )
+
     # Preferred: the measured form. Needs every row to carry both activation humps,
     # which means every row was produced by measure.py at task 9.3 or later.
     if all(run.has_humps for run in ordered):
@@ -518,9 +740,11 @@ def _default_source(runs: Sequence[CalibrationRun]) -> str:
     models = sorted({run.model_id.split("/")[-1] for run in runs})
     lengths = sorted({run.seq_len for run in runs})
     versions = sorted({run.fitcheck_version for run in runs})
+    provenance = sorted({run.provenance for run in runs if run.provenance})
+    trail = f", {'/'.join(provenance)}" if provenance else ""
     return (
         f"{len(runs)} runs, {len(models)} models, seq {lengths[0]}-{lengths[-1]}, "
-        f"fitcheck {'/'.join(versions)}"
+        f"fitcheck {'/'.join(versions)}{trail}"
     )
 
 
@@ -684,14 +908,14 @@ def render_python(result: CalibrationResult) -> str:
 
 
 def render_check(scored: dict[tuple[str, str, str], tuple[float, ...]]) -> str:
-    lines = [f"{'group':<18} {'runs':>5} {'worst':>8} {'mean':>8}"]
+    lines = [f"{'group':<24} {'runs':>5} {'worst':>8} {'mean':>8}"]
     worst_overall = 0.0
     for key, errors in sorted(scored.items()):
         worst = max((abs(e) for e in errors), default=0.0)
         mean = sum(abs(e) for e in errors) / len(errors) if errors else 0.0
         worst_overall = max(worst_overall, worst)
         lines.append(
-            f"{key[0] + '/' + key[1]:<18} {len(errors):>5} {worst:>7.1f}% {mean:>7.1f}%"
+            f"{'/'.join(key):<24} {len(errors):>5} {worst:>7.1f}% {mean:>7.1f}%"
         )
     lines.append("")
     lines.append(f"worst process-tier error with the shipped constants: {worst_overall:.1f}%")
@@ -712,13 +936,33 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "Reproduce the shipped constants:\n"
+            "  python -m fitcheck.calibrate data/measurements/manifest.json"
+            " --emit-python\n"
+            "\n"
             "Typical use:\n"
-            "  python -m fitcheck.calibrate runs/*.json\n"
-            "  python -m fitcheck.calibrate runs/*.json --emit-python\n"
-            "  python -m fitcheck.calibrate runs/*.json --check\n"
+            "  python -m fitcheck.calibrate data/measurements/manifest.json\n"
+            "  python -m fitcheck.calibrate data/measurements/manifest.json --check\n"
+            "  python -m fitcheck.calibrate runs/*.json        # ad-hoc, undeclared\n"
         ),
     )
-    parser.add_argument("runs", nargs="+", help="measure.py --json files")
+    parser.add_argument(
+        "runs",
+        nargs="+",
+        help=(
+            "a manifest.json (preferred -- only the roles you ask for are read), a "
+            "directory holding one, or raw measure.py --json files."
+        ),
+    )
+    parser.add_argument(
+        "--role",
+        action="append",
+        choices=[*ROLES, "all"],
+        help=(
+            "Manifest roles to read. Repeatable. (default: calibration, so a repeat "
+            "or a hold-out cannot enter a fit by accident)"
+        ),
+    )
     parser.add_argument(
         "--emit-python",
         action="store_true",
@@ -758,8 +1002,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
+    roles: tuple[str, ...] = DEFAULT_ROLES
+    if args.role:
+        roles = ROLES if "all" in args.role else tuple(dict.fromkeys(args.role))
+
     try:
-        runs = load_runs(args.runs)
+        runs = load_runs(args.runs, roles)
     except CalibrationError as error:
         print(f"calibrate: {error}", file=sys.stderr)
         return 2

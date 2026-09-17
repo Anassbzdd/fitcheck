@@ -512,7 +512,7 @@ Covers: CUDA context, cuDNN/cuBLAS workspace, PyTorch caching allocator over-res
 
 **$B$ is measured, not fitted.** It is `torch.cuda.mem_get_info()` minus
 `torch.cuda.memory_reserved()` — device memory the process holds that the caching allocator does
-not. On all 66 calibration rows it came back at exactly **140.875 MiB**. See the correction note
+not. On all 67 archived rows it came back at exactly **140.875 MiB**. See the correction note
 below for why fitting it was the single largest defect in the pre-9.3 model.
 
 **$S$ (the sequence slope) is measured to be zero** and no shipped profile carries one.
@@ -543,21 +543,33 @@ with checkpointing **off**, or inference — falls back to `DEFAULT_OVERHEAD_PRO
 
 > **The hump form requires gradient checkpointing.** With checkpointing off, $A_{act}$ is
 > $L \cdot A_{layer} + A_{logits}$ — a *sum*, not a $\max()$ — so neither hump is ever a leftover and
-> the mechanism above does not exist. All 66 calibration rows had checkpointing on. `estimator.py`
+> the mechanism above does not exist. All 49 calibration rows had checkpointing on. `estimator.py`
 > passes the humps only when `grad_checkpoint` is true, and `estimate_overhead` falls back to the
 > **default** profile (not to the card's own, whose proportional coefficient is empty) when they are
 > absent. Silently billing zero fragmentation there would badly under-predict.
 
-##### Shipped constants (Tesla T4, task 9.3, 2026-09-16)
+##### Shipped constants (Tesla T4, task 9.3; re-fitted from the manifest 2026-09-17)
 
 | kernel | quant | regime | $F$ | ± se | n | $R^2$ |
 |:---|:---|:---|---:|---:|---:|---:|
-| flash | none | logits wins | **1.2744** | 0.104 | 12 | 0.70 |
-| flash | nf4 | logits wins | **1.9224** | 0.118 | 17 | 0.82 |
-| eager | none | logits wins | **0.5987** | 0.036 | 8 | 0.93 |
-| eager | none | layer wins | **0.9257** | 0.083 | 9 | 0.76 |
-| eager | nf4 | logits wins | **0.6095** | 0.047 | 9 | 0.82 |
-| eager | nf4 | layer wins | **0.6913** | 0.048 | 11 | 0.87 |
+| flash | none | logits wins | **1.3181** | 0.106 | 10 | 0.75 |
+| flash | nf4 | logits wins | **1.9683** | 0.112 | 15 | 0.88 |
+| eager | none | logits wins | **0.5808** | 0.042 | 6 | 0.93 |
+| eager | none | layer wins | **0.8468** | 0.109 | 4 | 0.78 |
+| eager | nf4 | logits wins | **0.6442** | 0.043 | 6 | 0.93 |
+| eager | nf4 | layer wins | **0.7518** | 0.060 | 8 | 0.88 |
+
+**These are generated, not typed.** `data/measurements/manifest.json` declares the role of every
+archived row, and
+
+```bash
+python -m fitcheck.calibrate data/measurements/manifest.json --emit-python
+```
+
+prints the `OVERHEAD_DB` literal in `fitcheck/overhead_db.py` character for character.
+`tests/test_manifest.py` holds it to that, so the shipped numbers cannot drift away from the rows
+they came from. **49 rows are fitted** — the 8 bit-identical repeats in the 2026-09-15 sweep and the
+10 pre-9.3 rows in the 2026-09-01 file are declared `repeat` and `excluded` and never enter the fit.
 
 Both `flash` profiles leave the layer-win coefficient **empty**, and `fragmentation_for` falls back
 to the logits-win value. That is not an oversight: under Flash Attention the score matrix is gone, so
@@ -566,15 +578,23 @@ roughly $V < 3.75h$, which no measured model is. It is recorded as absent rather
 
 ##### Accuracy, and why the two directions get different budgets
 
-Over all 66 rows: mean absolute process error **3.1%**, worst over-prediction **+12.7%**, worst
-under-prediction **−7.4%**. **Zero rows under-predict by more than 8%.** Leave-one-out moves $F$ by
-6–13% per cell, against a 25% target.
+Scored against all **57** archived rows that carry the humps — the 49 fitted plus the 8 repeats:
+mean absolute process error **2.4%**, worst over-prediction **+13.9%**, worst under-prediction
+**−6.4%**. **Zero rows under-predict by more than 8%.** Exactly one row exceeds ±8% (SmolLM2-1.7B,
+nf4/eager, bs 1, seq 2048, at +13.9%), and it is an over-prediction. Reproduce with:
 
-Held out — 12 rows on models never in the fit, predictions registered before measuring, including
-Qwen2.5-3B (3× larger than anything fitted) and Qwen2.5-0.5B (152k vocab at $h$=896): worst over
-**+7.0%**, worst under **−6.2%**, mean **2.9%**, **0 of 12 outside ±8%**.
+```bash
+python -m fitcheck.calibrate data/measurements/manifest.json --check
+```
 
-The four rows that exceed ±8% are all **over**-predictions, and that asymmetry is deliberate. An
+> **Historical, not current.** An earlier fit over a 66-row population reported mean **3.1%**, worst
+> over **+12.7%**, worst under **−7.4%**, and was graded on a 12-row hold-out (models never fitted,
+> predictions registered before measuring) at mean **2.9%**, **0 of 12 outside ±8%**. Neither
+> population can be rebuilt from this repository: the hold-out archive lives in a Kaggle
+> `validation.zip` that was never committed, and the 66-row set does not match the archive either.
+> Those figures stand as history. The current claim is the `--check` line above, and nothing else.
+
+The one row that exceeds ±8% is an **over**-prediction, and that asymmetry is deliberate. An
 over-prediction costs a conservative "doesn't fit"; an under-prediction costs an OOM part way
 through a real training run. `tests/test_measured_rows.py` therefore budgets the two directions
 separately, and the tight budget is on the dangerous one.
@@ -1472,7 +1492,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Gated linear units** (GLU variants: SiLU, GELU) | Treated uniformly — all save same intermediate shapes. | ✅ MVP |
 | **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
 | **Offline mode** | If `config.json` is cached locally, works without internet. The Hub parameter count is unavailable, so `num_params` falls back to the `config.json` formula with a warning on stderr — and the architectures that only the cross-check catches (phi-2, Qwen2.5-VL) are estimated rather than refused. | ✅ MVP |
-| **`C_overhead` fragmentation model** | Rebuilt in task 9.3 (2026-09-16) and **shipped**: `C_overhead = B + F x min(A_logits, A_layer)`, keyed per **(GPU, kernel, quantization)**. `B` is the CUDA context, now **measured** (140.875 MiB on all 66 T4 rows) rather than fitted -- fitting it was the main defect, because the constant column is collinear with the size column and leave-one-out moved `F` by up to 172%. The sequence slope `S` is **measured to be zero** (t = +0.4, -0.1, +0.5, -0.2). Over-reservation tracks the hump that *loses* the checkpointed `max()`, because segments cached for one allocation pattern cannot serve the other; `R^2` on `none/eager` went **-0.04 -> 0.80**. Four T4 profiles ship; everything else (other cards, int8, checkpointing off, inference) keeps the 500 MiB + 5% default. 66 rows: mean 3.1%, worst under-prediction -7.4%, none past 8% in the OOM direction. Held out on 12 rows from unseen models: mean 2.9%, none outside +/-8%. (SS3.8, Component 6). Task 9.3, done. | [x] Shipped |
+| **`C_overhead` fragmentation model** | Rebuilt in task 9.3 (2026-09-16) and **shipped**: `C_overhead = B + F x min(A_logits, A_layer)`, keyed per **(GPU, kernel, quantization)**. `B` is the CUDA context, now **measured** (140.875 MiB on all 67 archived T4 rows) rather than fitted -- fitting it was the main defect, because the constant column is collinear with the size column and leave-one-out moved `F` by up to 172%. The sequence slope `S` is **measured to be zero** (t = +0.4, -0.1, +0.5, -0.2). Over-reservation tracks the hump that *loses* the checkpointed `max()`, because segments cached for one allocation pattern cannot serve the other; `R^2` on `none/eager` went **-0.04 -> 0.80**. Four T4 profiles ship; everything else (other cards, int8, checkpointing off, inference) keeps the 500 MiB + 5% default. Re-fitted from `data/measurements/manifest.json` on 2026-09-17, which declares the role of every archived row so repeats and pre-9.3 rows cannot enter the fit: 49 rows fitted, scored over 57, mean 2.4%, worst under-prediction -6.4%, none past 8% in the OOM direction. (SS3.8, Component 6). Task 9.3, done. | [x] Shipped |
 | **T4 / ECC entries in `gpu_db`** | Fixed: T4 is now `14_912 / 14_000`, the measured total. `h200` and `b200` take the `usable_mib` that is safe under the pessimistic reading of their vendor GB. Only the T4 is measured; the rest of the table is estimates. | ✅ fixed, rest unmeasured |
 | **No-checkpointing branch** | **Measured 2026-09-12 (task 9.2)** over 11 rows and 9 models: worst-case error 98.3% → 5.9%. The bracket is now $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$ and the score matrix is charged at the retained rate ($2.9\gamma$), not the transient one ($9\gamma$) — see Component 5. The 8.3 warning is **removed**: keeping a caveat that says the branch is unmeasured would now be false. | ✅ measured |
 | **`--quant int8` activations** | Billed at **$\gamma = 4$** whatever `--precision` says: `prepare_model_for_kbit_training` upcasts the layer norms to FP32 and LLM.int8() takes that FP32 input at every linear — the run prints `MatMul8bitLt: inputs will be cast from torch.float32` hundreds of times. On the one measured int8 row (TinyLlama, bs=2, seq=1024) that takes $A_{act}$ from **1,620 predicted against 3,729 measured ($-56.6\%$)** to **3,382 ($-9.3\%$)**, and the tensors tier from $-38.9\%$ to $-5.7\%$. The residual is LLM.int8()'s own FP16 outlier buffers, which are not modelled, so `estimate_warnings` attaches a caveat calling the figure a lower bound. **One model, one run** — a second int8 row on a different model is owed before the mechanism can be called general. | ⚠️ Partly measured, warned |

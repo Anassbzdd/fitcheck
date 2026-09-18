@@ -43,6 +43,12 @@ python scripts/measure.py <model> --gpu t4 --qlora --precision fp16 \
 Always pass `--gpu <key>`: a row with no card cannot be filed under one. Never pass
 `--no-predict`: the fit compares a prediction against a measurement and needs both.
 
+`scripts/calibration_sweep.py` drives the same script over the whole grid and adds a
+`sweep` block to each row: the canonical identity it asked for, a fingerprint of that
+identity, and the repeat index. The file name is built from the same identity, so two
+configurations cannot share a path, and the sweep checks a row's own `run` block against
+what it asked for before archiving it.
+
 Then add the row to a file here **and** declare it in `manifest.json`. A row nobody
 classified is a row that can drift into a fit unnoticed, and `tests/test_manifest.py`
 fails if the manifest and the archive disagree by even one row.
@@ -81,7 +87,11 @@ form silently, so **one** legacy row could decide the form for an entire group w
 group still reported its full row count.
 
 Rows with gradient checkpointing **off** cannot be fitted with this form at all — without the
-`max()` in `A_act` there is no losing hump, which is the whole mechanism.
+`max()` in `A_act` there is no losing hump, which is the whole mechanism. `measure.py` emits the
+two humps whatever `grad_checkpoint` says, so their presence is not evidence that the `max()`
+existed: the parser therefore keeps `run.grad_checkpoint` (a real boolean — a string is refused,
+not coerced) and the fitter refuses a hump fit unless every row in the group ran with it on. A
+group whose rows disagree on the flag is refused too, rather than averaged into one profile.
 
 ## Files
 

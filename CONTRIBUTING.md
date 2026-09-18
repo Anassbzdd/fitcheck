@@ -35,6 +35,14 @@ python scripts/calibration_sweep.py --gpu <key>      # ~20 rows, unattended, one
 python -m fitcheck.calibrate runs/*.json             # ad-hoc look at the fit and its residuals
 ```
 
+Each row file is named after the **whole identity** of the run — card, kernel, quantization,
+precision, optimizer, LoRA rank, checkpointing, model, batch size, sequence length — followed by a
+fingerprint of that identity, so two configurations can never land on the same path. The identity
+is written into the row as well (`sweep.identity`), the sweep refuses to skip or overwrite a file
+whose identity does not match the row being asked for, and it rejects a row whose own `run` block
+disagrees with what was requested. **A sweep that did not complete every planned row exits
+non-zero**, so a grid with holes in it cannot be mistaken for a finished one.
+
 Then commit the rows and **declare them**. `data/measurements/manifest.json` gives every archived
 row a role — `calibration`, `holdout`, `repeat` or `excluded` (with a reason) — and only
 `calibration` rows are fitted. Add one entry per row, then:
@@ -61,7 +69,7 @@ sweep.
 
 ## The bar for a merge
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 533
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 560
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the floor.
   The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`, which hit
   the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails without an

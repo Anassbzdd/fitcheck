@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -520,3 +521,66 @@ def test_fitting_the_archived_rows_beats_the_constants_fitcheck_ships() -> None:
     for key, fit in result.fits.items():
         shipped_worst = max(abs(error) for error in shipped[key])
         assert fit.worst_abs_pct < shipped_worst
+
+
+# ---------------------------------------------------------------------------------
+# Gradient checkpointing: the hump form does not exist without it
+# ---------------------------------------------------------------------------------
+
+
+def _hump_run(*, grad_checkpoint: bool | None, basis_mib: float) -> CalibrationRun:
+    return replace(
+        _run(basis_mib=basis_mib),
+        grad_checkpoint=grad_checkpoint,
+        logits_mib=basis_mib * 0.5,
+        layer_mib=basis_mib * 0.2,
+    )
+
+
+def test_the_checkpointing_flag_survives_parsing() -> None:
+    assert parse_run(_payload(grad_checkpoint=False)).grad_checkpoint is False
+    assert parse_run(_payload(grad_checkpoint=True)).grad_checkpoint is True
+    assert parse_run(_payload()).grad_checkpoint is None
+
+
+@pytest.mark.parametrize("value", ["false", 0, 1, "true"])
+def test_a_non_boolean_checkpointing_flag_is_refused_not_coerced(value: object) -> None:
+    with pytest.raises(CalibrationError, match="grad_checkpoint"):
+        parse_run(_payload(grad_checkpoint=value))
+
+
+@pytest.mark.parametrize("flag", [False, None])
+def test_the_hump_form_refuses_rows_that_did_not_run_checkpointing(
+    flag: bool | None,
+) -> None:
+    runs = [
+        _hump_run(grad_checkpoint=flag, basis_mib=basis)
+        for basis in (1_000.0, 2_500.0, 4_000.0, 6_500.0)
+    ]
+
+    with pytest.raises(CalibrationError, match="gradient checkpointing ON"):
+        fit_group(runs)
+
+
+def test_a_group_that_disagrees_on_checkpointing_is_refused() -> None:
+    runs = [
+        _hump_run(grad_checkpoint=True, basis_mib=1_000.0),
+        _hump_run(grad_checkpoint=True, basis_mib=2_500.0),
+        _hump_run(grad_checkpoint=False, basis_mib=4_000.0),
+    ]
+
+    with pytest.raises(CalibrationError, match="disagree on gradient checkpointing"):
+        fit_group(runs)
+
+
+def test_checkpointing_off_rows_cannot_move_a_checkpointing_on_fit() -> None:
+    clean = [
+        _hump_run(grad_checkpoint=True, basis_mib=basis)
+        for basis in (1_000.0, 2_500.0, 4_000.0, 6_500.0)
+    ]
+    baseline = fit_group(clean).profile
+
+    with pytest.raises(CalibrationError):
+        fit_group([*clean, _hump_run(grad_checkpoint=False, basis_mib=9_000.0)])
+
+    assert fit_group(clean).profile == baseline

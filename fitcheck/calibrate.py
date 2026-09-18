@@ -54,6 +54,7 @@ class CalibrationRun:
     process_mib: float
     fitcheck_version: str
     quantization: str = "none"
+    grad_checkpoint: bool | None = None
     logits_mib: float | None = None
     layer_mib: float | None = None
     run_id: str = ""
@@ -215,6 +216,16 @@ def parse_run(payload: dict[str, Any], source: str = "<memory>") -> CalibrationR
             f"got {quantization!r}"
         )
 
+    # Kept because the hump form is only defined with checkpointing ON, so the
+    # fitter has to be able to see a checkpointing-off row coming. Rows that do not
+    # record the setting stay None and are refused by the hump branch, never guessed.
+    grad_checkpoint = run.get("grad_checkpoint")
+    if grad_checkpoint is not None and not isinstance(grad_checkpoint, bool):
+        raise CalibrationError(
+            f"{source}: 'run.grad_checkpoint' must be true or false, "
+            f"got {grad_checkpoint!r}"
+        )
+
     # Rows measured before task 9.3 do not carry the activation humps. They stay
     # usable -- the fit falls back to the legacy proportional form for their group.
     logits_mib = predicted.get("activation_logits_mib")
@@ -241,6 +252,7 @@ def parse_run(payload: dict[str, Any], source: str = "<memory>") -> CalibrationR
         process_mib=reserved_mib + context_mib,
         fitcheck_version=str(run.get("fitcheck_version", "?")),
         quantization=quantization.strip().casefold(),
+        grad_checkpoint=grad_checkpoint,
         logits_mib=logits_mib,
         layer_mib=layer_mib,
     )
@@ -610,6 +622,18 @@ def _errors_pct(
     return tuple(errors)
 
 
+def _group_label(runs: Sequence[CalibrationRun]) -> str:
+    first = runs[0]
+    return f"{first.gpu_key}/{first.kernel}/quant={first.quantization}"
+
+
+def _flag_counts(runs: Sequence[CalibrationRun]) -> str:
+    counts: dict[str, int] = {}
+    for run in runs:
+        counts[repr(run.grad_checkpoint)] = counts.get(repr(run.grad_checkpoint), 0) + 1
+    return ", ".join(f"{n}x {flag}" for flag, n in sorted(counts.items()))
+
+
 def fit_group(
     runs: Sequence[CalibrationRun],
     *,
@@ -621,6 +645,17 @@ def fit_group(
 
     ordered = sorted(runs, key=lambda run: (run.seq_len, run.model_id))
 
+    # Gradient checkpointing is part of a group's identity, not a free variable: it
+    # changes which activation terms are resident at the peak, so a checkpointing-off
+    # row measures a different quantity from its neighbours.
+    flags = {run.grad_checkpoint for run in ordered}
+    if len(flags) > 1:
+        raise CalibrationError(
+            f"{_group_label(ordered)}: the rows disagree on gradient checkpointing "
+            f"({_flag_counts(ordered)}). A mixed group cannot be fitted as one -- "
+            f"split it in the manifest, or exclude the odd rows."
+        )
+
     # A single hump-less row used to drag its whole group onto the legacy
     # proportional form, quietly, and the group would still report the full row
     # count. Refuse instead: mixing the two forms is a decision, and it is the
@@ -630,7 +665,7 @@ def fit_group(
         names = ", ".join(run.label for run in legacy[:3])
         more = "" if len(legacy) <= 3 else f", +{len(legacy) - 3} more"
         raise CalibrationError(
-            f"{ordered[0].gpu_key}/{ordered[0].kernel}/quant={ordered[0].quantization}: "
+            f"{_group_label(ordered)}: "
             f"{len(legacy)} of {len(ordered)} rows carry no activation humps "
             f"({names}{more}). The hump form and the legacy proportional form cannot "
             f"be fitted together -- exclude the older rows in the manifest, or fit "
@@ -640,6 +675,17 @@ def fit_group(
     # Preferred: the measured form. Needs every row to carry both activation humps,
     # which means every row was produced by measure.py at task 9.3 or later.
     if all(run.has_humps for run in ordered):
+        # measure.py emits the humps whatever the checkpointing flag says, so the
+        # fields being present is not evidence that the max() they describe existed.
+        # Without checkpointing every layer stays resident and there is no losing
+        # hump to strand in the allocator: C_overhead has no hump form to fit.
+        if ordered[0].grad_checkpoint is not True:
+            raise CalibrationError(
+                f"{_group_label(ordered)}: the hump form of C_overhead is only "
+                f"defined with gradient checkpointing ON, and these rows report "
+                f"grad_checkpoint={ordered[0].grad_checkpoint!r}. Exclude them in "
+                f"the manifest, or fit them with a separately justified model."
+            )
         hump = _fit_hump(ordered)
         if hump is not None:
             return _hump_group_fit(ordered, hump, safety_mib, source)

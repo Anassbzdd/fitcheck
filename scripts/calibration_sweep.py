@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 MEASURE = Path(__file__).resolve().parent / "measure.py"
 
@@ -26,9 +28,161 @@ REPEATS = 3
 _ABORT_AFTER_FAILURES = 3
 
 
-def _slug(model_id: str, batch_size: int, seq_len: int, kernel: str, tag: str) -> str:
-    name = model_id.split("/")[-1].replace(".", "-")
-    return f"{name}-bs{batch_size}-seq{seq_len}-{kernel}{tag}"
+# What the sweep pins for every row. measure.py has a default for each of these, but a
+# default is not a record: if one moved, every file written here would keep its name and
+# quietly describe a different run. They are passed on the command line AND written into
+# the identity, so the two cannot drift apart unnoticed.
+OPTIMIZER = "adamw"
+LORA_TARGETS_PRESET = "standard"
+LORA_TARGET_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj")
+GRAD_CHECKPOINT = True
+DOUBLE_QUANT = False
+
+# "flash" means a kernel that never materializes the (b, n_h, s, s) score matrix. On the
+# card this project has measured that is SDPA, not FA2 -- sm_75 has no FA2 -- which is
+# why the grid asks for `--attn-impl sdpa` and why the name has to say so.
+_ATTN_IMPL = {"eager": "eager", "flash": "sdpa"}
+
+# Every field that changes what a row measures. Two runs that agree on all of them
+# measure the same thing; two that differ in any of them must never share a file.
+IDENTITY_FIELDS = (
+    "model_id",
+    "gpu_key",
+    "kernel",
+    "attn_impl",
+    "quantization",
+    "double_quant",
+    "precision",
+    "optimizer",
+    "lora_rank",
+    "lora_targets",
+    "grad_checkpoint",
+    "batch_size",
+    "seq_len",
+)
+
+
+def identity(
+    model_id: str,
+    batch_size: int,
+    seq_len: int,
+    kernel: str,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """The canonical description of one measurement.
+
+    The keys are `run_record()`'s in measure.py, so what a row was asked for can be
+    compared field by field against what it says it measured.
+    """
+    return {
+        "model_id": model_id,
+        "gpu_key": args.gpu.strip().casefold(),
+        "kernel": kernel,
+        "attn_impl": _ATTN_IMPL[kernel],
+        "quantization": args.quant,
+        "double_quant": DOUBLE_QUANT,
+        "precision": args.precision,
+        "optimizer": OPTIMIZER,
+        "lora_rank": args.lora_r,
+        "lora_targets": list(LORA_TARGET_MODULES),
+        "grad_checkpoint": GRAD_CHECKPOINT,
+        "batch_size": batch_size,
+        "seq_len": seq_len,
+    }
+
+
+def _canonical(row_identity: dict[str, Any]) -> str:
+    return json.dumps(row_identity, sort_keys=True, separators=(",", ":"))
+
+
+def fingerprint(row_identity: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical(row_identity).encode("utf-8")).hexdigest()[:8]
+
+
+def _safe(text: str) -> str:
+    cleaned = text.replace("/", "_")
+    return "".join(c if (c.isalnum() or c in "._-") else "-" for c in cleaned)
+
+
+def slug(row_identity: dict[str, Any], tag: str = "", repeat: int = 1) -> str:
+    """A filename that changes whenever the measurement changes.
+
+    The readable half names the knobs you want to see in a directory listing; the
+    eight-hex fingerprint covers the *whole* identity, so a field nobody thought to
+    spell into the name still splits the file.
+
+    The old name carried model, batch size, sequence length and kernel only. An nf4 row
+    and a `--quant none` row of the same shape landed on one path, as did r=32 and r=8,
+    fp16 and bf16, and two different cards -- and the second one was reported "already
+    done, skipping" against the first one's numbers.
+    """
+    rank = "full" if row_identity["lora_rank"] is None else f"r{row_identity['lora_rank']}"
+    quant = row_identity["quantization"] + ("-dq" if row_identity["double_quant"] else "")
+    bits = [
+        row_identity["gpu_key"],
+        row_identity["kernel"],
+        row_identity["attn_impl"],
+        quant,
+        row_identity["precision"],
+        row_identity["optimizer"],
+        rank,
+        "ckpt" if row_identity["grad_checkpoint"] else "nockpt",
+        _safe(row_identity["model_id"]),
+        f"bs{row_identity['batch_size']}",
+        f"seq{row_identity['seq_len']}",
+    ]
+    name = "-".join(bits) + tag
+    if repeat > 1:
+        name += f"-r{repeat}"
+    return f"{name}-{fingerprint(row_identity)}"
+
+
+def recorded_identity(payload: Any) -> dict[str, Any] | None:
+    """The identity a row on disk was actually measured under, or None if unreadable.
+
+    Rows written before this block existed are still checkable: measure.py's own `run`
+    record carries every field but the model id, which is at the top level.
+    """
+    if not isinstance(payload, dict):
+        return None
+    sweep = payload.get("sweep")
+    if isinstance(sweep, dict) and isinstance(sweep.get("identity"), dict):
+        return dict(sweep["identity"])
+
+    run = payload.get("run")
+    if not isinstance(run, dict):
+        return None
+    recorded: dict[str, Any] = {"model_id": payload.get("model_id")}
+    for field in IDENTITY_FIELDS:
+        if field == "model_id":
+            continue
+        if field not in run:
+            return None
+        recorded[field] = run[field]
+    return recorded
+
+
+def identity_diffs(recorded: dict[str, Any], wanted: dict[str, Any]) -> list[str]:
+    """Field-by-field disagreement between a row on disk and the row that was asked for."""
+    diffs = []
+    for field, value in wanted.items():
+        actual = recorded.get(field)
+        if isinstance(value, list) and isinstance(actual, tuple):
+            actual = list(actual)
+        if actual != value:
+            diffs.append(f"{field}: asked for {value!r}, found {actual!r}")
+    return diffs
+
+
+def _existing_row_problems(target: Path, wanted: dict[str, Any]) -> list[str]:
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"it cannot be read as JSON ({error})"]
+    recorded = recorded_identity(payload)
+    if recorded is None:
+        return ["it carries neither an identity block nor a 'run' block to check"]
+    return identity_diffs(recorded, wanted)
 
 
 def _normalise_tag(tag: str) -> str:
@@ -229,15 +383,24 @@ def _row_args(
         args.precision,
         "--lora-r",
         str(args.lora_r),
+        "--lora-targets",
+        LORA_TARGETS_PRESET,
+        "--optimizer",
+        OPTIMIZER,
         "--batch-size",
         str(batch_size),
         "--seq-len",
         str(seq_len),
-        "--grad-checkpoint",
         "--json",
     ]
+    # Spelled out rather than left to measure.py's defaults: the identity claims these
+    # values, so the command line has to ask for them.
+    if GRAD_CHECKPOINT:
+        command.append("--grad-checkpoint")
+    if DOUBLE_QUANT:
+        command.append("--double-quant")
     if kernel == "flash":
-        command += ["--flash-attn", "--attn-impl", "sdpa"]
+        command += ["--flash-attn", "--attn-impl", _ATTN_IMPL["flash"]]
     return command
 
 
@@ -263,32 +426,48 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     args.tag = _normalise_tag(args.tag)
+    if not args.gpu.strip():
+        parser.error("--gpu needs a key, e.g. t4: a row with no card cannot be filed")
+
+    out = Path(args.out)
+    kernels = [k.strip() for k in args.kernels.split(",") if k.strip()]
+    for kernel in kernels:
+        if kernel not in _ATTN_IMPL:
+            parser.error(f"unknown kernel {kernel!r}; expected eager and/or flash")
 
     if preflight(args) is None:
         return 2
 
-    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    kernels = [k.strip() for k in args.kernels.split(",") if k.strip()]
 
-    plan: list[tuple[str, int, int, str, str]] = []
+    plan: list[tuple[str, int, int, str, int]] = []
     for kernel in kernels:
         for model_id, batch_size, seq_len in GRID:
-            plan.append((model_id, batch_size, seq_len, kernel, args.tag))
+            plan.append((model_id, batch_size, seq_len, kernel, 1))
         if not args.no_repeats:
             model_id, batch_size, seq_len = REPEAT
             for repeat in range(2, REPEATS + 1):
-                plan.append(
-                    (model_id, batch_size, seq_len, kernel, f"{args.tag}-r{repeat}")
-                )
+                plan.append((model_id, batch_size, seq_len, kernel, repeat))
 
     done, failed = 0, []
     consecutive_failures = 0
-    for index, (model_id, batch_size, seq_len, kernel, tag) in enumerate(plan, 1):
-        target = out / f"{_slug(model_id, batch_size, seq_len, kernel, tag)}.json"
+    for index, (model_id, batch_size, seq_len, kernel, repeat) in enumerate(plan, 1):
+        wanted = identity(model_id, batch_size, seq_len, kernel, args)
+        target = out / f"{slug(wanted, args.tag, repeat)}.json"
         if target.exists():
-            print(f"[{index}/{len(plan)}] {target.name}  (already done, skipping)")
-            done += 1
+            problems = _existing_row_problems(target, wanted)
+            if not problems:
+                print(f"[{index}/{len(plan)}] {target.name}  (already done, skipping)")
+                done += 1
+                continue
+            # Never skip a file whose identity does not match, and never overwrite it
+            # either -- it is somebody's measurement, and this run does not know whose.
+            print(f"[{index}/{len(plan)}] {target.name}")
+            print("    STALE FILE -- not skipped, not overwritten:")
+            for line in problems:
+                print(f"      {line}")
+            print("    Move or delete it, then re-run this row.")
+            failed.append(target.name)
             continue
 
         print(f"[{index}/{len(plan)}] {target.name} ...", flush=True)
@@ -325,6 +504,28 @@ def main(argv: list[str] | None = None) -> int:
 
         consecutive_failures = 0
 
+        # The row has to say it measured what was asked for. A flag measure.py ignored,
+        # or a default that moved under it, would otherwise be archived under a name
+        # that describes a run nobody performed.
+        recorded = recorded_identity(payload)
+        diffs = (
+            ["the row carries no 'run' block to check"]
+            if recorded is None
+            else identity_diffs(recorded, wanted)
+        )
+        if diffs:
+            print("    FAILED: measure.py reports a different run than the one asked for:")
+            for line in diffs:
+                print(f"      {line}")
+            failed.append(target.name)
+            continue
+
+        payload["sweep"] = {
+            "identity": wanted,
+            "fingerprint": fingerprint(wanted),
+            "repeat": repeat,
+            "tag": args.tag,
+        }
         target.write_text(json.dumps(payload, indent=1), encoding="utf-8")
         errors = payload.get("error_pct", {})
         print(
@@ -334,10 +535,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         done += 1
 
-    print(f"\n{done}/{len(plan)} rows written to {out}/")
+    unrun = len(plan) - done - len(failed)
+    print(f"\n{done}/{len(plan)} rows complete in {out}/")
     if failed:
         print(f"{len(failed)} failed: {', '.join(failed)}")
-    return 0 if done else 1
+    if unrun:
+        print(f"{unrun} rows were never attempted -- the sweep stopped early.")
+    # A partial sweep is a failed sweep. Returning 0 with rows missing is how a grid
+    # gets called done and fitted with holes in it.
+    return 0 if done == len(plan) else 1
 
 
 if __name__ == "__main__":

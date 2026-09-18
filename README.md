@@ -30,13 +30,15 @@ the cost is the weights that stay in memory plus the KV cache, from the same con
 same math. And `fitcheck advise` tries many settings instead of pricing one — what each knob
 costs, how far each one can go before it stops fitting, and the configs right at that edge.
 
-> **Accuracy status (v0.3.0, 2026-09-02): measured, and the measurements moved the formulas.**
-> Ten real training runs on a Tesla T4 — three models, three sequence lengths, both attention
-> kernels — put the five physical components within **3.4%** of measured peak (mean 0.8%). The full
-> total, which includes the CUDA-overhead heuristic and is what the fits/doesn't-fit verdict uses, is
-> within **14.7%** (mean 5.5%). All of the remaining error is in that one heuristic. Getting here
-> changed three things in the activation formula and moved the reference numbers — see
-> [Validation](#validation) for the table and [what is still unmeasured](#what-is-not-measured).
+> **Accuracy status (v0.3.0, manifest `2026-09-17`): measured, and the measurements moved the
+> formulas.** Real training runs on a Tesla T4 are archived in
+> [`data/measurements/`](https://github.com/Anassbzdd/fitcheck/tree/main/data/measurements); 57 of
+> them can be re-scored offline and 49 of those are what the CUDA-overhead constants are fitted to.
+> Re-scored with the current code, the five physical components land within **4.6%** of measured
+> peak (mean 0.7%), and the full total — which includes CUDA overhead and is what the
+> fits/doesn't-fit verdict uses — within **13.9%** (mean 2.4%). Those numbers are the output of one
+> command, not a hand-kept tally: see [Validation](#validation) for the command, and
+> [what is still unmeasured](#what-is-not-measured) for the gaps.
 
 ---
 
@@ -459,7 +461,7 @@ fixed share of VRAM.
 
 | | needs a GPU? | component breakdown? | LoRA / QLoRA training? | empirically validated? |
 |:---|:---|:---|:---|:---|
-| **fitcheck** | no | yes — all 6 | yes, GQA-aware | **yes — 33 measured runs** (see below) |
+| **fitcheck** | no | yes — all 6 | yes, GQA-aware | **yes — 67 archived runs** (see below) |
 | [`accelerate estimate-memory`](https://huggingface.co/docs/accelerate/main/en/usage_guides/model_size_estimator) | no | weights + a coarse training multiplier | no | not published |
 | [HF Model Memory Usage Space](https://huggingface.co/spaces/hf-accelerate/model-memory-usage) | no | same, in a web UI | no | not published |
 | [vram.asmirnov.xyz](https://vram.asmirnov.xyz/) | no | yes, but outdated and has many issues | partial | not published |
@@ -496,14 +498,18 @@ regenerated from the archive with no GPU at all. That is what the last two cells
 do. A row that is not in the archive is the only kind that needs the card again.
 
 **Library versions are part of the result.** Attention internals change between majors, so mixing rows
-from different stacks in one table without saying so would be misleading. The 23 newer rows ran on:
+from different stacks in one table without saying so would be misleading. The archive is three
+sessions on two stacks, and `manifest.json` records which row came from which:
 
-```
-torch 2.10.0+cu128 | transformers 5.0.0 | peft 0.19.1 | Python 3.12 | CUDA 12.8
-```
+| session | rows | torch | transformers | peft |
+|:---|---:|:---|:---|:---|
+| `t4-2026-09-01` | 10 | torch 2.10.0+cu128 | transformers 5.0.0 | peft 0.19.1 |
+| `t4-2026-09-15` | 40 | torch 2.14.0+cu130 | transformers 5.17.0 | peft 0.20.0 |
+| `t4-2026-09-16` | 17 | torch 2.10.0+cu128 | transformers 5.0.0 | peft 0.19.1 |
 
-The ten original rows ran on an earlier stack (torch 2.x / transformers 4.x). They are kept in their
-own table below for that reason, not merged into one list.
+Python 3.12 throughout. The two stacks are safe to fit together for one specific reason and not on
+faith: `measured.cuda_context_mib` came back identical across them, so the one constant that is read
+rather than fitted did not move between torch majors.
 
 ### What "error" means here
 
@@ -521,7 +527,60 @@ Errors are signed as `(predicted − measured) / measured`, so a **negative** nu
 predicted **less** than reality — the unsafe direction, the one that lets a run OOM after you were
 told it would fit.
 
-### Results — training, gradient checkpointing ON
+### The current result — one command
+
+This is the headline accuracy claim, and it is the stdout of a command rather than a number anyone
+types by hand:
+
+```bash
+python -m fitcheck.calibrate data/measurements/manifest.json --check --role calibration --role repeat
+```
+
+```
+group                     runs    worst     mean
+t4/eager/nf4                16    13.9%     3.2%
+t4/eager/none               12     7.3%     2.6%
+t4/flash/nf4                17     6.4%     2.6%
+t4/flash/none               12     2.8%     0.9%
+
+worst process-tier error with the shipped constants: 13.9%
+```
+
+`--check` scores the constants `fitcheck` already ships; it does not fit anything, so a row cannot
+flatter itself. Rolled up over the same 57 rows, and re-predicted with the current code rather than
+with whatever each row's `predicted` half said on the day it was written:
+
+| tier | max abs error | mean abs error |
+|:---|---:|---:|
+| **tensors** — the five physical formulas | **4.6%** | 0.7% |
+| **process** — the full total, what the verdict uses | **13.9%** | 2.4% |
+
+**Which rows those are.** The manifest declares a role for all 67 archived rows: **49 fitted, 57
+scored**, and the remaining **10 legacy rows** excluded. The ten are the 2026-09-01 session, which
+predates `measure.py --json` and carries no embedded `model_config` — so they cannot be re-predicted
+without the Hub, which is precisely why they are excluded rather than quietly averaged in. The eight
+repeats are scored but never fitted.
+
+**How to read the gap between the two tiers.** The physical formulas are right to a few percent, and
+the process tier differs from them only by `C_overhead` — so essentially all of the extra error is
+that one component. It is the only fitted part of `fitcheck`, and the worst row in the table is an
+eager NF4 run whose allocator reserved far more than it handed out. Both tiers err **high** on their
+worst row, which is the safe direction for an OOM tool.
+
+`tests/test_docs_claims.py` re-runs the command above and fails if any number on this page has
+drifted from the archive, the shipped profiles, or the test suite. That is the one command that
+verifies the rest.
+
+### Historical results — the 33-run population (2026-09-01 to 2026-09-12)
+
+**Everything from here to the end of this subsection is historical and is kept as a record of what
+the corrections did, not as a current claim.** These tables are the 33-run population that v0.1.1
+through v0.2 were validated on. Only the first ten rows are in the committed archive, and they are
+the ones marked `excluded`; the other twenty-three were measured in notebook sessions whose output
+was never committed, so **none of this can be reproduced from `data/measurements/`**. The numbers
+that can be are in the section above.
+
+#### Results — training, gradient checkpointing ON (historical, 2026-09-01)
 
 QLoRA r=32 [q,k,v,o], AdamW with FP32 states. Predicted and Measured are MiB on the tensors tier.
 
@@ -546,7 +605,7 @@ sequence past 2048. These use LoRA/full FT on an fp16 base, not QLoRA:
 | llama-160m | **full fine-tuning**, bs=2, seq=1024 | eager | 3,550 | 3,377 | +5.1% | −7.9% |
 | SmolLM2-360M | r=32, bs=1, **seq=4096** | eager | 5,765 | 4,909 | **+17.4%** | −12.0% |
 
-### Results — training, gradient checkpointing OFF
+#### Results — training, gradient checkpointing OFF (historical, 2026-09-12)
 
 This is the branch that had never been measured, and it is the **default**. LoRA r=32 [q,k,v,o] on an
 unquantized fp16 base — so these rows also close `--quant none`.
@@ -569,7 +628,7 @@ The first three rows are the same 2,048 tokens arranged three ways. All three me
 activations, identical to the MiB**, while `s²` spans 16× across them — which is how we know the
 memory the old formula was missing is per-token, and not hiding in an `s²` term.
 
-### Results — serving (`fitcheck infer`)
+#### Results — serving, `fitcheck infer` (historical, 2026-09-12)
 
 | Model | Config | Concurrent | Tensors err |
 |:---|:---|---:|---:|
@@ -585,35 +644,38 @@ decode step, which `fitcheck infer` does not model at all: at 16 concurrent requ
 direction that hurts, because nobody serves at concurrency 1. **`fitcheck infer` prints a warning
 above four concurrent requests** rather than presenting the number as fact.
 
-### Summary
+#### Summary of the historical population (superseded 2026-09-17)
+
+These are the figures published for that population on 2026-09-12, at the time. They are kept for
+comparison with [the current result](#the-current-result--one-command) and are no longer the claim:
 
 | tier | max abs error | mean abs error |
 |:---|---:|---:|
-| **tensors** — the five physical formulas, all 23 training rows | **17.4%** | 2.2% |
-| tensors, excluding the one seq-4096 row | **5.1%** | 1.5% |
-| **process** — the full total | **22.2%** | 7.5% |
+| tensors — the five physical formulas, all 23 training rows | 17.4% | 2.2% |
+| tensors, excluding the one seq-4096 row | 5.1% | 1.5% |
+| process — the full total | 22.2% | 7.5% |
 
-**How to read this.** The physical formulas are right to a few percent. `C_overhead` is not — the
-process tier differs from the tensors tier only by that one heuristic, and essentially all of the
-extra error is there. Its fragmentation model assumes a flat 5%; measured `reserved/allocated` ran
-from **7% to 49%**, worst at long sequences and under eager attention, because big short-lived tensors
-churn the allocator pool. The `_BASE_CONTEXT_MIB` constant of 500 is separately wrong — the T4
-measured **133–147 MiB** on every one of the 33 runs — and the two errors partly cancel, so they have
-to be fitted together or fixing one will visibly worsen the other.
+**What moved between then and now.** `C_overhead` was the whole gap, and it was a heuristic: a flat
+5% fragmentation fraction plus a 500 MiB base context. Measured `reserved/allocated` ran from **7%
+to 49%**, worst at long sequences and under eager attention, because big short-lived tensors churn
+the allocator pool — and the 500 MiB constant was wrong in the other direction, so the two errors
+partly cancelled and neither could be fixed alone.
 
-Fitting them together is now what `fitcheck` does. `fitcheck/calibrate.py` reads archived
-`scripts/measure.py --json` rows and solves for both constants at once, per **(GPU, attention
-kernel)**, with a third term for how fragmentation moves with sequence length; the result is data in
-`fitcheck/overhead_db.py`, shaped like `gpu_db.py`. The table above is unchanged because that
-database is **still empty** — every card falls back to the original 500 MiB + 5%, which errs high,
-the safe direction for an OOM tool. On the ten archived T4 rows the fit takes the flash group to
-6.1% worst-case and the eager group only to 13.9%, and the eager group turns on a single run whose
-allocator reserved 30.9% more than it handed out while its SDPA twin reserved 11.9% off an identical
-tensor peak. Separating that from run-to-run variance needs repeats, and a per-card constant needs a
-second card. Both are measurements, not code.
+Both are now fitted, and `fitcheck` ships the result. `fitcheck/calibrate.py` reads the declared
+rows out of `data/measurements/manifest.json` and solves per **(GPU, attention kernel,
+quantization)**; the output is data in `fitcheck/overhead_db.py`, shaped like `gpu_db.py`. Today
+**four T4 profiles** ship — both kernels × `none` and `nf4` — and every other card, `int8`,
+checkpointing-off and inference still fall back to the original 500 MiB + 5%, which errs high, the
+safe direction for an OOM tool. The base context inside those four is **read, not fitted**: it is
+`140.875 MiB on 57 of them and 141.0 MiB on the other ten`, across every archived row, and never
+once near 500. Fitting a constant the data already contains was the old model's worst defect.
 
-The one tensors-tier row above 10% is an overhead row too: SmolLM2-360M at seq 4096 reserved
-7,304 MiB against 4,909 allocated, the worst fragmentation this project has measured.
+`python -m fitcheck.calibrate data/measurements/manifest.json --emit-python` regenerates that
+database character for character, and `tests/test_manifest.py` fails if the checked-in file and the
+declared rows ever disagree. Never hand-edit `overhead_db.py`.
+
+The one historical tensors-tier row above 10% was an overhead row too: SmolLM2-360M at seq 4096
+reserved 7,304 MiB against 4,909 allocated, the worst fragmentation this project has measured.
 
 ### What these runs changed
 
@@ -679,9 +741,10 @@ Be as clear about the gaps as about the results. This list is much shorter than 
 checkpointing off, `--quant none`, `--double-quant`, full fine-tuning, seq 4096 and the serving path
 all have measured rows now — and what is left mostly needs hardware nobody here has.
 
-- **Any GPU other than this T4.** All 33 runs are one Tesla T4 (sm_75). That means **no BF16 and no
-  real FlashAttention-2** — sm_75 supports neither — so the flash code path is validated only through
-  SDPA's memory-efficient backend as a stand-in. This is now the single largest gap in the project.
+- **Any GPU other than this T4.** All 67 archived rows are one Tesla T4 (sm_75). That means **no
+  BF16 and no real FlashAttention-2** — sm_75 supports neither — so the flash code path is validated
+  only through SDPA's memory-efficient backend as a stand-in. This is now the single largest gap in
+  the project, and it is also why only one card ships fitted `C_overhead` constants.
 - **`--quant int8` beyond one model.** One TinyLlama run measured activations **−56.6%** low. The
   cause is identified: `prepare_model_for_kbit_training` upcasts the layer norms to FP32 and
   LLM.int8() takes that FP32 input at every linear, so fitcheck now bills int8 activations at `γ=4`
@@ -696,10 +759,15 @@ all have measured rows now — and what is left mostly needs hardware nobody her
   row is about 2 MiB at that shape — and one data point cannot settle it. `fitcheck infer` warns
   above four concurrent requests instead. Closing it properly needs a concurrency sweep.
 - **Sequences beyond 4096**, where the eager coefficient multiplies an `s²` term.
-- **The `C_overhead` constants themselves.** The fit exists (`python -m fitcheck.calibrate`), the
-  archive format exists (`data/measurements/`), and the acceptance check exists
-  (`--check`). What does not exist yet is a fitted row that earns its place: no card ships
-  calibrated constants, so every estimate still uses the conservative default.
+- **`C_overhead` on anything but a calibrated T4.** Four T4 profiles ship — `eager`/`flash` ×
+  `none`/`nf4`, fitted on 49 declared rows. Every other combination still uses the conservative
+  500 MiB + 5% default: any other card, `--quant int8`, gradient checkpointing **off**, and the
+  whole of `fitcheck infer`. The hump form the four profiles use has no proportional term, so it
+  cannot be extrapolated to those paths — it is refused rather than stretched.
+- **The out-of-sample hold-out.** The 12-row hold-out that `docs/SPEC.md` quotes was produced in a
+  notebook session and written to an archive that was never committed. No row in the manifest
+  carries the `holdout` role today, so the hold-out figures in the docs are historical and are
+  labelled as such. `manifest.json` records this under `known_gaps`.
 - **MoE models**, which are refused rather than estimated — see [Model support](#model-support).
 - **Every GPU entry except the T4.** The T4 used to claim 15,360 MiB usable of 16,384 when the card
   actually reports 14,912 MiB total — vendor GB treated as GiB, unsafe direction — and is now
@@ -791,11 +859,13 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 505
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 533
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the
-  floor. The `-m "not network"` filter is not optional: it skips the one test that fetches the
-  gated `meta-llama/Llama-3.1-8B` for real, which fails without an `HF_TOKEN`. The offline
-  tests cover the same parsing against a fixture.
+  floor. The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`,
+  which hit the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails
+  without an `HF_TOKEN`. The offline tests cover the same parsing against a fixture.
+- If you change a number this README quotes, `pytest tests/test_docs_claims.py` tells you what
+  the artifacts actually say. Those claims are checked, not trusted.
 - Any change to a formula updates its module, its test, and `docs/SPEC.md` in the same PR. The
   Llama-3.1-8B golden numbers in the SPEC appendix are the reference set — if a change moves
   them, say so explicitly in the PR description.

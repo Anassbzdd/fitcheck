@@ -712,9 +712,17 @@ humps grow with sequence length and *swap which one wins*, which looks like a se
 you model the swap. Fitted against the corrected form, the slope comes out at $t$ = +0.4, −0.1,
 +0.5, −0.2 — indistinguishable from zero in every group.
 
-> **The honest status.** Four T4 profiles ship, fitted on 66 rows, validated on 12 held-out rows
-> from models never in the fit (worst under-prediction −6.2%, mean 2.9%, none outside ±8%). What is
-> still missing is **a second card** — every row is a Tesla T4, and $B$ is card-specific by
+> **The honest status (manifest `2026-09-17`).** Four T4 profiles ship, fitted on the **49** rows
+> the manifest declares as `calibration` and scored over **57** (those plus the eight repeats):
+> mean 2.4%, worst under-prediction −6.4%, worst over-prediction +13.9%. Quote both directions —
+> the over-prediction is the larger number, and it is the safe one.
+>
+> The earlier "66 rows fitted, 12 held out (−6.2% worst, mean 2.9%)" figures are **historical**.
+> That hold-out was produced inside a notebook session and written to an archive that was never
+> committed, so no row carries the `holdout` role today and the result cannot be rebuilt from this
+> repository. `data/measurements/manifest.json` records it under `known_gaps`.
+>
+> What is still missing is **a second card** — every row is a Tesla T4, and $B$ is card-specific by
 > construction — plus `--quant int8`, which has no measured row at all, and the un-checkpointed
 > branch, where the `max()` this whole mechanism rests on does not exist. All three fall back to the
 > default rather than guessing. That is measurement work, not code, which is the general shape of
@@ -991,9 +999,15 @@ activation slope and you over-estimate how many batches fit, in the optimistic d
 Accuracy is the make-or-break metric for `fitcheck`. If the estimates are more than ~15% off, people
 won't trust it. As of v0.1.2 this is no longer a plan — it has been done, and it moved the formulas.
 
-### Measured results
+### Measured results — the original ten (historical, 2026-09-01)
 
-Ten runs, reproducible from `fitcheck.ipynb`, all on one Tesla T4 (sm_75) in FP16 with QLoRA r=32
+**This section is a record of the first validation, not the current accuracy claim.** For that, see
+*The honest status* under Component 6 above, or run
+`python -m fitcheck.calibrate data/measurements/manifest.json --check --role calibration --role repeat`.
+These ten rows are the ones the manifest marks `excluded`: they predate `measure.py --json`, carry
+no embedded `model_config`, and so cannot be re-predicted offline.
+
+Ten runs, all on one Tesla T4 (sm_75) in FP16 with QLoRA r=32
 [q,k,v,o], AdamW FP32 states and gradient checkpointing on. "Predicted" and "Actual" are the
 **tensors tier**: the six-component total minus $C_{overhead}$, against `max_memory_allocated()`.
 
@@ -1009,6 +1023,8 @@ Ten runs, reproducible from `fitcheck.ipynb`, all on one Tesla T4 (sm_75) in FP1
 | SmolLM2-1.7B | bs=4, seq=1024 | SDPA (no s²) | 5,280 | 5,281 | −0.0% |
 | Qwen2.5-1.5B | bs=2, seq=1024 | eager | 6,810 | 6,831 | −0.3% |
 | Qwen2.5-1.5B | bs=2, seq=1024 | SDPA (no s²) | 6,810 | 6,823 | −0.2% |
+
+Over those ten rows only, as published on 2026-09-01:
 
 | tier | max abs error | mean abs error |
 |:---|---:|---:|
@@ -1046,7 +1062,7 @@ A third session of thirteen runs then opened the branch nobody had measured, and
 
 ### Still unmeasured
 
-- **Any GPU other than this T4.** All 33 runs are one card. No Ampere or newer, so no BF16 and no
+- **Any GPU other than this T4.** All 67 archived rows are one card. No Ampere or newer, so no BF16 and no
   real Flash Attention 2 — the flash path is validated only through SDPA's memory-efficient backend
   as a stand-in. This is now the largest remaining gap by a distance.
 - **`--quant int8` beyond one model**, and **FP32 compute** at all. int8 activations are billed at
@@ -1084,8 +1100,8 @@ ready to paste into the README matrix. The three traps it exists to avoid:
 | Phase | Target error | Status |
 |:---|:---|:---|
 | MVP (v0.1) | ±10%, unvalidated | superseded |
-| Validated (v0.2) | ±10% against ≥3 real measurements | **met on the tensors tier (3.4%)**; the process tier is 14.7%, all of it $C_{overhead}$ |
-| Calibrated (v1.0) | ±5% | needs a fragmentation model that keys off the attention kernel, and a second GPU |
+| Validated (v0.2) | ±10% against ≥3 real measurements | **met**; on the 57 scorable archived rows the tensors tier is 4.6% worst / 0.7% mean and the process tier 13.9% / 2.4% (manifest `2026-09-17`) |
+| Calibrated (v1.0) | ±5% | the fragmentation model now keys off `(GPU, kernel, quantization)` and four T4 profiles ship; what is left is **a second GPU** |
 
 ---
 

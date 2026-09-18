@@ -632,8 +632,9 @@ peak in the archive.
 > Do not "fix" this by removing one of them. `calibrate.py --safety-mib` exists so that a fit can keep
 > that bias rather than least-squares it away.
 
-> **Measured status: this is the least accurate component, by a wide margin, and it is now the only
-> one that is.** With the Component 5 corrections of task 9.2 shipped, the tensors tier (which
+> **Why this component was rebuilt — the diagnosis, as of 2026-09-12 (historical; the block
+> after it is the current state).** This was then the least accurate component, by a wide margin,
+> and the only one that was. With the Component 5 corrections of task 9.2 shipped, the tensors tier (which
 > excludes $C_{overhead}$) lands within 3.4% on the original ten rows and within 5.1% on the
 > thirteen new ones — the one exception is the seq-4096 row at +17.4%, and that row's problem is
 > also fragmentation. Everything left is here.
@@ -1707,10 +1708,26 @@ under-states the process total and makes `fitcheck` look better than it is, so t
 
 #### Measured status
 
-**33 runs, all on one Tesla T4 (sm_75), FP16 compute.** torch 2.10.0+cu128, transformers 5.0.0,
-peft 0.19.1, Python 3.12. Three sessions: ten checkpointed QLoRA rows in `fitcheck.ipynb`, then
-twenty in a second session, then thirteen in `fitcheck_infer.ipynb` that opened the checkpointing-off
-branch, `--quant none`, full fine-tuning and seq 4096.
+**67 rows are archived, all on one Tesla T4 (sm_75), FP16 compute.** `data/measurements/manifest.json`
+declares the role of each: **49 fitted, 57 scored, 10 legacy rows excluded.** The current accuracy
+figures come from one command and are not maintained by hand:
+
+```bash
+python -m fitcheck.calibrate data/measurements/manifest.json --check --role calibration --role repeat
+```
+
+worst process-tier error **13.9%**, mean **2.4%**; re-scored with the current code the tensors tier
+is worst **4.6%**, mean **0.7%**. `tests/test_docs_claims.py` fails if any document drifts from that.
+
+**Two stacks, three sessions.** `t4-2026-09-01` (10 rows) and `t4-2026-09-16` (17 rows) ran torch
+2.10.0+cu128 / transformers 5.0.0 / peft 0.19.1; `t4-2026-09-15` (40 rows) ran torch 2.14.0+cu130 /
+transformers 5.17.0 / peft 0.20.0. Python 3.12 throughout. The measured CUDA context is identical
+across them, which is what makes them safe to fit together.
+
+**Everything below in this subsection is historical**, recording the 33-run population that v0.1.1
+through v0.2 were validated on (2026-09-01 to 2026-09-12). Only its first ten rows are in the
+committed archive, and they are the ten marked `excluded` — they carry no embedded `model_config`,
+so they cannot be re-predicted offline. The other twenty-three were never committed at all.
 
 The original ten — QLoRA r=32 [q,k,v,o], AdamW FP32 states, gradient checkpointing on, three models,
 three sequence lengths, both attention kernels:

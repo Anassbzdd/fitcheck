@@ -61,11 +61,16 @@ sweep.
 
 ## The bar for a merge
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 505
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 533
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the floor.
-  The `-m "not network"` filter is not optional: it skips the one test that fetches the gated
-  `meta-llama/Llama-3.1-8B` for real, which fails without an `HF_TOKEN`. The offline tests cover
-  the same parsing against a fixture.
+  The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`, which hit
+  the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails without an
+  `HF_TOKEN`. The offline tests cover the same parsing against a fixture.
+
+- **Numbers in the docs are checked, not trusted.** `tests/test_docs_claims.py` recomputes every
+  quantitative claim in `README.md`, `CLAUDE.md` and this file from the artifacts they describe —
+  the measurement archive, `fitcheck/overhead_db.py`, and the test suite's own collection — and
+  fails with the number you should have written. If you add a test or a measured row, run it.
 
 - **Any change to a formula updates its module, its test, and `docs/SPEC.md` in the same PR.** The
   Llama-3.1-8B golden numbers in the SPEC appendix are the reference set — if a change moves them,

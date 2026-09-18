@@ -1,11 +1,3 @@
-"""The calibration manifest, and the claim that the shipped database comes from it.
-
-`fitcheck/overhead_db.py` is the only part of fitcheck that is fitted rather than
-derived, so the one thing that makes it checkable is being able to rebuild it. These
-tests hold the manifest to that: every archived row has a declared role, the roles that
-are not `calibration` cannot reach a fit, and one documented command reproduces the
-shipped literal character for character.
-"""
 from __future__ import annotations
 
 import json
@@ -54,7 +46,6 @@ def _archived_row_count() -> int:
 
 
 def test_every_archived_row_has_exactly_one_declared_role() -> None:
-    """A row nobody classified is a row that can drift into a fit unnoticed."""
     rows = _manifest()["rows"]
     pointers = Counter((row["file"], row["index"]) for row in rows)
 
@@ -78,7 +69,6 @@ def test_run_ids_are_unique_and_every_role_is_known() -> None:
 
 
 def test_every_row_names_the_session_it_was_measured_in() -> None:
-    """Software versions belong to a session, so the row has to point at one."""
     manifest = _manifest()
     sessions = manifest["sessions"]
     for row in manifest["rows"]:

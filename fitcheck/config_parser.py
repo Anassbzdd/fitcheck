@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from huggingface_hub import HfApi, hf_hub_download
-from huggingface_hub.errors import ( 
+from huggingface_hub.errors import (  # type: ignore[attr-defined]
     GatedRepoError,
     HfHubHTTPError,
     HTTPError as HubTransportError,

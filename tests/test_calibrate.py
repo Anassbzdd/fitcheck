@@ -318,7 +318,11 @@ def test_groups_are_fitted_separately_per_gpu_and_kernel() -> None:
 
     result = calibrate(runs)
 
-    assert set(result.fits) == {("t4", "eager", "none"), ("t4", "flash", "none"), ("p100", "eager", "none")}
+    assert set(result.fits) == {
+        ("t4", "eager", "none"),
+        ("t4", "flash", "none"),
+        ("p100", "eager", "none"),
+    }
     assert result.fits[("t4", "eager", "none")].profile.fragmentation == pytest.approx(
         0.25, abs=1e-3
     )

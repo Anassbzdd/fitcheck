@@ -664,7 +664,6 @@ def fit_group(
             f"them as their own group."
         )
 
- 
     if all(run.has_humps for run in ordered):
         if ordered[0].grad_checkpoint is not True:
             raise CalibrationError(

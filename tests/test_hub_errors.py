@@ -16,7 +16,7 @@ from fitcheck.display import make_console
 from huggingface_hub.errors import RepositoryNotFoundError
 
 _MODEL_ID = "meta-llama/Llama-3.1-8B"
-_EXIT_ERROR = 2  
+_EXIT_ERROR = 2
 
 _REQUEST = httpx.Request("GET", f"https://huggingface.co/{_MODEL_ID}")
 

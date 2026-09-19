@@ -60,7 +60,9 @@ from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu
 from fitcheck.validation import double_quant_conflict
 
 with suppress(ImportError):
-    import readline 
+    # Imported for its side effect: it gives input() arrow-key editing and history.
+    # Absent on Windows, hence the suppress.
+    import readline  # noqa: F401
 
 _PROMPT = "[bold cyan]fitcheck[/bold cyan] > "
 _TIGHT_HEADROOM_FRACTION = 0.20

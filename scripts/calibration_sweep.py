@@ -35,7 +35,7 @@ GRAD_CHECKPOINT = True
 DOUBLE_QUANT = False
 
 _ATTN_IMPL = {"eager": "eager", "flash": "sdpa"}
- 
+
 IDENTITY_FIELDS = (
     "model_id",
     "gpu_key",

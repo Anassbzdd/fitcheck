@@ -160,6 +160,27 @@ def test_a_run_with_a_bad_seq_len_is_refused() -> None:
         parse_run(_payload(seq_len=0))
 
 
+def test_a_run_with_a_non_finite_measurement_is_refused() -> None:
+    # json.load() reads the bare literals NaN and Infinity, and one of either would
+    # poison every coefficient fitted from the group without a word.
+    payload = _payload()
+    payload["measured"]["peak_reserved_mib"] = float("nan")  # type: ignore[index]
+
+    with pytest.raises(CalibrationError, match="must be a finite number"):
+        parse_run(payload)
+
+
+def test_load_runs_refuses_a_file_holding_a_nan_literal(tmp_path: Path) -> None:
+    document = tmp_path / "nan.json"
+    document.write_text(
+        json.dumps(_payload()).replace('"peak_allocated_mib": 5000.0', '"peak_allocated_mib": NaN'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CalibrationError, match="must be a finite number"):
+        load_runs([document])
+
+
 def test_load_runs_reads_json_and_json_lines(tmp_path: Path) -> None:
     document = tmp_path / "one.json"
     document.write_text(json.dumps([_payload(), _payload()]), encoding="utf-8")

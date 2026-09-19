@@ -6,6 +6,7 @@ import pytest
 from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.inference import InferenceMemory, estimate_inference_memory
 from fitcheck.utils import bytes_to_mib
+from fitcheck.validation import MAX_SEQ_LEN, MAX_SEQUENCES
 
 _LLAMA_31_8B_PARAMS = 8_030_261_248
 _W_BASE_FP16 = bytes_to_mib(_LLAMA_31_8B_PARAMS * 2)
@@ -396,3 +397,18 @@ def test_rejects_quantizing_a_model_with_no_quantizable_weights() -> None:
 
     with pytest.raises(ValueError, match="no quantizable weights"):
         estimate_inference_memory(all_embeddings, "fp16", 2048, 1, "nf4")
+
+
+def test_rejects_shapes_past_the_limits(llama: ModelConfig) -> None:
+    # The KV cache is linear in both, so a big enough value used to leave the byte
+    # count unrepresentable as a float and raise OverflowError.
+    with pytest.raises(ValueError, match="seq_len must be at most 16,777,216"):
+        estimate_inference_memory(llama, "fp16", 10**310, 1)
+    with pytest.raises(ValueError, match="num_concurrent must be at most 1,048,576"):
+        estimate_inference_memory(llama, "fp16", 2048, MAX_SEQUENCES + 1)
+
+
+def test_accepts_the_shape_limits_themselves(llama: ModelConfig) -> None:
+    at_the_limit = estimate_inference_memory(llama, "fp16", MAX_SEQ_LEN, MAX_SEQUENCES)
+
+    assert at_the_limit.kv_cache_mib > 0.0

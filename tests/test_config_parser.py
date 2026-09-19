@@ -287,6 +287,30 @@ def test_fetch_model_config_kv_heads_exceeding_attention_heads_raises(
         fetch_model_config("fake-org/bad-kv-heads-model")
 
 
+@pytest.mark.parametrize("declared", ["false", "true", 0, 1, [], "yes"])
+def test_fetch_model_config_rejects_a_non_boolean_tie_word_embeddings(
+    fake_config_download: Callable[..., None],
+    llama_31_8b_config: dict[str, Any],
+    declared: object,
+) -> None:
+    # bool("false") is True, which would tie the embeddings and drop a whole (V x h)
+    # LM head from the count -- an under-count, the direction that reports a fit.
+    fake_config_download(dict(llama_31_8b_config, tie_word_embeddings=declared))
+
+    with pytest.raises(ValueError, match="'tie_word_embeddings' must be true or false"):
+        fetch_model_config("fake-org/string-tie-flag")
+
+
+@pytest.mark.parametrize("root", [[{"hidden_size": 4096}], "config", 7, None])
+def test_fetch_model_config_rejects_a_non_object_json_root(
+    fake_config_download: Callable[..., None], root: object
+) -> None:
+    fake_config_download(root)
+
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        fetch_model_config("fake-org/not-an-object")
+
+
 @pytest.mark.parametrize("model_id", ["", "   "])
 def test_fetch_model_config_empty_model_id_raises(model_id: str) -> None:
     with pytest.raises(ValueError, match="non-empty"):

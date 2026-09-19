@@ -20,6 +20,7 @@ from fitcheck.advisor import (
     advise,
 )
 from fitcheck.config_parser import (
+    HubUnavailableError,
     ModelConfig,
     UnsupportedModelError,
     fetch_model_config,
@@ -51,6 +52,7 @@ from fitcheck.memory.lora import (
     LORA_TARGETS_STANDARD,
 )
 from fitcheck.repl import run_repl
+from fitcheck.validation import double_quant_conflict
 
 _DEFAULT_GPU = "4090"
 _EXIT_DOES_NOT_FIT = 1
@@ -191,12 +193,12 @@ def reject_seq_lens_past_max(
 
 
 def _validate_serving_combination(quant: str, double_quant: bool) -> None:
-    """The one check the training and serving surfaces share, so they cannot drift."""
-    if double_quant and quant == "none":
-        raise click.UsageError(
-            "--double-quant has nothing to quantize under --quant none. It cuts the "
-            "NF4/INT8 scale overhead by ~75%, so pair it with --quant nf4."
-        )
+    if not double_quant:
+        return
+
+    conflict = double_quant_conflict(quant)
+    if conflict is not None:
+        raise click.UsageError(conflict)
 
 
 def _validate_combination(
@@ -272,7 +274,7 @@ def _enter_repl(
 def _load_model_config(model_id: str) -> ModelConfig:
     try:
         return fetch_model_config(model_id)
-    except UnsupportedModelError as error:
+    except (UnsupportedModelError, HubUnavailableError) as error:
         raise _EstimateError(str(error)) from error
     except (RuntimeError, ValueError, OSError) as error:
         raise _EstimateError(

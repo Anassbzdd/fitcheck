@@ -177,3 +177,23 @@ def test_estimate_overhead_rejects_invalid_seq_len(bad_value: object) -> None:
 def test_estimate_overhead_rejects_a_non_profile(bad_value: object) -> None:
     with pytest.raises(ValueError, match="profile must be an OverheadProfile or None"):
         estimate_overhead(1_000.0, 1_000.0, bad_value)
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf")])
+def test_estimate_overhead_rejects_non_finite_memory(bad_value: float) -> None:
+    with pytest.raises(ValueError, match="weight_memory must be a finite number"):
+        estimate_overhead(bad_value, _GOLDEN_A_ACT_MIB)
+    with pytest.raises(ValueError, match="activation_memory must be a finite number"):
+        estimate_overhead(_GOLDEN_W_BASE_MIB, bad_value)
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf")])
+def test_estimate_overhead_rejects_non_finite_humps(bad_value: float) -> None:
+    with pytest.raises(ValueError, match="logits_mib must be a finite number"):
+        estimate_overhead(
+            1_000.0, 1_000.0, _profile(), 2048, logits_mib=bad_value, layer_mib=1.0
+        )
+    with pytest.raises(ValueError, match="layer_mib must be a finite number"):
+        estimate_overhead(
+            1_000.0, 1_000.0, _profile(), 2048, logits_mib=1.0, layer_mib=bad_value
+        )

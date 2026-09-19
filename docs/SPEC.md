@@ -789,6 +789,8 @@ fitcheck/
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
 ├── calibrate.py             # Phase 3 (9.3): fits overhead_db.py from measure.py --json
+├── validation.py            # the shared input contract: which compute dtypes, storage
+│                            #   formats and combinations of the two are accepted at all
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)
@@ -804,6 +806,7 @@ tests/
 ├── test_calibrate.py
 ├── test_inference.py
 ├── test_advisor.py
+├── test_validation.py       # the shared contract, and interface parity against it
 └── test_end_to_end.py       # full pipeline: config → report → verdict
 scripts/                     # NOT part of the installed package
 ├── measure.py               # ground-truth harness (§3.8) — imports torch/peft/bitsandbytes
@@ -894,6 +897,35 @@ class MemoryReport:
 > Collapsing them into one flag leaves the activation and gradient dtype undefined whenever the base is
 > quantized, and silently under-counts activations by 2× under FP32.
 
+> **One input contract, `fitcheck/validation.py`.** The two axes are only two axes if something
+> enforces it, so every surface — `estimate()`, `estimate_inference()`, the advisor, the CLI, the
+> REPL — validates through the same three functions instead of its own copy:
+>
+> - `validate_precision` takes the **compute** dtypes only: `fp32`, `fp16`, `bf16`. A storage format
+>   (`nf4`, `int8`, `int4`, `fp8`) as `precision` is refused, not silently priced — it would rescale
+>   $W_{lora}$, $G_{grad}$ and $A_{act}$ by 4×.
+> - `validate_quantization` takes the **storage** formats only: `none`, `nf4`, `int8`.
+> - `validate_double_quant` allows `double_quant` **only under `nf4`**. It is bitsandbytes'
+>   `bnb_4bit_use_double_quant`, a second level of quantization for the NF4 absmax scales: `none` has
+>   no scales to shrink, and `int8` has none either, so charging the ~75% saving (Component 1) on
+>   either would report a saving the run never gets. `scripts/measure.py` has always refused this
+>   pair; before task 5 the library and `fitcheck infer` did not, which is the drift the shared
+>   layer removes.
+>
+> The message is one string, returned by `double_quant_conflict` so the CLI and REPL can raise it as
+> a `click.UsageError` while the library raises the same sentence as a `ValueError`.
+
+> **The shape axes have ceilings too.** `MAX_SEQ_LEN` (2^24 = 16,777,216 tokens, past every
+> published context window) and `MAX_SEQUENCES` (2^20 = 1,048,576, the estimator's own
+> `_MAX_SEARCH_CEILING`, so the max-batch bisection can still probe its whole range) live beside the
+> dtype axes in `validation.py`. `estimate_activation_memory` bounds `batch_size` and `seq_len`
+> against them; `estimate_inference_memory` bounds `seq_len` and `num_concurrent`. They are not a
+> claim about what a GPU can run. They are the point past which a number is a typo: the eager score
+> matrix is $O(s^2)$ and the KV cache is $O(s \cdot n)$, so a large enough value leaves the byte count
+> outside the float range and the user gets an `OverflowError` traceback instead of a sentence.
+> For the same reason `estimate_overhead` refuses NaN and infinity — `value < 0` is false for both,
+> so the non-negative check alone let them through and every downstream verdict came back `nan`.
+
 ---
 
 ### 3.3 — How Config Fetching Works (No Weight Download)
@@ -945,6 +977,30 @@ prefix. The file read fine; it is the architecture that is refused. Both refusal
 80-90%, in the direction that reports a fit where the run would OOM" is the sentence that stops
 someone trusting a number the tool printed before this gate existed. A refusal a user reads as a
 mere inconvenience gets worked around; a refusal that explains the failure mode does not.
+
+**Three ways the Hub can fail, and they are not one failure.** `fetch_model_config` sorts them at the
+point of the call, because that is the last place the difference is visible:
+
+| What happened | Raised | What the user is told |
+|:---|:---|:---|
+| The repo is gated | `RuntimeError` | Accept the licence, then `hf auth login` or `HF_TOKEN` — a different sentence depending on whether a token was found at all |
+| The Hub answered and said no (404, 401, 5xx) | `HfHubHTTPError`, re-raised untouched | The Hub's own message, under "Could not read config.json for 'X'" |
+| No answer came back (timeout, dropped connection, proxy) | `HubUnavailableError` | "Could not reach the Hugging Face Hub for 'X' (ReadTimeout). Check the connection and try again, or set `HF_HUB_OFFLINE=1` to estimate from a config.json already in the local cache" |
+
+`HubUnavailableError` is a `RuntimeError` subclass, and a distinct type for the same reason
+`UnsupportedModelError` is one: `cli.py` and `repl.py` print its message as it stands, with no
+"could not read config.json" prefix. Nothing was wrong with `config.json`; it was never fetched.
+Both exit **2**, and the REPL keeps the session.
+
+The transport failure is caught as `huggingface_hub.errors.HTTPError` — the Hub's re-export of
+whichever HTTP library it ships with (`httpx` from 1.0, `requests` below it). Taking it from there
+instead of importing `httpx` keeps the runtime dependencies at three (§3.9), and it is the only
+spelling that covers both. Under `httpx` this is not cosmetic: `httpx.ReadTimeout` is **not** an
+`OSError`, so nothing downstream was catching it and a timed-out estimate printed a traceback and no
+message at all. Under `requests` the same failure was already an `OSError` and always reported
+cleanly. **Order matters:** `HfHubHTTPError` derives from both, so it is re-raised first — otherwise
+a plain 404 would come back dressed as a network problem. Nothing here catches `Exception`, so a
+programmer error still surfaces as itself.
 
 **A model that parses is not thereby endorsed.** The gate catches shapes that are *detectable* from
 `config.json` keys, and that is not the same as the shapes the formulas cover. Qwen2.5-VL keeps its
@@ -1032,6 +1088,12 @@ Two consequences worth stating outright:
   whose job is avoiding OOM, over-counting is the direction that costs the user nothing. Known
   tying families are listed explicitly so the conservative default only ever applies to
   architectures fitcheck has not seen.
+- **A declared `tie_word_embeddings` must be a real JSON boolean, not anything truthy.** `bool(...)`
+  reads the string `"false"` as `True`, which ties the embeddings and drops a whole $V 	imes h$ LM
+  head from the count — an under-count, the direction that reports a fit where the run would OOM.
+  A non-boolean is refused rather than coerced. The same rule applies one level up: `config.json`
+  must have a JSON **object** at its root, or there are no fields to read and `raw.get` would fail
+  with an `AttributeError` instead of a message.
 
 ---
 
@@ -1245,7 +1307,8 @@ and the report header echoes the config in force, so the state is never invisibl
 - Sticky booleans need an undo, so the REPL adds `--no-flash-attn`, `--no-grad-checkpoint`, and
   `--no-double-quant`; `reset` restores every default at once. An on/off pair on one line is an error.
 - `--lora-r` or `--lora-targets` re-enables LoRA after `--no-lora` (naming a rank means you want adapters).
-- `--quant none` silently clears a sticky `--double-quant` instead of failing on a flag set three lines ago.
+- A `--quant` that cannot use `--double-quant` (`none`, `int8`) silently clears a sticky one,
+  instead of failing on a flag set three lines ago. Typing both on **one** line is still an error.
 - `--gpu` / `--vram-mib` override **one** estimate; only `gpu <name>` moves the session GPU.
 
 **`infer` is Mode C inside the session**, built from `cli.infer_command.params` exactly as `memory` is
@@ -1258,8 +1321,9 @@ undo. It renders the same `render_inference_report` panel, honours `--json`, and
   serving compute defaults to fp16 and training to bf16 (§3.1 Component 7, note 4), so folding one
   line's `--seq-len` into both would silently move a number the user was not editing. `reset` clears
   both, `show` prints both, and `model` / `gpu` invalidate both cached reports.
-- **`--quant none` clears a sticky `--double-quant`**, and `--double-quant` under `--quant none` is the
-  same usage error as Mode A — literally the same function, `cli._validate_serving_combination`.
+- **A non-NF4 `--quant` clears a sticky `--double-quant`**, and typing the pair on one line is the
+  same usage error as Mode A — literally the same function, `cli._validate_serving_combination`,
+  over the same rule in `fitcheck.validation`.
 
 **`advise` is Mode D inside the session**, built from `cli.advise_command.params` the same way, minus
 `MODEL_ID` and `--no-color`, and it renders the same `render_advisor_report` panel. It differs from
@@ -1331,7 +1395,7 @@ line ever names the internal `estimate` command. A model literally named `infer`
 --precision fp16` is the real 4-bit deployment: packed linears, fp16 embeddings, fp16 cache. There is
 no way to spell "4-bit cache", because that is not modelled.
 
-**`--double-quant` under `--quant none` is a usage error**, same wording and same reason as Mode A.
+**`--double-quant` outside `--quant nf4` is a usage error**, same wording and same reason as Mode A.
 
 #### `fitcheck infer --json` output contract
 
@@ -1492,6 +1556,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Very long sequences** ($s > 8192$) | The $9\gamma$ eager coefficient is measured at $s \le 4096$ only. It is the term that grows as $s^2$, so extrapolation error grows with it. | ⚠️ Known |
 | **Gated linear units** (GLU variants: SiLU, GELU) | Treated uniformly — all save same intermediate shapes. | ✅ MVP |
 | **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
+| **Hub unreachable** (timeout, DNS failure, proxy refusal) | `HubUnavailableError`, exit 2: one line naming the failure and pointing at a retry or `HF_HUB_OFFLINE=1`. Under `huggingface_hub` 1.x the transport error is an `httpx` exception, which is not an `OSError`, so it used to escape every handler and reach the terminal as a traceback with no message — §3.3. | ✅ handled |
 | **Offline mode** | If `config.json` is cached locally, works without internet. The Hub parameter count is unavailable, so `num_params` falls back to the `config.json` formula with a warning on stderr — and the architectures that only the cross-check catches (phi-2, Qwen2.5-VL) are estimated rather than refused. | ✅ MVP |
 | **`C_overhead` fragmentation model** | Rebuilt in task 9.3 (2026-09-16) and **shipped**: `C_overhead = B + F x min(A_logits, A_layer)`, keyed per **(GPU, kernel, quantization)**. `B` is the CUDA context, now **measured** (140.875 MiB on all 67 archived T4 rows) rather than fitted -- fitting it was the main defect, because the constant column is collinear with the size column and leave-one-out moved `F` by up to 172%. The sequence slope `S` is **measured to be zero** (t = +0.4, -0.1, +0.5, -0.2). Over-reservation tracks the hump that *loses* the checkpointed `max()`, because segments cached for one allocation pattern cannot serve the other; `R^2` on `none/eager` went **-0.04 -> 0.80**. Four T4 profiles ship; everything else (other cards, int8, checkpointing off, inference) keeps the 500 MiB + 5% default. Re-fitted from `data/measurements/manifest.json` on 2026-09-17, which declares the role of every archived row so repeats and pre-9.3 rows cannot enter the fit: 49 rows fitted, scored over 57, mean 2.4%, worst under-prediction -6.4%, none past 8% in the OOM direction. (SS3.8, Component 6). Task 9.3, done. | [x] Shipped |
 | **T4 / ECC entries in `gpu_db`** | Fixed: T4 is now `14_912 / 14_000`, the measured total. `h200` and `b200` take the `usable_mib` that is safe under the pessimistic reading of their vendor GB. Only the T4 is measured; the rest of the table is estimates. | ✅ fixed, rest unmeasured |
@@ -1772,7 +1837,7 @@ Runtime dependencies stay at three. A fourth is a decision, not a detail.
 |:---|:---|:---|
 | `click` | `>=8.1` | Option groups and the command style `cli.py` is written in |
 | `rich` | `>=13.0` | Tables, panels and the verdict styling in `display.py` |
-| `huggingface-hub` | `>=0.25` | `config_parser.py` does `from huggingface_hub.errors import GatedRepoError`. That module does not exist before 0.22, and it does not export `GatedRepoError` until 0.25. The Hub parameter count (§3.3) needs `HfApi.model_info(..., expand=[...])` and `ModelInfo.safetensors.total`; both are present in 0.25.0, so it does not raise the floor |
+| `huggingface-hub` | `>=0.25` | `config_parser.py` does `from huggingface_hub.errors import GatedRepoError`. That module does not exist before 0.22, and it does not export `GatedRepoError` until 0.25. The same import also takes `HfHubHTTPError` and `HTTPError` (§3.3); both are in 0.25's `errors.py`, so neither raises the floor — `HTTPError` is the re-export of the HTTP library the hub ships with, `requests` at this floor and `httpx` from 1.0. The Hub parameter count (§3.3) needs `HfApi.model_info(..., expand=[...])` and `ModelInfo.safetensors.total`; both are present in 0.25.0, so it does not raise the floor |
 
 The `dev` extra is `pytest>=7.4`, `pytest-cov>=4.1`, `httpx>=0.27`, `ruff>=0.16` and `mypy>=2.3`.
 `httpx` is there because `tests/test_config_parser.py` builds a fake 403 response with it. It used

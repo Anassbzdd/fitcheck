@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from fitcheck.config_parser import ModelConfig
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
+from fitcheck.validation import MAX_SEQ_LEN, MAX_SEQUENCES
 
 _LOGITS_BYTES = 4.0
 
@@ -68,9 +69,14 @@ class _ActivationParts:
     checkpoint_store_bytes: float
 
 
-def _validate_positive_int(value: int, name: str) -> int:
+def _validate_positive_int(value: int, name: str, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+    if value > maximum:
+        raise ValueError(
+            f"{name} must be at most {maximum:,}. Past that the byte counts stop "
+            "fitting in a float, and no real run is that shape."
+        )
     return value
 
 
@@ -143,8 +149,8 @@ def estimate_activation_memory(
     precision: str,
     quantization: str = "none",
 ) -> float:
-    micro_batch = _validate_positive_int(batch_size, "batch_size")
-    sequence_length = _validate_positive_int(seq_len, "seq_len")
+    micro_batch = _validate_positive_int(batch_size, "batch_size", MAX_SEQUENCES)
+    sequence_length = _validate_positive_int(seq_len, "seq_len", MAX_SEQ_LEN)
     _validate_flag(grad_checkpoint, "grad_checkpoint")
     _validate_flag(flash_attn, "flash_attn")
     profile = _validate_quantization(quantization)

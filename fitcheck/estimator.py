@@ -24,8 +24,12 @@ from fitcheck.memory.overhead import estimate_overhead
 from fitcheck.memory.weights import QuantizationConfig, estimate_weight_memory
 from fitcheck.overhead_db import get_overhead_profile
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
+from fitcheck.validation import (
+    validate_double_quant,
+    validate_precision,
+    validate_quantization,
+)
 
-_QUANTIZATIONS = ("none", "nf4", "int8")
 _MAX_SEARCH_CEILING = 1 << 20
 _HINT_GRAD_ACCUM_STEPS = 8
 
@@ -134,25 +138,6 @@ def _validate_positive_int(value: object, name: str) -> int:
     return value
 
 
-def _validate_flag(value: object, name: str) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be a boolean")
-    return value
-
-
-def _validate_quantization(quantization: str) -> str:
-    if not isinstance(quantization, str):
-        raise ValueError("quantization must be a string")
-
-    normalized_quantization = quantization.strip().casefold()
-    if normalized_quantization not in _QUANTIZATIONS:
-        supported = ", ".join(_QUANTIZATIONS)
-        raise ValueError(
-            f"Unsupported quantization '{quantization}'. Supported: {supported}."
-        )
-    return normalized_quantization
-
-
 def _count_lora_params(config: ModelConfig, rank: int, targets: Iterable[str]) -> int:
     target_list = list(targets)
     if not target_list:
@@ -213,22 +198,29 @@ def _adapter_precision(training: TrainingConfig) -> str:
 
 
 def _activation_precision(training: TrainingConfig) -> str:
-    if training.quantization.strip().casefold() == "int8":
+    precision = validate_precision(training.precision)
+    if validate_quantization(training.quantization) == "int8":
         return "fp32"
-    return training.precision
+    return precision
+
+
+def _validate_dtype_axes(training: TrainingConfig) -> tuple[str, str, bool]:
+    precision = validate_precision(training.precision)
+    quantization = validate_quantization(training.quantization)
+    double_quant = validate_double_quant(training.double_quant, quantization)
+    return precision, quantization, double_quant
 
 
 def _base_weight_memory(config: ModelConfig, training: TrainingConfig) -> float:
-    quantization = _validate_quantization(training.quantization)
-    _validate_flag(training.double_quant, "double_quant")
+    precision, quantization, double_quant = _validate_dtype_axes(training)
 
     if quantization == "none":
-        return estimate_weight_memory(config.num_params, training.precision)
+        return estimate_weight_memory(config.num_params, precision)
 
     return estimate_weight_memory(
         config.num_params,
         quantization,
-        QuantizationConfig(enabled=True, double_quant=training.double_quant),
+        QuantizationConfig(enabled=True, double_quant=double_quant),
         unquantized_params=config.num_unquantized_params,
     )
 
@@ -239,7 +231,7 @@ def _compute_components(
     if not isinstance(config, ModelConfig):
         raise ValueError("model_config must be a ModelConfig")
 
-    quantization = _validate_quantization(training.quantization)
+    _, quantization, _ = _validate_dtype_axes(training)
     is_lora = training.lora_rank is not None
     if quantization != "none" and not is_lora:
         raise ValueError(
@@ -406,7 +398,7 @@ def _savings_hints(
 
 
 def estimate_warnings(training: TrainingConfig) -> tuple[str, ...]:
-    if _validate_quantization(training.quantization) == "int8":
+    if validate_quantization(training.quantization) == "int8":
         return (_WARNING_INT8_ACTIVATIONS,)
     return ()
 

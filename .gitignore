@@ -41,6 +41,7 @@ runs.zip
 # reference, and README's how-it-works section links to them (SPEC.md Definition of Done #5).
 CLAUDE.md
 .claude/
+AGENTS.md
 
 docs/TASKS.md
 docs/ADVISOR.md

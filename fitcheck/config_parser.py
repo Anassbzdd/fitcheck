@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from huggingface_hub import HfApi, hf_hub_download
-from huggingface_hub.errors import GatedRepoError
+from huggingface_hub.errors import ( 
+    GatedRepoError,
+    HfHubHTTPError,
+    HTTPError as HubTransportError,
+)
 
 _TIES_WORD_EMBEDDINGS_BY_DEFAULT = frozenset(
     {"gemma", "gemma2", "gemma3", "gemma3_text"}
@@ -25,6 +29,17 @@ _MOE_KEYS = (
 
 
 _PARAM_COUNT_TOLERANCE = 0.02
+
+
+class HubUnavailableError(RuntimeError):
+    """The Hugging Face Hub could not be reached at all -- no response came back.
+
+    A timeout or a dropped connection, as opposed to an answer fitcheck does not like
+    (404, 401, a gated repo), which arrives as an `HfHubHTTPError` carrying the Hub's own
+    message. A distinct type so the CLI and the REPL can print a retry hint instead of a
+    traceback: an estimate needs `config.json` and nothing else, so retrying really is
+    the whole remedy.
+    """
 
 
 class UnsupportedModelError(ValueError):
@@ -108,7 +123,12 @@ def _head_dim(raw: Mapping[str, Any], hidden_size: int, num_attention_heads: int
 def _tie_word_embeddings(raw: Mapping[str, Any]) -> bool:
     declared = raw.get("tie_word_embeddings")
     if declared is not None:
-        return bool(declared)
+        if not isinstance(declared, bool):
+            raise ValueError(
+                "config.json field 'tie_word_embeddings' must be true or false, got "
+                f"{declared!r}"
+            )
+        return declared
     return str(raw.get("model_type", "")).strip().casefold() in _TIES_WORD_EMBEDDINGS_BY_DEFAULT
 
 
@@ -263,8 +283,24 @@ def fetch_model_config(model_id: str) -> ModelConfig:
             "Accept the license on the model page with the same account that issued the "
             "token, and check the token has 'read' permission."
         ) from error
+    except HfHubHTTPError:
+        raise
+    except HubTransportError as error:
+        raise HubUnavailableError(
+            f"Could not reach the Hugging Face Hub for '{normalized_model_id}' "
+            f"({type(error).__name__}). Check the connection and try again, or set "
+            "HF_HUB_OFFLINE=1 to estimate from a config.json already in the local cache."
+        ) from error
     with Path(config_path).open(encoding="utf-8") as config_file:
-        raw: Mapping[str, Any] = json.load(config_file)
+        document: Any = json.load(config_file)
+
+    if not isinstance(document, Mapping):
+        raise ValueError(
+            f"config.json for '{normalized_model_id}' must be a JSON object holding the "
+            f"model's fields, but its top level is a {type(document).__name__}. There is "
+            "nothing to read the dimensions from."
+        )
+    raw: Mapping[str, Any] = document
 
     _reject_unsupported(raw, normalized_model_id)
     fields = _parse_fields(raw)

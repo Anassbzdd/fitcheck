@@ -6,10 +6,15 @@ from dataclasses import dataclass
 from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.weights import QuantizationConfig, estimate_weight_memory
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
+from fitcheck.validation import (
+    MAX_SEQ_LEN,
+    MAX_SEQUENCES,
+    validate_double_quant,
+    validate_precision,
+    validate_quantization,
+)
 
 _KV_TENSORS_PER_LAYER = 2
-_COMPUTE_PRECISIONS = ("fp32", "fp16", "bf16")
-_QUANTIZATIONS = ("none", "nf4", "int8")
 
 
 @dataclass(frozen=True)
@@ -22,42 +27,14 @@ class InferenceMemory:
         return self.weight_mib + self.kv_cache_mib
 
 
-def _validate_positive_int(value: int, name: str) -> int:
+def _validate_positive_int(value: int, name: str, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-def _validate_precision(precision: str) -> str:
-    if not isinstance(precision, str):
-        raise ValueError("precision must be a string")
-
-    normalized_precision = precision.strip().casefold()
-    if normalized_precision not in _COMPUTE_PRECISIONS:
-        supported = ", ".join(_COMPUTE_PRECISIONS)
+    if value > maximum:
         raise ValueError(
-            f"Unsupported precision '{precision}'. precision is the compute dtype "
-            f"(one of: {supported}); quantize the base model with quantization instead."
+            f"{name} must be at most {maximum:,}. Past that the byte counts stop "
+            "fitting in a float, and no real run is that shape."
         )
-    return normalized_precision
-
-
-def _validate_quantization(quantization: str) -> str:
-    if not isinstance(quantization, str):
-        raise ValueError("quantization must be a string")
-
-    normalized_quantization = quantization.strip().casefold()
-    if normalized_quantization not in _QUANTIZATIONS:
-        supported = ", ".join(_QUANTIZATIONS)
-        raise ValueError(
-            f"Unsupported quantization '{quantization}'. Supported: {supported}."
-        )
-    return normalized_quantization
-
-
-def _validate_flag(value: bool, name: str) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be a boolean")
     return value
 
 
@@ -111,14 +88,16 @@ def estimate_inference_memory(
     if not isinstance(config, ModelConfig):
         raise ValueError("config must be a ModelConfig")
 
-    compute_precision = _validate_precision(precision)
-    base_quantization = _validate_quantization(quantization)
-    _validate_flag(double_quant, "double_quant")
-    sequence_length = _validate_positive_int(seq_len, "seq_len")
-    concurrent = _validate_positive_int(num_concurrent, "num_concurrent")
+    compute_precision = validate_precision(precision)
+    base_quantization = validate_quantization(quantization)
+    quantize_scales = validate_double_quant(double_quant, base_quantization)
+    sequence_length = _validate_positive_int(seq_len, "seq_len", MAX_SEQ_LEN)
+    concurrent = _validate_positive_int(
+        num_concurrent, "num_concurrent", MAX_SEQUENCES
+    )
 
     weight_mib = _serving_weight_mib(
-        config, compute_precision, base_quantization, double_quant
+        config, compute_precision, base_quantization, quantize_scales
     )
     kv_cache_bytes = _kv_cache_bytes(
         config,

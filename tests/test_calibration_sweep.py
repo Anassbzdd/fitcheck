@@ -12,8 +12,6 @@ _SWEEP_PATH = Path(__file__).resolve().parents[1] / "scripts" / "calibration_swe
 
 
 def _load_sweep() -> Any:
-    # scripts/ is not a package (it is deliberately outside the wheel), so the sweep is
-    # loaded by path rather than imported.
     spec = importlib.util.spec_from_file_location("calibration_sweep", _SWEEP_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -39,7 +37,6 @@ _PROBE_INFO = {
 
 
 def _args(**overrides: Any) -> Any:
-    """The parsed namespace `identity()` reads, without going through argparse."""
     import argparse
 
     defaults = {
@@ -71,11 +68,6 @@ def _command_options(command: list[str]) -> tuple[dict[str, str], set[str]]:
 
 
 def _payload_for(command: list[str], **overrides: Any) -> dict[str, Any]:
-    """A stand-in for one `measure.py --json` document.
-
-    It reads the flags the sweep actually passed, so a knob the sweep forgets to send
-    fails the test here rather than silently taking measure.py's default.
-    """
     options, flags = _command_options(command)
     run = {
         "fitcheck_version": "0.3.0",
@@ -105,8 +97,6 @@ def _payload_for(command: list[str], **overrides: Any) -> dict[str, Any]:
 
 
 class _FakeRun:
-    """Replaces `subprocess.run`: answers the preflight probe, then every row."""
-
     def __init__(
         self,
         failures: set[str] | None = None,

@@ -57,11 +57,10 @@ from fitcheck.estimator import (
     estimate_inference,
 )
 from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu
+from fitcheck.validation import double_quant_conflict
 
-# Imported only for the side effect: it gives the prompt arrow-key history and line
-# editing. Absent on a stock Windows Python, where the REPL still works without it.
 with suppress(ImportError):
-    import readline  # noqa: F401
+    import readline 
 
 _PROMPT = "[bold cyan]fitcheck[/bold cyan] > "
 _TIGHT_HEADROOM_FRACTION = 0.20
@@ -292,7 +291,7 @@ def _training_from_args(session: _Session, ctx: click.Context) -> TrainingConfig
     )
 
     double_quant = flag("double_quant")
-    if quant == "none" and not _typed(ctx, "double_quant"):
+    if double_quant_conflict(quant) is not None and not _typed(ctx, "double_quant"):
         double_quant = False
 
     optimizer = str(sticky("optimizer"))
@@ -338,7 +337,7 @@ def _serving_from_args(session: _Session, ctx: click.Context) -> ServingConfig:
 
     if _typed(ctx, "double_quant"):
         double_quant = True
-    elif _typed(ctx, "no_double_quant") or quant == "none":
+    elif _typed(ctx, "no_double_quant") or double_quant_conflict(quant) is not None:
         double_quant = False
     else:
         double_quant = current.double_quant

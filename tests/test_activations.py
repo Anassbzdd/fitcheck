@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import isfinite
+
 import pytest
 from fitcheck.config_parser import ModelConfig
 from fitcheck.memory.activations import (
@@ -8,6 +10,7 @@ from fitcheck.memory.activations import (
     _ActivationParts,
     estimate_activation_memory,
 )
+from fitcheck.validation import MAX_SEQ_LEN, MAX_SEQUENCES
 
 _GOLDEN_QUANT = "nf4"
 
@@ -315,6 +318,28 @@ def test_rejects_invalid_batch_size_and_seq_len(
         _estimate(llama, batch_size=bad_value)
     with pytest.raises(ValueError, match="seq_len must be a positive integer"):
         _estimate(llama, seq_len=bad_value)
+
+
+@pytest.mark.parametrize("flash_attn", [True, False])
+def test_rejects_a_seq_len_past_the_shape_limit(
+    llama: ModelConfig, flash_attn: bool
+) -> None:
+    # 10**155 squared is past the largest float, so the score matrix used to raise
+    # OverflowError -- on the flash path too, where the term is never billed.
+    with pytest.raises(ValueError, match="seq_len must be at most 16,777,216"):
+        _estimate(llama, seq_len=10**155, flash_attn=flash_attn)
+
+
+def test_rejects_a_batch_size_past_the_shape_limit(llama: ModelConfig) -> None:
+    with pytest.raises(ValueError, match="batch_size must be at most 1,048,576"):
+        _estimate(llama, batch_size=MAX_SEQUENCES + 1)
+
+
+def test_accepts_the_shape_limits_themselves(llama: ModelConfig) -> None:
+    at_the_limit = _estimate(llama, batch_size=MAX_SEQUENCES, seq_len=MAX_SEQ_LEN)
+
+    assert at_the_limit > 0.0
+    assert isfinite(at_the_limit)
 
 
 def test_rejects_non_boolean_flags_and_unsupported_precision(llama: ModelConfig) -> None:

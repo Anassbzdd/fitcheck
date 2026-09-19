@@ -28,23 +28,14 @@ REPEATS = 3
 _ABORT_AFTER_FAILURES = 3
 
 
-# What the sweep pins for every row. measure.py has a default for each of these, but a
-# default is not a record: if one moved, every file written here would keep its name and
-# quietly describe a different run. They are passed on the command line AND written into
-# the identity, so the two cannot drift apart unnoticed.
 OPTIMIZER = "adamw"
 LORA_TARGETS_PRESET = "standard"
 LORA_TARGET_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj")
 GRAD_CHECKPOINT = True
 DOUBLE_QUANT = False
 
-# "flash" means a kernel that never materializes the (b, n_h, s, s) score matrix. On the
-# card this project has measured that is SDPA, not FA2 -- sm_75 has no FA2 -- which is
-# why the grid asks for `--attn-impl sdpa` and why the name has to say so.
 _ATTN_IMPL = {"eager": "eager", "flash": "sdpa"}
-
-# Every field that changes what a row measures. Two runs that agree on all of them
-# measure the same thing; two that differ in any of them must never share a file.
+ 
 IDENTITY_FIELDS = (
     "model_id",
     "gpu_key",
@@ -69,11 +60,6 @@ def identity(
     kernel: str,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    """The canonical description of one measurement.
-
-    The keys are `run_record()`'s in measure.py, so what a row was asked for can be
-    compared field by field against what it says it measured.
-    """
     return {
         "model_id": model_id,
         "gpu_key": args.gpu.strip().casefold(),
@@ -105,17 +91,6 @@ def _safe(text: str) -> str:
 
 
 def slug(row_identity: dict[str, Any], tag: str = "", repeat: int = 1) -> str:
-    """A filename that changes whenever the measurement changes.
-
-    The readable half names the knobs you want to see in a directory listing; the
-    eight-hex fingerprint covers the *whole* identity, so a field nobody thought to
-    spell into the name still splits the file.
-
-    The old name carried model, batch size, sequence length and kernel only. An nf4 row
-    and a `--quant none` row of the same shape landed on one path, as did r=32 and r=8,
-    fp16 and bf16, and two different cards -- and the second one was reported "already
-    done, skipping" against the first one's numbers.
-    """
     rank = "full" if row_identity["lora_rank"] is None else f"r{row_identity['lora_rank']}"
     quant = row_identity["quantization"] + ("-dq" if row_identity["double_quant"] else "")
     bits = [
@@ -138,11 +113,6 @@ def slug(row_identity: dict[str, Any], tag: str = "", repeat: int = 1) -> str:
 
 
 def recorded_identity(payload: Any) -> dict[str, Any] | None:
-    """The identity a row on disk was actually measured under, or None if unreadable.
-
-    Rows written before this block existed are still checkable: measure.py's own `run`
-    record carries every field but the model id, which is at the top level.
-    """
     if not isinstance(payload, dict):
         return None
     sweep = payload.get("sweep")
@@ -163,7 +133,6 @@ def recorded_identity(payload: Any) -> dict[str, Any] | None:
 
 
 def identity_diffs(recorded: dict[str, Any], wanted: dict[str, Any]) -> list[str]:
-    """Field-by-field disagreement between a row on disk and the row that was asked for."""
     diffs = []
     for field, value in wanted.items():
         actual = recorded.get(field)
@@ -186,13 +155,6 @@ def _existing_row_problems(target: Path, wanted: dict[str, Any]) -> list[str]:
 
 
 def _normalise_tag(tag: str) -> str:
-    """`--tag nf4`, `--tag -nf4` and `--tag=-nf4` all mean the same thing.
-
-    argparse reads a value starting with `-` as another flag, so `--tag -nf4` fails
-    with "expected one argument" before this script ever runs. Accepting the bare word
-    and adding the separator here is the difference between a flag that works and one
-    that needs its own footnote.
-    """
     trimmed = tag.strip().lstrip("-")
     return f"-{trimmed}" if trimmed else ""
 
@@ -393,8 +355,6 @@ def _row_args(
         str(seq_len),
         "--json",
     ]
-    # Spelled out rather than left to measure.py's defaults: the identity claims these
-    # values, so the command line has to ask for them.
     if GRAD_CHECKPOINT:
         command.append("--grad-checkpoint")
     if DOUBLE_QUANT:
@@ -460,8 +420,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{index}/{len(plan)}] {target.name}  (already done, skipping)")
                 done += 1
                 continue
-            # Never skip a file whose identity does not match, and never overwrite it
-            # either -- it is somebody's measurement, and this run does not know whose.
             print(f"[{index}/{len(plan)}] {target.name}")
             print("    STALE FILE -- not skipped, not overwritten:")
             for line in problems:

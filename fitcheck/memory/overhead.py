@@ -1,7 +1,7 @@
 # Component 6
 from __future__ import annotations
 
-from math import log2
+from math import isfinite, log2
 
 from fitcheck.overhead_db import (
     DEFAULT_OVERHEAD_PROFILE,
@@ -16,6 +16,8 @@ _FRAGMENTATION_FRACTION = DEFAULT_OVERHEAD_PROFILE.fragmentation
 def _validate_memory(value: float, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         raise ValueError(f"{name} must be a non-negative number")
+    if not isfinite(value):
+        raise ValueError(f"{name} must be a finite number, got {value}")
     return float(value)
 
 

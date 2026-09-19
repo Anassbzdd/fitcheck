@@ -142,6 +142,14 @@ def _rescore_archive() -> dict[str, tuple[float, float]]:
 # ---------------------------------------------------------------------------------
 
 
+def _claims_if_present(doc: Path, *claims: str) -> None:
+    # CLAUDE.md is internal agent scaffolding and is gitignored, so a clean checkout --
+    # CI's included -- has no copy of it. Enforce its numbers wherever the file exists,
+    # and let the tracked docs carry the check where it does not.
+    if doc.exists():
+        _claims(doc, *claims)
+
+
 def _claims(doc: Path, *claims: str) -> None:
     text = _flat(_text(doc))
     missing = [claim for claim in claims if _flat(claim) not in text]
@@ -165,7 +173,7 @@ def test_the_archive_size_claims_match_the_archive() -> None:
         f"{roles['calibration']} fitted, {scorable} scored",
         f"{roles['excluded']} legacy rows",
     )
-    _claims(
+    _claims_if_present(
         _CLAUDE,
         f"{rows} archived rows",
         f"{roles['calibration']} rows fitted, {scorable} scored",
@@ -179,6 +187,8 @@ def test_the_shipped_profile_count_is_never_described_as_empty() -> None:
     )
 
     for doc in (_README, _CLAUDE):
+        if not doc.exists():
+            continue
         text = _text(doc).casefold()
         assert "still empty" not in text, f"{doc.name} still calls OVERHEAD_DB empty"
 
@@ -270,6 +280,8 @@ def test_the_test_counts_are_the_suites_own_counts() -> None:
 
 @pytest.mark.parametrize("doc", [_README, _CLAUDE, _CONTRIBUTING])
 def test_no_document_still_quotes_a_superseded_population(doc: Path) -> None:
+    if not doc.exists():
+        pytest.skip(f"{doc.name} is gitignored and absent from this checkout")
     stale = re.compile(r"(?<!\w)33 (runs|measured runs|archived)(?!\w)")
     for number, line in enumerate(_text(doc).splitlines(), start=1):
         if stale.search(line) and "2026-09-12" not in line and "historic" not in line:

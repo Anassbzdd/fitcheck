@@ -7,7 +7,7 @@ from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
-from shlex import split as shell_split
+from shlex import quote as shell_quote, split as shell_split
 from types import ModuleType
 from typing import Any
 
@@ -56,7 +56,7 @@ from fitcheck.estimator import (
     estimate,
     estimate_inference,
 )
-from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu
+from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu, gpu_key_for
 from fitcheck.validation import double_quant_conflict
 
 with suppress(ImportError):
@@ -374,6 +374,18 @@ def _lookup_gpu(name: str | None, vram_mib: int | None = None) -> GpuSpec:
                 f"size: `gpu {name} --vram-mib 24000`."
             ) from error
         raise _ReplError(str(error)) from error
+
+
+def _gpu_flag(gpu: GpuSpec) -> str:
+    """The flag that pins a generated command to this card, not to the session's.
+
+    `--gpu` is a one-shot override here, so a command copied out of `optimize` has to
+    carry the card it was computed on or it silently means a different estimate.
+    """
+    key = gpu_key_for(gpu)
+    if key is not None:
+        return f"--gpu {key}"
+    return f"--gpu {shell_quote(gpu.name)} --vram-mib {gpu.vram_mib}"
 
 
 def _require_model(session: _Session) -> ModelConfig:
@@ -897,7 +909,8 @@ def _render_optimize(session: _Session, result: _Result) -> Panel:
             (
                 "Command",
                 Text(
-                    f"memory --batch-size {batch_size} --grad-accum {accum}",
+                    f"memory {_gpu_flag(gpu)} --batch-size {batch_size} "
+                    f"--grad-accum {accum}",
                     style="cyan",
                 ),
             ),
@@ -1010,7 +1023,7 @@ def _render_rescue(
         Text(""),
         Text.assemble(
             ("Try: ", "dim"),
-            (f"memory --batch-size 1 {' '.join(applied)}", "cyan"),
+            (f"memory {_gpu_flag(gpu)} --batch-size 1 {' '.join(applied)}", "cyan"),
         ),
     )
 
@@ -1040,12 +1053,13 @@ def _compare_panel(
     header_line: str,
     ceiling_header: str,
     rows: Sequence[tuple[GpuSpec, MemoryReport | InferenceReport, str]],
-    peak_mib: float,
 ) -> Panel:
-    """One table for both modes: the peak never moves, only the ceiling does."""
+    """One table for both modes: each card gets its own peak, because C_overhead is
+    keyed by GPU -- a calibrated card and an uncalibrated one do not agree."""
     table = Table(box=SIMPLE_HEAD, pad_edge=False, expand=True)
     table.add_column("GPU")
     table.add_column("Usable (MiB)", justify="right")
+    table.add_column("Peak (MiB)", justify="right")
     table.add_column("Headroom (MiB)", justify="right")
     table.add_column("Used", justify="right")
     table.add_column(ceiling_header, justify="right")
@@ -1055,6 +1069,7 @@ def _compare_panel(
         table.add_row(
             spec.name,
             _mib(spec.usable_mib),
+            _mib(report.total_mib),
             Text(
                 _mib(report.headroom_mib),
                 style="green" if report.fits else "red",
@@ -1065,11 +1080,19 @@ def _compare_panel(
         )
 
     dash = "-" if session.ascii_only else "—"
-    footer = Text.assemble(
-        ("Peak is identical on every card: ", "dim"),
-        (f"{_mib(peak_mib)} MiB", "bold"),
-        (f" {dash} only the ceiling moves.", "dim"),
-    )
+    peaks = sorted(_mib(report.total_mib) for _, report, _ in rows)
+    if peaks[0] == peaks[-1]:
+        footer = Text.assemble(
+            ("Peak is identical on every card: ", "dim"),
+            (f"{peaks[0]} MiB", "bold"),
+            (f" {dash} only the ceiling moves.", "dim"),
+        )
+    else:
+        footer = Text.assemble(
+            ("Peak moves with the card: ", "dim"),
+            (f"{peaks[0]} to {peaks[-1]} MiB", "bold"),
+            (f" {dash} overhead is measured per GPU.", "dim"),
+        )
 
     return Panel(
         Group(Text(header_line), Text(""), table, footer),
@@ -1097,7 +1120,6 @@ def _render_compare(
         _config_line(training, session.glyphs),
         f"Max bs @ {training.seq_len:,}",
         rows,
-        result.report.total_mib,
     )
 
 
@@ -1118,7 +1140,6 @@ def _render_infer_compare(
         _serving_line(serving, session.glyphs),
         f"Max concurrent @ {serving.seq_len:,}",
         rows,
-        result.report.total_mib,
     )
 
 _HELP_ROWS: tuple[tuple[str, str], ...] = (

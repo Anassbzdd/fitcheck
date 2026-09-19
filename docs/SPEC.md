@@ -1344,11 +1344,13 @@ undo. It renders the same `render_inference_report` panel, honours `--json`, and
 - A session whose `TrainingConfig` is a full fine-tune (`--no-lora`) has no rank axis to sweep, so
   `advise` says that and names the fix, rather than passing an impossible config to the advisor.
 
-**`compare` takes several GPUs** and leads with the insight: the peak is identical on every card, only the
-ceiling moves. Columns are usable VRAM, headroom, % used, max micro-batch, and the verdict. With
-`--infer` it is the one table again with the serving config in the header and max concurrent requests
-in place of max micro-batch — the insight holds there too, since the cache does not know what card it
-is on.
+**`compare` takes several GPUs** and prices each one separately: columns are usable VRAM, **peak**,
+headroom, % used, max micro-batch, and the verdict. The peak is *usually* the same everywhere — the
+model does not know what card it is on — but `C_overhead` is keyed by GPU (Component 6), so a
+calibrated card and an uncalibrated one do not agree. The footer says "peak is identical on every
+card, only the ceiling moves" only when the rendered peaks really are identical, and otherwise gives
+the range. With `--infer` it is the one table again with the serving config in the header and max
+concurrent requests in place of max micro-batch.
 
 **`optimize` recommends, it does not just report the ceiling.** It suggests the largest power-of-two
 micro-batch within ~75% of `max_batch_size`, plus the `--grad-accum` steps that restore an effective batch of

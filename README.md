@@ -196,9 +196,10 @@ under checkpointing the peak is the *larger* of the LM-head hump and one layer's
 
 ![fitcheck REPL explain output: the largest component named, followed by the cost of flipping each flag](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-b-explain.png)
 
-`compare` puts the same config on several cards, and leads with the point — the peak is
-identical everywhere, only the ceiling moves, so the max micro-batch column is the interesting
-one.
+`compare` puts the same config on several cards and prices each one, so the max micro-batch column
+is usually the interesting one: the peak is the same everywhere *unless* the cards disagree on
+`C_overhead`, which is calibrated per GPU. The footer only claims an identical peak when the numbers
+in the peak column really are identical.
 
 ![fitcheck REPL compare output: RTX 4090, RTX 3090 and Tesla T4 side by side, none of them fitting, with max micro-batch 2, 2 and 0](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-b-compare.png)
 
@@ -859,7 +860,7 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 652
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 659
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the
   floor. The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`,
   which hit the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails

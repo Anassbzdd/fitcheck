@@ -66,10 +66,6 @@ jobs:
           flags: unittests
           fail_ci_if_error: false
 
-  # The declared floor is a promise: anyone whose resolver lands on the lowest legal
-  # version of a direct dependency must still get a working install. The `test` job
-  # above always resolves to the newest release, so it can never catch a wrong pin.
-  # `--resolution lowest-direct` is a uv flag; pip has no equivalent.
   floor:
     name: Lowest declared dependencies (3.10)
     runs-on: ubuntu-latest
@@ -96,3 +92,63 @@ jobs:
 
       - name: Run tests
         run: pytest -m "not network"
+
+  build:
+    name: Build and smoke-test the wheel
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Install the built wheel in a clean environment
+        run: |
+          python -m venv /tmp/wheel-env
+          /tmp/wheel-env/bin/python -m pip install --upgrade pip
+          /tmp/wheel-env/bin/python -m pip install dist/*.whl
+
+      - name: Metadata matches pyproject.toml
+        run: |
+          /tmp/wheel-env/bin/python - <<'PY'
+          import tomllib
+          from importlib.metadata import requires
+
+          with open("pyproject.toml", "rb") as handle:
+              declared = tomllib.load(handle)["project"]["dependencies"]
+
+          # Runtime requirements only: extras carry a `; extra == "..."` marker.
+          installed = [r for r in (requires("fitcheck-llm") or []) if "extra ==" not in r]
+
+          def norm(specs):
+              return sorted(s.replace(" ", "").lower() for s in specs)
+
+          if norm(declared) != norm(installed):
+              raise SystemExit(
+                  f"wheel metadata drifted from pyproject.toml\n"
+                  f"  pyproject: {norm(declared)}\n"
+                  f"  wheel:     {norm(installed)}"
+              )
+          print("runtime dependencies match:", norm(installed))
+          PY
+
+      - name: CLI smoke tests
+        run: |
+          /tmp/wheel-env/bin/fitcheck --version
+          /tmp/wheel-env/bin/fitcheck --help
+          /tmp/wheel-env/bin/fitcheck --list-gpus
+          /tmp/wheel-env/bin/python -m fitcheck --version
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

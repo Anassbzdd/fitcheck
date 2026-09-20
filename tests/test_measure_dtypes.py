@@ -1,25 +1,18 @@
-"""The measurement harness must measure the dtypes its rows are labelled with.
-
-`scripts/measure.py` used to reach `--optimizer-dtype fp32` by casting every trainable
-parameter to FP32 in place. Under LoRA that is a no-op -- peft already holds the
-adapters in FP32 -- but under `--no-lora` every parameter is trainable, so the cast
-rewrote the whole model and an fp16-labelled row actually measured an FP32 model, FP32
-gradients and FP32 activations (fix.md problem 16).
-
-These run on the CPU: nothing here needs CUDA, because the defect was in how the
-optimizer was built, not in how memory was read.
-"""
-
 from __future__ import annotations
 
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-torch = pytest.importorskip("torch")
+if TYPE_CHECKING:
+    # Pylance/mypy resolve the real module here; at runtime the same name is bound
+    # by importorskip, so `torch.Tensor` stays a usable annotation either way.
+    import torch
+else:
+    torch = pytest.importorskip("torch")
 
 _MEASURE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "measure.py"
 
@@ -45,7 +38,9 @@ class _DecoderLayer(torch.nn.Module):
         self.proj = torch.nn.Linear(width, width)
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        return self.proj(hidden)
+        # Module.__call__ is typed Any, so name the result to keep the hint honest.
+        out: torch.Tensor = self.proj(hidden)
+        return out
 
 
 class _TinyModel(torch.nn.Module):
@@ -55,10 +50,11 @@ class _TinyModel(torch.nn.Module):
         self.lm_head = torch.nn.Linear(width, width)
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        return self.lm_head(self.layer(hidden))
+        out: torch.Tensor = self.lm_head(self.layer(hidden))
+        return out
 
 
-def _full_ft_model(dtype=torch.float16) -> _TinyModel:
+def _full_ft_model(dtype: torch.dtype = torch.float16) -> _TinyModel:
     return _TinyModel().to(dtype)
 
 
@@ -248,7 +244,9 @@ def test_lora_gradients_must_be_fp32() -> None:
 # ---------------------------------------------------------------------------------
 
 
-def _bytes_per_param(model, optimizer, params: int) -> dict[str, float]:
+def _bytes_per_param(
+    model: _TinyModel, optimizer: Any, params: int
+) -> dict[str, float]:
     def live(*tensors: Any) -> int:
         return sum(t.numel() * t.element_size() for t in tensors if t is not None)
 
@@ -276,7 +274,7 @@ def _bytes_per_param(model, optimizer, params: int) -> dict[str, float]:
     ],
 )
 def test_full_finetune_matches_fitchecks_own_split(
-    precision: str, dtype: Any, expected: dict[str, float]
+    precision: str, dtype: torch.dtype, expected: dict[str, float]
 ) -> None:
     """SPEC Component 3's invariant table, measured rather than asserted on paper.
 

@@ -302,35 +302,7 @@ def build_model(args: argparse.Namespace, targets: list[str]):
     return model, hf_config
 
 
-def _dtype_name(dtype) -> str:
-    """torch.float16 -> "fp16", i.e. the spelling --precision uses."""
-    name = str(dtype).replace("torch.", "")
-    return {"float32": "fp32", "float16": "fp16", "bfloat16": "bf16"}.get(name, name)
-
-
-def _joined(dtypes: set[str]) -> str:
-    return "+".join(sorted(dtypes)) if dtypes else "none"
-
-
 class MasterWeightOptimizer:
-    """Mixed precision done properly: FP32 master copies beside the compute weights.
-
-    torch.optim.AdamW keeps its states in the parameter dtype, so the only way to get
-    FP32 states out of it is to hand it FP32 parameters. Doing that in place is safe
-    for LoRA -- peft already holds the adapters in FP32 -- but under --no-lora every
-    parameter is trainable, so it rewrote the whole model: an fp16-labelled row then
-    measured an FP32 model, FP32 gradients and FP32 activations (fix.md problem 16).
-
-    Here the model keeps the requested compute dtype and the FP32 shadow lives in the
-    optimizer, which is both what real mixed-precision trainers do and what fitcheck
-    bills: memory/optimizer.py::_keeps_master_weights adds 4 bytes/param for exactly
-    this copy, on top of the 8 bytes of AdamW state.
-
-    The grads are cast to FP32 for the step and dropped again straight after, so the
-    copy is transient and sits in the optimizer phase only. It is a real cost of the
-    approach, it is reported as such, and fitcheck does not model it.
-    """
-
     def __init__(self, params, factory):
         import torch
 
@@ -365,12 +337,6 @@ class MasterWeightOptimizer:
 
 
 def _keeps_master_weights(model, args: argparse.Namespace) -> bool:
-    """Mirror of fitcheck's own master-weight condition, on the loaded model.
-
-    fitcheck bills the FP32 shadow when the run is not LoRA and the parameters are not
-    already FP32 (SPEC Component 3). The harness must hold it under exactly the same
-    conditions, or the two disagree by 4 bytes on every parameter of the model.
-    """
     import torch
 
     if args.lora_rank is not None or args.precision == "fp32":
@@ -380,30 +346,6 @@ def _keeps_master_weights(model, args: argparse.Namespace) -> bool:
     )
 
 
-def _optimizer_factory(args: argparse.Namespace):
-    """The optimizer constructor, deferred so it can be aimed at the master copies."""
-    import torch
-
-    if args.optimizer == "adamw":
-
-        def factory(group):
-            return torch.optim.AdamW(group, lr=1e-4)
-
-    elif args.optimizer == "adam8bit":
-        import bitsandbytes as bnb
-
-        def factory(group):
-            return bnb.optim.AdamW8bit(group, lr=1e-4)
-
-    else:
-        momentum = 0.9 if args.optimizer == "sgd-momentum" else 0.0
-
-        def factory(group):
-            return torch.optim.SGD(group, lr=1e-4, momentum=momentum)
-
-    return factory
-
-
 def build_optimizer(model, args: argparse.Namespace):
     import torch
 
@@ -411,7 +353,17 @@ def build_optimizer(model, args: argparse.Namespace):
     if not params:
         raise SystemExit("measure.py: no trainable parameters -- nothing to measure")
 
-    factory = _optimizer_factory(args)
+    if args.optimizer == "adamw":
+        factory = lambda group: torch.optim.AdamW(group, lr=1e-4)  # noqa: E731
+    elif args.optimizer == "adam8bit":
+        import bitsandbytes as bnb
+
+        factory = lambda group: bnb.optim.AdamW8bit(group, lr=1e-4)  # noqa: E731
+    else:
+        momentum = 0.9 if args.optimizer == "sgd-momentum" else 0.0
+        factory = lambda group: torch.optim.SGD(  # noqa: E731
+            group, lr=1e-4, momentum=momentum
+        )
 
     if _keeps_master_weights(model, args):
         return MasterWeightOptimizer(params, factory)
@@ -440,6 +392,16 @@ def observed_master_weight_bytes(optimizer) -> tuple[float, str]:
     total = sum(m.numel() * m.element_size() for m in masters)
     dtypes = {_dtype_name(m.dtype) for m in masters}
     return total / MIB, "+".join(sorted(dtypes))
+
+
+def _dtype_name(dtype) -> str:
+    """torch.float16 -> "fp16", i.e. the spelling --precision uses."""
+    name = str(dtype).replace("torch.", "")
+    return {"float32": "fp32", "float16": "fp16", "bfloat16": "bf16"}.get(name, name)
+
+
+def _joined(dtypes: set[str]) -> str:
+    return "+".join(sorted(dtypes)) if dtypes else "none"
 
 
 def observed_optimizer_state_bytes(optimizer) -> tuple[float, str]:

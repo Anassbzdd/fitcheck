@@ -606,6 +606,15 @@ sequence past 2048. These use LoRA/full FT on an fp16 base, not QLoRA:
 | llama-160m | **full fine-tuning**, bs=2, seq=1024 | eager | 3,550 | 3,377 | +5.1% | −7.9% |
 | SmolLM2-360M | r=32, bs=1, **seq=4096** | eager | 5,765 | 4,909 | **+17.4%** | −12.0% |
 
+> **The full-FT row is superseded and has not been re-measured.** Until 2026-09-20 the harness
+> reached `--optimizer-dtype fp32` by casting the trainable parameters to FP32 in place, so under
+> `--no-lora` — where every parameter is trainable — it measured an FP32 model, FP32 gradients and
+> FP32 activations under an `fp16` label. `scripts/measure.py` now keeps the compute weights at
+> `--precision` and holds the FP32 master copy in the optimizer, and refuses any row whose observed
+> dtypes contradict its flags. The LoRA and QLoRA rows are unaffected: peft already held the
+> adapters in FP32, so the cast never fired on them, and all 57 archived rows show
+> `after_load == resident_before_step` to prove it. Re-measuring full fine-tuning needs a GPU.
+
 #### Results — training, gradient checkpointing OFF (historical, 2026-09-12)
 
 This is the branch that had never been measured, and it is the **default**. LoRA r=32 [q,k,v,o] on an
@@ -860,7 +869,7 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 684
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 697
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the
   floor. The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`,
   which hit the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails

@@ -274,14 +274,42 @@ compute dtype:
 > by half on **every** LoRA run — measured at exactly $-50.0\%$ on 14 rows out of 14, nine of them
 > with `--quant none`.
 
-> **Full fine-tuning splits this differently from the harness, and the total is still right.**
-> `scripts/measure.py` upcasts the parameters in place, so the FP32 master copy lands in its
-> *weights* reading; `fitcheck` keeps that master copy inside $S_{optim}$ at 12 bytes/param
-> (Component 3). On the measured llama-160m full-FT row that reads as weights $+50\%$, $S_{optim}$
-> $-50\%$, $G_{grad}$ $-50\%$ — and a sum of **2,479 MiB against 2,479 measured, exact to the MiB**.
-> Real mixed-precision training keeps a separate master copy, so fitcheck's split is the realistic
-> one and the harness is the unusual one. **Do not "fix" the individual terms**: each looks wrong
-> alone, and correcting any one of them breaks a total that is currently exact.
+> **Full fine-tuning used to split this differently from the harness. Fixed 2026-09-20.**
+> `scripts/measure.py` reached `--optimizer-dtype fp32` by casting every trainable parameter to
+> FP32 in place. Under LoRA that is a no-op — peft already holds the adapters in FP32, and all 57
+> archived rows show `after_load == resident_before_step` to prove it — but under `--no-lora`
+> *every* parameter is trainable, so the cast rewrote the whole model: the FP32 master copy landed
+> in the harness's *weights* reading, and the row also measured FP32 gradients and **FP32
+> activations** while wearing an `fp16` label. The three per-param terms read as weights $+50\%$,
+> $S_{optim}$ $-50\%$, $G_{grad}$ $-50\%$ with a sum exact to the MiB (2,479 vs 2,479 on
+> llama-160m), which is why it went unnoticed: the parameter side comes to 16 bytes/param either
+> way. $A_{act}$ does not cancel, and on that row it was hidden by a vocabulary large enough for
+> $A_{logits}$ — which is FP32 regardless — to win the `max()`.
+>
+> The harness now keeps the compute weights at `--precision` and holds the FP32 shadow in
+> `measure.MasterWeightOptimizer`, under the same condition Component 3 bills it on, so every term
+> lines up individually. The cost of doing it properly is a transient FP32 copy of the gradients
+> during the optimizer step (4 bytes/param, freed immediately); fitcheck does not model it, so a
+> full-FT row whose peak falls in the optimizer phase will read as an under-prediction.
+>
+> **This does not license "fixing" the individual fitcheck terms.** Each still looks wrong alone
+> against a naive reading of `--precision`, and correcting any one of them breaks a total that is
+> exact. The harness was the unusual one; it is the harness that moved.
+
+> **No `autocast`, deliberately.** The model is loaded at `--precision`, so the forward already
+> runs there and the hooks now prove it. Wrapping it in `torch.amp.autocast` would instead run the
+> softmax, the layer norms and the loss in FP32 on an otherwise half-precision model — a third
+> dtype regime, matching neither $\gamma$ nor the FP32 pins in `memory/activations._PROFILES`, and
+> not the one the 57 archived rows were measured under. Pure half-precision compute is what
+> fitcheck bills; autocast would have to be modelled before it could be measured.
+
+> **Rows are rejected when the dtypes do not match the label.** `measure.py` hooks the decoder
+> layers and reads back the parameter, gradient, activation and optimizer-state dtypes of a real
+> step, and refuses to emit a row whose observation contradicts its own flags
+> (`measure.dtype_mismatches`). The base-weight and activation checks are skipped under a
+> quantized base, where peft's `prepare_model_for_kbit_training` upcasts the norms, embeddings and
+> LM head to FP32 on purpose — that upcast is measured and already lives in
+> `memory/activations._PROFILES`.
 
 Gradient accumulation does **not** increase this — gradients are accumulated in-place into the same
 tensor. `grad_accum_steps` must not appear in this formula.
@@ -1565,7 +1593,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **No-checkpointing branch** | **Measured 2026-09-12 (task 9.2)** over 11 rows and 9 models: worst-case error 98.3% → 5.9%. The bracket is now $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$ and the score matrix is charged at the retained rate ($2.9\gamma$), not the transient one ($9\gamma$) — see Component 5. The 8.3 warning is **removed**: keeping a caveat that says the branch is unmeasured would now be false. | ✅ measured |
 | **`--quant int8` activations** | Billed at **$\gamma = 4$** whatever `--precision` says: `prepare_model_for_kbit_training` upcasts the layer norms to FP32 and LLM.int8() takes that FP32 input at every linear — the run prints `MatMul8bitLt: inputs will be cast from torch.float32` hundreds of times. On the one measured int8 row (TinyLlama, bs=2, seq=1024) that takes $A_{act}$ from **1,620 predicted against 3,729 measured ($-56.6\%$)** to **3,382 ($-9.3\%$)**, and the tensors tier from $-38.9\%$ to $-5.7\%$. The residual is LLM.int8()'s own FP16 outlier buffers, which are not modelled, so `estimate_warnings` attaches a caveat calling the figure a lower bound. **One model, one run** — a second int8 row on a different model is owed before the mechanism can be called general. | ⚠️ Partly measured, warned |
 | **Serving activations (`fitcheck infer`)** | Not modelled at all: $M_{infer}$ is resident memory only. Measured $-2.8\%$ at 1 concurrent request and $-23.2\%$ at 16, the unsafe direction, growing with concurrency. `inference_warnings` attaches a caveat above 4 concurrent naming both numbers. No coefficient is fitted, because 838 MiB of transient at 16 concurrent is far larger than any identified mechanism and one data point cannot settle it — see Component 7. | ⚠️ Unmeasured, warned |
-| **Full fine-tuning term split** | fitcheck keeps the FP32 master copy in $S_{optim}$ (12 B/param); `measure.py` upcasts in place so it lands in *weights*. Reads as +50% / −50% / −50% across three terms with a **sum exact to the MiB** (2,479 vs 2,479). fitcheck's split is the realistic one. **Not a bug — do not "fix" the individual terms.** | ✅ measured, correct |
+| **Full fine-tuning term split** | fitcheck keeps the FP32 master copy in $S_{optim}$ (12 B/param). `measure.py` used to upcast in place so it landed in *weights* — +50% / −50% / −50% across three terms with a **sum exact to the MiB** (2,479 vs 2,479) — and that cast also made an `fp16` row measure FP32 activations. Harness fixed 2026-09-20 (Component 4); the fitcheck terms are unchanged. | ⚠️ harness fixed, full-FT row not re-measured |
 | **Non-T4 hardware, BF16, real Flash Attention** | All thirty-three measurements are one Tesla T4 (sm_75) in FP16, on torch 2.10.0+cu128 / transformers 5.0.0 / peft 0.19.1. BF16 and FA2 need sm_80+; the flash path is validated only via SDPA's memory-efficient backend as a stand-in. | ⚠️ Unmeasured |
 | **Unknown GPU** | Error message listing available GPUs. Flag to pass custom VRAM: `--vram-mib 24000`. | ✅ MVP |
 
@@ -1605,11 +1633,17 @@ python scripts/measure.py <model_id> --qlora --precision fp16 --lora-r 32 \
    `exp_avg` / `exp_avg_sq` buffers lazily on the first `.step()`, so a zero-warmup peak would miss
    $S_{optim}$ entirely.
 4. Reset the peak counters, run `--measure-steps` more steps, read the peaks.
-5. Run one extra *instrumented* step that resets the counter between phases.
-6. Print prediction vs measurement at three tiers, plus per-component spot-checks.
+5. Run one extra *instrumented* step that resets the counter between phases, with forward hooks
+   on the decoder layers reading back the dtype of the hidden states.
+6. **Refuse the row if the observed dtypes contradict the flags.** Parameters, gradients,
+   activations and optimizer states are all read off a real step and checked against what the run
+   claims to be; a row measured at one dtype and filed under another corrupts every per-param term
+   downstream of it. Component 4 has the checks and the quantized-base exemptions.
+7. Print prediction vs measurement at three tiers, plus per-component spot-checks.
 
 Step 5 happens **after** the headline peaks are read, so adding the instrumentation did not change
-any number the harness had already reported.
+any number the harness had already reported. The dtype hooks keep nothing but a set of strings and
+are installed for that step only, for the same reason.
 
 #### The three tiers — and why comparing the wrong one is meaningless
 

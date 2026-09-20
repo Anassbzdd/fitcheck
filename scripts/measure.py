@@ -302,6 +302,108 @@ def build_model(args: argparse.Namespace, targets: list[str]):
     return model, hf_config
 
 
+def _dtype_name(dtype) -> str:
+    """torch.float16 -> "fp16", i.e. the spelling --precision uses."""
+    name = str(dtype).replace("torch.", "")
+    return {"float32": "fp32", "float16": "fp16", "bfloat16": "bf16"}.get(name, name)
+
+
+def _joined(dtypes: set[str]) -> str:
+    return "+".join(sorted(dtypes)) if dtypes else "none"
+
+
+class MasterWeightOptimizer:
+    """Mixed precision done properly: FP32 master copies beside the compute weights.
+
+    torch.optim.AdamW keeps its states in the parameter dtype, so the only way to get
+    FP32 states out of it is to hand it FP32 parameters. Doing that in place is safe
+    for LoRA -- peft already holds the adapters in FP32 -- but under --no-lora every
+    parameter is trainable, so it rewrote the whole model: an fp16-labelled row then
+    measured an FP32 model, FP32 gradients and FP32 activations (fix.md problem 16).
+
+    Here the model keeps the requested compute dtype and the FP32 shadow lives in the
+    optimizer, which is both what real mixed-precision trainers do and what fitcheck
+    bills: memory/optimizer.py::_keeps_master_weights adds 4 bytes/param for exactly
+    this copy, on top of the 8 bytes of AdamW state.
+
+    The grads are cast to FP32 for the step and dropped again straight after, so the
+    copy is transient and sits in the optimizer phase only. It is a real cost of the
+    approach, it is reported as such, and fitcheck does not model it.
+    """
+
+    def __init__(self, params, factory):
+        import torch
+
+        self.params = list(params)
+        self.masters = [
+            torch.nn.Parameter(p.detach().clone().float()) for p in self.params
+        ]
+        self.inner = factory(self.masters)
+
+    @property
+    def state(self):
+        return self.inner.state
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        self.inner.zero_grad(set_to_none=set_to_none)
+        for param in self.params:
+            if set_to_none:
+                param.grad = None
+            elif param.grad is not None:
+                param.grad.zero_()
+
+    def step(self) -> None:
+        import torch
+
+        for master, param in zip(self.masters, self.params, strict=True):
+            master.grad = None if param.grad is None else param.grad.detach().float()
+        self.inner.step()
+        with torch.no_grad():
+            for master, param in zip(self.masters, self.params, strict=True):
+                master.grad = None
+                param.data.copy_(master.data)
+
+
+def _keeps_master_weights(model, args: argparse.Namespace) -> bool:
+    """Mirror of fitcheck's own master-weight condition, on the loaded model.
+
+    fitcheck bills the FP32 shadow when the run is not LoRA and the parameters are not
+    already FP32 (SPEC Component 3). The harness must hold it under exactly the same
+    conditions, or the two disagree by 4 bytes on every parameter of the model.
+    """
+    import torch
+
+    if args.lora_rank is not None or args.precision == "fp32":
+        return False
+    return any(
+        p.requires_grad and p.dtype != torch.float32 for p in model.parameters()
+    )
+
+
+def _optimizer_factory(args: argparse.Namespace):
+    """The optimizer constructor, deferred so it can be aimed at the master copies."""
+    import torch
+
+    if args.optimizer == "adamw":
+
+        def factory(group):
+            return torch.optim.AdamW(group, lr=1e-4)
+
+    elif args.optimizer == "adam8bit":
+        import bitsandbytes as bnb
+
+        def factory(group):
+            return bnb.optim.AdamW8bit(group, lr=1e-4)
+
+    else:
+        momentum = 0.9 if args.optimizer == "sgd-momentum" else 0.0
+
+        def factory(group):
+            return torch.optim.SGD(group, lr=1e-4, momentum=momentum)
+
+    return factory
+
+
 def build_optimizer(model, args: argparse.Namespace):
     import torch
 
@@ -309,18 +411,35 @@ def build_optimizer(model, args: argparse.Namespace):
     if not params:
         raise SystemExit("measure.py: no trainable parameters -- nothing to measure")
 
-    if args.optimizer == "adamw":
-        if args.optimizer_dtype == "fp32":
-            for p in params:
-                if p.dtype != torch.float32:
-                    p.data = p.data.float()
-        return torch.optim.AdamW(params, lr=1e-4)
-    if args.optimizer == "adam8bit":
-        import bitsandbytes as bnb
+    factory = _optimizer_factory(args)
 
-        return bnb.optim.AdamW8bit(params, lr=1e-4)
-    momentum = 0.9 if args.optimizer == "sgd-momentum" else 0.0
-    return torch.optim.SGD(params, lr=1e-4, momentum=momentum)
+    if _keeps_master_weights(model, args):
+        return MasterWeightOptimizer(params, factory)
+
+    if args.optimizer == "adamw" and args.optimizer_dtype == "fp32":
+        # LoRA only, and a no-op in practice: peft's autocast_adapter_dtype already
+        # holds the adapters in FP32. Kept so a stack that ever stops doing that
+        # still measures the FP32 states the row is labelled with.
+        for p in params:
+            if p.dtype != torch.float32:
+                p.data = p.data.float()
+
+    return factory(params)
+
+
+def observed_master_weight_bytes(optimizer) -> tuple[float, str]:
+    """The FP32 shadow copies, which fitcheck bills inside S_optim, not W_base.
+
+    Reported apart from the optimizer states because they are allocated when the
+    optimizer is built, so they are already inside resident_before_step and must not
+    be subtracted a second time when A_act is recovered.
+    """
+    masters = getattr(optimizer, "masters", None)
+    if not masters:
+        return 0.0, "none"
+    total = sum(m.numel() * m.element_size() for m in masters)
+    dtypes = {_dtype_name(m.dtype) for m in masters}
+    return total / MIB, "+".join(sorted(dtypes))
 
 
 def observed_optimizer_state_bytes(optimizer) -> tuple[float, str]:
@@ -332,22 +451,82 @@ def observed_optimizer_state_bytes(optimizer) -> tuple[float, str]:
         for value in state.values():
             if torch.is_tensor(value) and value.numel() > 1:
                 total += value.numel() * value.element_size()
-                dtypes.add(str(value.dtype).replace("torch.", ""))
-    return total / MIB, ("+".join(sorted(dtypes)) if dtypes else "none")
+                dtypes.add(_dtype_name(value.dtype))
+    return total / MIB, _joined(dtypes)
 
 
-def observed_gradient_bytes(model) -> float:
-    """Resident gradient bytes for the trainable parameters.
+def observed_gradient_bytes(model) -> tuple[float, str]:
+    """Resident gradient bytes and dtypes for the trainable parameters.
 
     Must be read after .backward() and before zero_grad(set_to_none=True), which
     drops .grad entirely. Together with the optimizer-state and after-load figures
     this is what lets A_act be measured by subtraction instead of inferred by hand.
     """
     total = 0
+    dtypes: set[str] = set()
     for param in model.parameters():
         if param.requires_grad and param.grad is not None:
             total += param.grad.numel() * param.grad.element_size()
-    return total / MIB
+            dtypes.add(_dtype_name(param.grad.dtype))
+    return total / MIB, _joined(dtypes)
+
+
+def observed_parameter_dtypes(model) -> tuple[str, str]:
+    """(base weights, trainable weights) as dtype labels.
+
+    Base is everything that is not a LoRA adapter, adapters excluded because they are
+    legitimately FP32 on any base (CLAUDE.md: LoRA adapters are ALWAYS FP32). NF4
+    linears are packed into uint8 and carry no floating-point dtype of their own, so
+    they are skipped -- under a quantized base only the trainable half is checked.
+    """
+    base: set[str] = set()
+    trainable: set[str] = set()
+    for name, param in model.named_parameters():
+        if not param.dtype.is_floating_point:
+            continue
+        label = _dtype_name(param.dtype)
+        if param.requires_grad:
+            trainable.add(label)
+        if "lora_" not in name:
+            base.add(label)
+    return _joined(base), _joined(trainable)
+
+
+class ActivationDtypeProbe:
+    """Records the dtype of the hidden states flowing between decoder layers.
+
+    This is the tensor A_act is billed on -- gamma * b * s * h, the checkpoint store
+    and every saved (b, s, h) tensor -- so it is the one that says whether the row
+    really ran at the precision on its label. The logits are deliberately not probed:
+    transformers upcasts them to FP32 whatever the compute dtype, which is why
+    A_logits is billed at 4 bytes and not at gamma.
+    """
+
+    def __init__(self, model) -> None:
+        import torch
+
+        self.dtypes: set[str] = set()
+        self.handles: list[Any] = []
+
+        def hook(module, args, output) -> None:
+            tensor = output[0] if isinstance(output, tuple) else output
+            if torch.is_tensor(tensor) and tensor.dtype.is_floating_point:
+                self.dtypes.add(_dtype_name(tensor.dtype))
+
+        for module in model.modules():
+            if type(module).__name__.endswith("DecoderLayer"):
+                self.handles.append(module.register_forward_hook(hook))
+        if not self.handles:
+            for module in model.modules():
+                if isinstance(module, torch.nn.Linear):
+                    self.handles.append(module.register_forward_hook(hook))
+                    break
+
+    def remove(self) -> str:
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+        return _joined(self.dtypes)
 
 
 # ---------------------------------------------------------------------------------
@@ -369,7 +548,13 @@ class Measurement:
     peak_optimizer_mib: float
     optimizer_state_mib: float
     optimizer_state_dtype: str
+    master_weight_mib: float
+    master_weight_dtype: str
     gradient_mib: float
+    gradient_dtype: str
+    base_param_dtype: str
+    trainable_param_dtype: str
+    activation_dtype: str
     sdpa_backend: str
     trainable_params: int
     total_params: int
@@ -539,6 +724,65 @@ def _preflight_device(args: argparse.Namespace) -> None:
         )
 
 
+def expected_dtypes(args: argparse.Namespace) -> dict[str, str]:
+    """What each tensor family must be, if the row's own label is to be true.
+
+    These are fitcheck's assumptions, not preferences: the trainable and gradient
+    entries are estimator._gradient_precision, and the base and activation entries
+    are the compute dtype the model was asked to load in.
+    """
+    trainable = "fp32" if args.lora_rank is not None else args.precision
+    return {
+        "base_param_dtype": args.precision,
+        "trainable_param_dtype": trainable,
+        "gradient_dtype": trainable,
+        "activation_dtype": args.precision,
+        "optimizer_state_dtype": "fp32",
+    }
+
+
+def dtype_mismatches(args: argparse.Namespace, m: Measurement) -> list[str]:
+    """Observed dtypes that contradict the row's label.
+
+    Only the unambiguous checks are enforced. A quantized base is skipped for the
+    base-weight and activation families because bitsandbytes and peft's
+    prepare_model_for_kbit_training upcast the norms, embeddings and LM head to FP32
+    on purpose -- that upcast is measured and already lives in the activation
+    profiles (CLAUDE.md, memory/activations._PROFILES), so it is not a mislabelling.
+    The optimizer state is checked only for AdamW at --optimizer-dtype fp32, which is
+    the one case where the flag states the expected dtype outright.
+    """
+    expected = expected_dtypes(args)
+    checked = ["trainable_param_dtype", "gradient_dtype"]
+    if args.quant == "none":
+        checked += ["base_param_dtype", "activation_dtype"]
+    if args.optimizer == "adamw" and args.optimizer_dtype == "fp32":
+        checked.append("optimizer_state_dtype")
+
+    problems = []
+    for field in checked:
+        observed = getattr(m, field)
+        if observed != expected[field]:
+            problems.append(
+                f"    {field:<24} expected {expected[field]:<6} observed {observed}"
+            )
+    return problems
+
+
+def reject_mislabelled_dtypes(args: argparse.Namespace, m: Measurement) -> None:
+    problems = dtype_mismatches(args, m)
+    if not problems:
+        return
+    raise SystemExit(
+        "measure.py: the tensors this run measured are not the dtypes it is "
+        "labelled with, so the row would be mislabelled:\n"
+        + "\n".join(problems)
+        + "\n  Every per-param and per-activation term is read off those "
+        "labels, so a row measured at one dtype and filed under another silently "
+        "corrupts the calibration set. Fix the configuration, not the label."
+    )
+
+
 def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
     import torch
 
@@ -579,7 +823,7 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         out.loss.backward()
         optimizer.step()
 
-    def phase_resolved_step() -> tuple[float, float, float, float]:
+    def phase_resolved_step() -> tuple[float, float, float, float, str]:
         """One step with the peak counter reset between phases.
 
         reset_peak_memory_stats() rebases the peak to whatever is currently live,
@@ -598,13 +842,13 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         out.loss.backward()
         torch.cuda.synchronize()
         backward_peak = torch.cuda.max_memory_allocated() / MIB
-        grad_mib = observed_gradient_bytes(model)
+        grad_mib, grad_dtype = observed_gradient_bytes(model)
 
         torch.cuda.reset_peak_memory_stats()
         optimizer.step()
         torch.cuda.synchronize()
         optimizer_peak = torch.cuda.max_memory_allocated() / MIB
-        return forward_peak, backward_peak, optimizer_peak, grad_mib
+        return forward_peak, backward_peak, optimizer_peak, grad_mib, grad_dtype
 
     with sdpa_ctx():
         try:
@@ -635,9 +879,22 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         peak_allocated = torch.cuda.max_memory_allocated() / MIB
         peak_reserved = torch.cuda.max_memory_reserved() / MIB
 
-        forward_peak, backward_peak, optimizer_peak, grad_mib = phase_resolved_step()
+        # Installed only for the extra instrumented step, which runs after the
+        # headline peaks have been read: the hooks keep nothing but a set of strings,
+        # and this way they provably cannot move peak_allocated or peak_reserved.
+        probe = ActivationDtypeProbe(model)
+        (
+            forward_peak,
+            backward_peak,
+            optimizer_peak,
+            grad_mib,
+            grad_dtype,
+        ) = phase_resolved_step()
+        activation_dtype = probe.remove()
 
     opt_mib, opt_dtype = observed_optimizer_state_bytes(optimizer)
+    master_mib, master_dtype = observed_master_weight_bytes(optimizer)
+    base_dtype, trainable_dtype = observed_parameter_dtypes(model)
     context_mib = _cuda_context_mib()
 
     return Measurement(
@@ -653,7 +910,13 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         peak_optimizer_mib=optimizer_peak,
         optimizer_state_mib=opt_mib,
         optimizer_state_dtype=opt_dtype,
+        master_weight_mib=master_mib,
+        master_weight_dtype=master_dtype,
         gradient_mib=grad_mib,
+        gradient_dtype=grad_dtype,
+        base_param_dtype=base_dtype,
+        trainable_param_dtype=trainable_dtype,
+        activation_dtype=activation_dtype,
         sdpa_backend=sdpa_label,
         trainable_params=trainable,
         total_params=total_params,
@@ -713,10 +976,14 @@ def _measured_activation_mib(m: Measurement) -> float:
     Weights, optimizer states and gradients are all measured directly, so whatever
     is left in max_memory_allocated() is the activation memory.
 
-    The baseline is resident_before_step, not after_load: build_optimizer upcasts
-    trainable params to FP32, and that growth is weights, not activations. With LoRA
-    the two are equal because peft already holds the adapters in FP32; under --no-lora
-    they differ by the size of the whole model.
+    The baseline is resident_before_step, not after_load: under mixed-precision full
+    fine-tuning build_optimizer allocates the FP32 master copies, and that growth is
+    weights, not activations. With LoRA the two are equal, because there are no master
+    copies and peft already holds the adapters in FP32.
+
+    The master copies are therefore subtracted here once, inside resident_before_step,
+    which is why observed_master_weight_bytes reports them separately instead of
+    folding them into the optimizer-state figure.
     """
     return (
         m.peak_allocated_mib
@@ -837,7 +1104,25 @@ def render(
         f"  optimizer states: {m.optimizer_state_mib:,.0f} MiB observed, "
         f"dtype {m.optimizer_state_dtype}"
     )
+    if m.master_weight_mib:
+        add(
+            f"  master weights:   {m.master_weight_mib:,.0f} MiB observed, "
+            f"dtype {m.master_weight_dtype}  (fitcheck bills these inside S_optim)"
+        )
     add(f"  step time: {m.step_seconds:.2f}s")
+    add("")
+    add("  OBSERVED DTYPES  (what the step really ran on, vs what the row claims)")
+    expected = expected_dtypes(args)
+    for field, label in (
+        ("base_param_dtype", "base weights"),
+        ("trainable_param_dtype", "trainable weights"),
+        ("gradient_dtype", "gradients"),
+        ("activation_dtype", "hidden activations"),
+        ("optimizer_state_dtype", "optimizer states"),
+    ):
+        observed = getattr(m, field)
+        note = "" if observed == expected[field] else f"   != expected {expected[field]}"
+        add(f"    {label:<22}{observed}{note}")
     add("")
     add("  MEASURED")
     add(f"    CUDA context (at peak)           {m.cuda_context_mib:>12,.0f} MiB")
@@ -900,7 +1185,11 @@ def render(
             report.weight_mib + report.lora_mib,
             m.after_load_allocated_mib,
         ),
-        ("optimizer states (S_optim)", report.optimizer_mib, m.optimizer_state_mib),
+        (
+            "optimizer states (S_optim)",
+            report.optimizer_mib,
+            m.optimizer_state_mib + m.master_weight_mib,
+        ),
         ("gradients (G_grad)", report.gradient_mib, m.gradient_mib),
         ("activations (A_act)", report.activation_mib, _measured_activation_mib(m)),
     ):
@@ -946,6 +1235,7 @@ def main(argv: list[str] | None = None) -> int:
         gpu_name = get_gpu(args.gpu).name
 
     m = measure(args, targets)
+    reject_mislabelled_dtypes(args, m)
 
     if args.as_json:
         payload: dict[str, Any] = {

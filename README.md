@@ -860,7 +860,7 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 659
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 684
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the
   floor. The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`,
   which hit the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails

@@ -43,6 +43,11 @@ python scripts/measure.py <model> --gpu t4 --qlora --precision fp16 \
 Always pass `--gpu <key>`: a row with no card cannot be filed under one. Never pass
 `--no-predict`: the fit compares a prediction against a measurement and needs both.
 
+`--json` prints one indented document per run, so appending several of them gives a file
+whose rows span many physical lines. The loader reads it document by document, not line by
+line, so `>>` works: a file of appended `--json` output and a one-object-per-line `.jsonl`
+both load. A truncated run — a half-written document — is refused with the file named.
+
 `scripts/calibration_sweep.py` drives the same script over the whole grid and adds a
 `sweep` block to each row: the canonical identity it asked for, a fingerprint of that
 identity, and the repeat index. The file name is built from the same identity, so two

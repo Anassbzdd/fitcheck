@@ -197,6 +197,12 @@ def _adapter_precision(training: TrainingConfig) -> str:
     return "fp32"
 
 
+def _gradient_precision(training: TrainingConfig) -> str:
+    if training.lora_rank is None:
+        return validate_precision(training.precision)
+    return _adapter_precision(training)
+
+
 def _activation_precision(training: TrainingConfig) -> str:
     precision = validate_precision(training.precision)
     if validate_quantization(training.quantization) == "int8":
@@ -264,7 +270,7 @@ def _compute_components(
         training.precision,
     )
     gradient_mib = estimate_gradient_memory(
-        trainable_params, training.precision, adapter_precision if is_lora else None
+        trainable_params, training.precision, _gradient_precision(training)
     )
     activation_mib = estimate_activation_memory(
         config,

@@ -38,8 +38,6 @@ def qlora_training() -> TrainingConfig:
 
 
 class _Repl:
-    """A REPL session wired to a string buffer, driven one line at a time."""
-
     def __init__(self, model: ModelConfig, training: TrainingConfig, gpu: GpuSpec) -> None:
         self.buffer = io.StringIO()
         console = Console(file=self.buffer, width=200, no_color=True, legacy_windows=False)

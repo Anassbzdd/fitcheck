@@ -431,6 +431,24 @@ def _manifest_coverage(path: Path, payload: dict[str, Any]) -> set[Path]:
     return covered
 
 
+def _decode_concatenated(text: str, path: Path) -> list[Any]:
+    decoder = json.JSONDecoder()
+    documents: list[Any] = []
+    index = 0
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            return documents
+        try:
+            document, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError as error:
+            raise CalibrationError(
+                f"{path}: not valid JSON or JSON lines ({error})"
+            ) from error
+        documents.append(document)
+
+
 def load_runs(
     paths: Iterable[str | Path], roles: Iterable[str] = DEFAULT_ROLES
 ) -> list[CalibrationRun]:
@@ -473,14 +491,7 @@ def load_runs(
         except json.JSONDecodeError:
             pass
 
-        lines = [line for line in text.splitlines() if line.strip()]
-        try:
-            documents = [json.loads(line) for line in lines]
-        except json.JSONDecodeError as error:
-            raise CalibrationError(
-                f"{path}: not valid JSON or JSON lines ({error})"
-            ) from error
-        for index, document in enumerate(documents, 1):
+        for index, document in enumerate(_decode_concatenated(text, path), 1):
             runs.extend(parse_runs(document, f"{path}:{index}"))
 
     if not runs:

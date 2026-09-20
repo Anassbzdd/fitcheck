@@ -18,13 +18,25 @@ from fitcheck.estimator import (
     ServingConfig,
     TrainingConfig,
     _activation_precision,
+    _activation_profile_for,
     _format_delta,
+    _gradient_precision,
     activation_breakdown,
     estimate_warnings,
     trainable_params,
 )
-from fitcheck.gpu_db import GpuSpec, list_gpus
-from fitcheck.utils import precision_to_bytes
+from fitcheck.gpu_db import GpuSpec, gpu_key_for, list_gpus
+from fitcheck.memory.optimizer import (
+    _MASTER_WEIGHT_BYTES_PER_PARAM,
+    _keeps_master_weights,
+)
+from fitcheck.memory.overhead import _fragmentation_at
+from fitcheck.overhead_db import (
+    DEFAULT_OVERHEAD_PROFILE,
+    OverheadProfile,
+    get_overhead_profile,
+)
+from fitcheck.utils import optimizer_bytes_per_param, precision_to_bytes
 
 _TIGHT_HEADROOM_FRACTION = 0.20
 _BAR_WIDTH = 44
@@ -553,8 +565,16 @@ def _activation_detail_table(
     config: ModelConfig, training: TrainingConfig, ascii_only: bool
 ) -> Table:
     parts = activation_breakdown(config, training)
+    profile = _activation_profile_for(training.quantization)
     layers = config.num_layers
     gamma_bsh = "gamma*b*s*h" if ascii_only else "γbsh"
+    store_element = (
+        gamma_bsh
+        if profile.checkpoint_bytes_per_element is None
+        else ("4*b*s*h" if ascii_only else "4bsh")
+    )
+    store_tensors = profile.checkpoint_tensors_per_layer
+    store_factor = "L" if store_tensors == 1 else f"{store_tensors:g}L"
 
     table = Table(box=SIMPLE_HEAD, pad_edge=False, expand=True)
     table.add_column(
@@ -580,7 +600,8 @@ def _activation_detail_table(
         _mib(parts[attention_key]),
     )
     table.add_row(
-        "A_logits, four fp32 copies of (b, s, V)", _mib(parts["logits_mib"])
+        f"A_logits, {profile.logits_copies:g} fp32 copies of (b, s, V)",
+        _mib(parts["logits_mib"]),
     )
     table.add_row(
         Text("  outside the layer stack: no grad ckpt, no Flash", style=_STYLE_LABEL),
@@ -593,7 +614,10 @@ def _activation_detail_table(
             "L x A_layer + A_logits, no checkpointing (NOT paid)",
             Text(_mib(parts["all_layers_mib"]), style=_STYLE_LABEL),
         )
-        table.add_row(f"Checkpoint store (2L x {gamma_bsh})", _mib(parts["checkpoint_store_mib"]))
+        table.add_row(
+            f"Checkpoint store ({store_factor} x {store_element})",
+            _mib(parts["checkpoint_store_mib"]),
+        )
         hump = "A_logits" if parts["logits_mib"] >= parts["layer_mib"] else "A_layer"
         table.add_row(
             f"+ max(A_logits, A_layer) = {hump}, they never overlap",
@@ -626,7 +650,59 @@ def _largest_component(report: MemoryReport) -> tuple[str, float]:
     return max(components.items(), key=lambda item: item[1])
 
 
-def _why_largest(name: str, config: ModelConfig, training: TrainingConfig) -> str:
+def _optimizer_bytes_per_param(training: TrainingConfig) -> float:
+    bytes_per_param = float(
+        optimizer_bytes_per_param(training.optimizer, training.optimizer_dtype)
+    )
+    if _keeps_master_weights(training.lora_rank is not None, training.precision):
+        bytes_per_param += _MASTER_WEIGHT_BYTES_PER_PARAM
+    return bytes_per_param
+
+
+def _overhead_profile_used(
+    training: TrainingConfig, gpu: GpuSpec | None
+) -> OverheadProfile:
+    profile = get_overhead_profile(
+        None if gpu is None else gpu_key_for(gpu),
+        training.flash_attn,
+        training.quantization,
+    )
+    if profile.uses_hump_form and not training.grad_checkpoint:
+        return DEFAULT_OVERHEAD_PROFILE
+    return profile
+
+
+def _why_overhead(
+    config: ModelConfig, training: TrainingConfig, gpu: GpuSpec | None
+) -> str:
+    profile = _overhead_profile_used(training, gpu)
+    tail = (
+        " -- it grows with everything else, so it is never the thing to optimize first."
+    )
+    if profile.uses_hump_form:
+        parts = activation_breakdown(config, training)
+        logits_mib, layer_mib = parts["logits_mib"], parts["layer_mib"]
+        loser = "A_layer" if logits_mib >= layer_mib else "A_logits"
+        fragmentation = profile.fragmentation_for(logits_mib, layer_mib)
+        return (
+            f"the measured {profile.base_context_mib:,.3f} MiB CUDA context on "
+            f"{profile.gpu} plus {_percent(fragmentation)} of {loser} "
+            f"({_mib(min(logits_mib, layer_mib))} MiB), the activation hump that loses "
+            f"the checkpointed max(){tail}"
+        )
+    return (
+        f"the {_mib(profile.base_context_mib)} MiB CUDA context floor plus "
+        f"{_percent(_fragmentation_at(profile, training.seq_len), 0)} of weights and "
+        f"activations{tail}"
+    )
+
+
+def _why_largest(
+    name: str,
+    config: ModelConfig,
+    training: TrainingConfig,
+    gpu: GpuSpec | None = None,
+) -> str:
     if name == "base model weights":
         if training.quantization == "none":
             return (
@@ -641,11 +717,12 @@ def _why_largest(name: str, config: ModelConfig, training: TrainingConfig) -> st
         parts = activation_breakdown(config, training)
         logits_mib = parts["logits_mib"]
         layer_mib = parts["layer_mib"]
+        copies = _activation_profile_for(training.quantization).logits_copies
         if training.grad_checkpoint:
             if logits_mib >= layer_mib:
                 return (
-                    f"{_mib(logits_mib)} MiB of that is A_logits: four fp32 copies of the "
-                    f"(b, s, V) logits tensor, which a {config.vocab_size:,}-token "
+                    f"{_mib(logits_mib)} MiB of that is A_logits: {copies:g} fp32 copies "
+                    f"of the (b, s, V) logits tensor, which a {config.vocab_size:,}-token "
                     "vocabulary makes enormous. It sits outside the layer stack, so "
                     "neither --grad-checkpoint nor --flash-attn reduces it -- only a "
                     "smaller --batch-size or --seq-len does."
@@ -663,24 +740,37 @@ def _why_largest(name: str, config: ModelConfig, training: TrainingConfig) -> st
             "most of the first part, and none of the second."
         )
     if name == "optimizer states":
+        per_param = _optimizer_bytes_per_param(training)
+        master = _keeps_master_weights(training.lora_rank is not None, training.precision)
         if training.optimizer.strip().casefold() == "adamw":
+            billed = f"{per_param:g} bytes per trainable param"
+            if master:
+                billed += ", fp32 master weights included"
+            contrast = (
+                f" even though you train in {training.precision}"
+                if training.optimizer_dtype != training.precision
+                else ""
+            )
             return (
                 f"AdamW keeps momentum and variance in {training.optimizer_dtype} "
-                f"(8 bytes per trainable param) even though you train in "
-                f"{training.precision}."
+                f"({billed}){contrast}."
             )
-        return f"{training.optimizer} states over the trainable parameters."
+        extra = ", fp32 master weights included" if master else ""
+        return (
+            f"{training.optimizer} states over the trainable parameters, "
+            f"{per_param:g} bytes each{extra}."
+        )
     if name == "gradients":
-        return f"one .grad tensor per trainable parameter, in {training.precision}."
+        return (
+            "one .grad tensor per trainable parameter, in "
+            f"{_gradient_precision(training)}."
+        )
     if name == "the LoRA adapter":
         return (
             f"rank {training.lora_rank} across {len(training.lora_targets)} target "
             "modules per layer. A smaller --lora-r shrinks it linearly."
         )
-    return (
-        "the 500 MiB CUDA context floor plus 5% of weights and activations — it grows "
-        "with everything else, so it is never the thing to optimize first."
-    )
+    return _why_overhead(config, training, gpu)
 
 
 def _toggle_table(report: MemoryReport, glyphs: _Glyphs) -> Table:
@@ -710,6 +800,7 @@ def render_explanation(
     report: MemoryReport,
     config: ModelConfig,
     training: TrainingConfig,
+    gpu: GpuSpec | None = None,
     *,
     ascii_only: bool = False,
 ) -> Panel:
@@ -720,7 +811,7 @@ def render_explanation(
     dash = "-" if ascii_only else "—"
     headline = Text.assemble(
         (f"Largest component: {name} ({_mib(value)} MiB, {share}) {dash} ", "bold"),
-        _why_largest(name, config, training),
+        _why_largest(name, config, training, gpu),
     )
 
     body: list[RenderableType] = [headline, Text(""), _toggle_table(report, glyphs)]

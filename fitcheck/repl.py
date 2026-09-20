@@ -377,11 +377,6 @@ def _lookup_gpu(name: str | None, vram_mib: int | None = None) -> GpuSpec:
 
 
 def _gpu_flag(gpu: GpuSpec) -> str:
-    """The flag that pins a generated command to this card, not to the session's.
-
-    `--gpu` is a one-shot override here, so a command copied out of `optimize` has to
-    carry the card it was computed on or it silently means a different estimate.
-    """
     key = gpu_key_for(gpu)
     if key is not None:
         return f"--gpu {key}"
@@ -544,7 +539,9 @@ def _cmd_memory(session: _Session, args: list[str]) -> None:
         )
     if ctx.params["explain"]:
         session.console.print(
-            render_explanation(report, model, training, ascii_only=session.ascii_only)
+            render_explanation(
+                report, model, training, gpu, ascii_only=session.ascii_only
+            )
         )
 
 
@@ -656,7 +653,7 @@ def _cmd_explain(session: _Session, args: list[str]) -> None:
     result = _current_result(session)
     session.console.print(
         render_explanation(
-            result.report, _require_model(session), result.training,
+            result.report, _require_model(session), result.training, result.gpu,
             ascii_only=session.ascii_only,
         )
     )
@@ -1054,8 +1051,6 @@ def _compare_panel(
     ceiling_header: str,
     rows: Sequence[tuple[GpuSpec, MemoryReport | InferenceReport, str]],
 ) -> Panel:
-    """One table for both modes: each card gets its own peak, because C_overhead is
-    keyed by GPU -- a calibrated card and an uncalibrated one do not agree."""
     table = Table(box=SIMPLE_HEAD, pad_edge=False, expand=True)
     table.add_column("GPU")
     table.add_column("Usable (MiB)", justify="right")

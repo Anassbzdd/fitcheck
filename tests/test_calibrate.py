@@ -195,6 +195,15 @@ def test_load_runs_reads_json_and_json_lines(tmp_path: Path) -> None:
     assert len(load_runs([document, lines])) == 5
 
 
+def test_load_runs_reads_two_appended_indented_documents(tmp_path: Path) -> None:
+    appended = tmp_path / "runs.jsonl"
+    appended.write_text(
+        "".join(json.dumps(_payload(), indent=2) + "\n" for _ in range(2)),
+        encoding="utf-8",
+    )
+
+    assert len(load_runs([appended])) == 2
+
 def test_load_runs_reports_the_file_that_could_not_be_read(tmp_path: Path) -> None:
     broken = tmp_path / "broken.json"
     broken.write_text("{not json", encoding="utf-8")

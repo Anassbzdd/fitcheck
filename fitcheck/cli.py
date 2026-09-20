@@ -611,7 +611,7 @@ def estimate_command(
         if explain:
             console.print(
                 render_explanation(
-                    report, model_config, training, ascii_only=ascii_only
+                    report, model_config, training, gpu_spec, ascii_only=ascii_only
                 )
             )
 

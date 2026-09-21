@@ -757,7 +757,7 @@ fitcheck/
 ├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
 ├── overhead_db.py           # (GPU, kernel, quant) → OverheadProfile — fitted C_overhead constants
 ├── safety.py                # final holdout reserve envelope for safe/uncertain verdicts
-├── calibrate.py             # Phase 3: fits overhead_db.py from measure.py --json runs
+├── calibrate.py             # fits overhead_db.py from measure.py --json runs
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
 ├── conftest.py              # shared fixtures (Llama, Mistral, Qwen configs)

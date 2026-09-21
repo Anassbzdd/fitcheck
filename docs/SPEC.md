@@ -836,7 +836,7 @@ fitcheck/
 ├── safety.py                # final-holdout reserve envelope for safe/uncertain verdicts
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
-├── calibrate.py             # Phase 3 (9.3): fits overhead_db.py from measure.py --json
+├── calibrate.py             # fits overhead_db.py from measure.py --json
 ├── validation.py            # the shared input contract: which compute dtypes, storage
 │                            #   formats and combinations of the two are accepted at all
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
@@ -957,7 +957,7 @@ class MemoryReport:
 >   `bnb_4bit_use_double_quant`, a second level of quantization for the NF4 absmax scales: `none` has
 >   no scales to shrink, and `int8` has none either, so charging the ~75% saving (Component 1) on
 >   either would report a saving the run never gets. `scripts/measure.py` has always refused this
->   pair; before task 5 the library and `fitcheck infer` did not, which is the drift the shared
+>   pair; before the shared validation layer, the library and `fitcheck infer` did not, which is the drift the shared
 >   layer removes.
 >
 > The message is one string, returned by `double_quant_conflict` so the CLI and REPL can raise it as

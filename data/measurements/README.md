@@ -1,6 +1,6 @@
 # Measured runs
 
-Raw ground truth for the `C_overhead` calibration (task 9.3) and its out-of-sample
+Raw ground truth for the `C_overhead` calibration and its out-of-sample
 verdict validation. Not packaged — the wheel ships only `fitcheck/`.
 
 Five of fitcheck's six components are derivations you can check on paper. The sixth is
@@ -81,10 +81,10 @@ match against what is shipped, so the two cannot drift apart.
 
 ## What a row needs to be fittable
 
-Since task 9.3 the `C_overhead` fit is keyed **(GPU, kernel, quantization)** and regresses on
+Since the hump-aware calibration update, the `C_overhead` fit is keyed **(GPU, kernel, quantization)** and regresses on
 `min(A_logits, A_layer)`, so a row must carry `predicted.activation_logits_mib` and
 `predicted.activation_layer_mib`. `measure.py` emits both (and `model_config`, so the archive
-re-scores with no network). Rows older than 9.3 have neither.
+re-scores with no network). Rows collected before that update have neither.
 
 Mixing the two is now refused: a group whose rows do not all carry humps raises a
 calibration error naming the offenders. It used to fall back to the legacy proportional
@@ -105,7 +105,7 @@ group whose rows disagree on the flag is refused too, rather than averaged into 
 | `manifest.json` | — | 79 entries | — | The roles. Not a measurement file. |
 | `t4-phase3-2026-09-16.json` | Tesla T4 (sm_75) | 17 | 17 calibration | LoRA r=32 [q,k,v,o], fp16, checkpointing on, both quants. The rows that broke two confounds: the **first batch ladder in the project** (TinyLlama seq 1024 nf4, bs 1/2/4/8/12 flash and 1/2/4/8 eager) and seq-2048 anchors on Qwen2.5-1.5B and SmolLM2-1.7B, which separated sequence length from model size. Carries `activation_logits_mib` / `activation_layer_mib` — the two humps the `C_overhead` fit needs. `cuda_context_mib` is 140.875, identical to the 2026-09-15 session on a different torch, which is what makes the two safe to fit together. |
 | `t4-sweep-2026-09-15.json` | Tesla T4 (sm_75) | 40 | 32 calibration, 8 repeat | LoRA r=32 [q,k,v,o], fp16, checkpointing on, eager and SDPA, seq 512–4096, bs 1/2/4, **both `--quant none` and `nf4`**. One session, one stack; `cuda_context_mib` is 140.875 on every row. The 8 repeats (`-r2`/`-r3`) came back bit-identical, which is how we know the allocator noise floor on this card is zero. |
-| `t4-qlora-2026-09-01.json` | Tesla T4 (sm_75) | 10 | 10 excluded | QLoRA r=32, fp16, checkpointing on, eager and SDPA, seq 512–2048. Measured half transcribed from `fitcheck.ipynb`; predicted half recomputed. Excluded because the rows predate task 9.3: no activation humps and no embedded `model_config`, so they can neither be fitted with the hump form nor re-scored offline. See `_provenance` in the file. |
+| `t4-qlora-2026-09-01.json` | Tesla T4 (sm_75) | 10 | 10 excluded | QLoRA r=32, fp16, checkpointing on, eager and SDPA, seq 512–2048. Measured half transcribed from `fitcheck.ipynb`; predicted half recomputed. Excluded because the rows predate the hump-aware calibration update: no activation humps and no embedded `model_config`, so they can neither be fitted with the hump form nor re-scored offline. See `_provenance` in the file. |
 | `final-t4-20260921.json` | Tesla T4 (sm_75) | 12 | 12 holdout | Final successful accuracy rows: NF4, FP16, LoRA r=16 [q,k,v,o], AdamW FP32, checkpointing, seq 1024, both kernels. Scored only after the coefficients were frozen; never fitted. |
 | `validation/final-t4-20260921-verdicts.json` | Tesla T4 (sm_75) | 12 outcomes | separate evidence | Six point-estimate safe ceilings and six unsafe ceilings against a 14,000 MiB budget. Includes four actual OOMs and two completed runs over budget; never fitted. |
 
@@ -126,7 +126,7 @@ archive and remains historical; it is not used to describe the v0.3.1 beta gate.
 
 ## Adding a card
 
-A second card is the one gap task 9.3 left open, and what task 11.1 is about: every one of the
+A second card is the remaining gap: every one of the
 49 fitted rows is a Tesla T4, and `B` is card-specific by construction, so the whole point of
 keying on the GPU is lost while only one GPU has been fitted. Measure the same grid, drop the
 file here, declare the rows in `manifest.json`, re-fit, and open a PR — the `OVERHEAD_DB` entry

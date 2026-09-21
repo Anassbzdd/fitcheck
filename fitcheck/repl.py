@@ -459,6 +459,8 @@ def _verdict_text(report: MemoryReport | InferenceReport, glyphs: _Glyphs) -> Te
         return Text(
             f"{glyphs.oom} over by {_mib(-report.headroom_mib)} MiB", style="red"
         )
+    if isinstance(report, MemoryReport) and report.uncertain:
+        return Text(f"{glyphs.tight} uncertain", style="yellow")
     if headroom <= _TIGHT_HEADROOM_FRACTION:
         return Text(f"{glyphs.tight} fits, barely", style="yellow")
     return Text(f"{glyphs.fits} fits", style="green")
@@ -854,8 +856,17 @@ def _render_optimize(session: _Session, result: _Result) -> Panel:
 
     if report.max_batch_size == 0:
         body: RenderableType = _render_rescue(session, model, training, gpu)
+    elif report.recommended_batch_size == 0:
+        body = Text(
+            f"Estimated ceiling: {report.max_batch_size}. No conservative batch is "
+            "validated for this configuration; reduce the batch or measure it before "
+            "launching.",
+            style="yellow",
+        )
     else:
-        batch_size = _recommended_batch(report.max_batch_size)
+        batch_size = report.recommended_batch_size or _recommended_batch(
+            report.max_batch_size
+        )
         accum = _recommended_accum(batch_size, training)
         recommended = replace(training, batch_size=batch_size, grad_accum_steps=accum)
 
@@ -913,8 +924,14 @@ def _render_optimize(session: _Session, result: _Result) -> Panel:
             ),
         ]
 
+        basis = (
+            "conservative"
+            if report.recommendation_basis == "validated_reserve"
+            else "point-margin"
+        )
         note = Text(
-            f"The ceiling is {report.max_batch_size}, not the recommendation: it is the "
+            f"The estimated ceiling is {report.max_batch_size}, not the {basis} "
+            f"recommendation {batch_size}: it is the "
             "largest batch the estimate allows, so a long sample or allocator "
             "fragmentation has nowhere to go. Accumulation buys back the effective "
             "batch for free.",
@@ -1067,7 +1084,11 @@ def _compare_panel(
             _mib(report.total_mib),
             Text(
                 _mib(report.headroom_mib),
-                style="green" if report.fits else "red",
+                style=(
+                    "yellow"
+                    if isinstance(report, MemoryReport) and report.uncertain
+                    else ("green" if report.fits else "red")
+                ),
             ),
             _percent(report.total_mib, report.gpu_capacity_mib),
             ceiling,

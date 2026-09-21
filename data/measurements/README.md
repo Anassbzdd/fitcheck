@@ -1,7 +1,7 @@
 # Measured runs
 
-Raw ground truth for the `C_overhead` calibration (task 9.3). Not packaged — the wheel
-ships only `fitcheck/`.
+Raw ground truth for the `C_overhead` calibration (task 9.3) and its out-of-sample
+verdict validation. Not packaged — the wheel ships only `fitcheck/`.
 
 Five of fitcheck's six components are derivations you can check on paper. The sixth is
 not: the CUDA context and the caching allocator's fragmentation belong to a driver and
@@ -102,21 +102,27 @@ group whose rows disagree on the flag is refused too, rather than averaged into 
 
 | file | card | rows | declared | note |
 |:---|:---|---:|:---|:---|
-| `manifest.json` | — | 67 entries | — | The roles. Not a measurement file. |
+| `manifest.json` | — | 79 entries | — | The roles. Not a measurement file. |
 | `t4-phase3-2026-09-16.json` | Tesla T4 (sm_75) | 17 | 17 calibration | LoRA r=32 [q,k,v,o], fp16, checkpointing on, both quants. The rows that broke two confounds: the **first batch ladder in the project** (TinyLlama seq 1024 nf4, bs 1/2/4/8/12 flash and 1/2/4/8 eager) and seq-2048 anchors on Qwen2.5-1.5B and SmolLM2-1.7B, which separated sequence length from model size. Carries `activation_logits_mib` / `activation_layer_mib` — the two humps the `C_overhead` fit needs. `cuda_context_mib` is 140.875, identical to the 2026-09-15 session on a different torch, which is what makes the two safe to fit together. |
 | `t4-sweep-2026-09-15.json` | Tesla T4 (sm_75) | 40 | 32 calibration, 8 repeat | LoRA r=32 [q,k,v,o], fp16, checkpointing on, eager and SDPA, seq 512–4096, bs 1/2/4, **both `--quant none` and `nf4`**. One session, one stack; `cuda_context_mib` is 140.875 on every row. The 8 repeats (`-r2`/`-r3`) came back bit-identical, which is how we know the allocator noise floor on this card is zero. |
 | `t4-qlora-2026-09-01.json` | Tesla T4 (sm_75) | 10 | 10 excluded | QLoRA r=32, fp16, checkpointing on, eager and SDPA, seq 512–2048. Measured half transcribed from `fitcheck.ipynb`; predicted half recomputed. Excluded because the rows predate task 9.3: no activation humps and no embedded `model_config`, so they can neither be fitted with the hump form nor re-scored offline. See `_provenance` in the file. |
+| `final-t4-20260921.json` | Tesla T4 (sm_75) | 12 | 12 holdout | Final successful accuracy rows: NF4, FP16, LoRA r=16 [q,k,v,o], AdamW FP32, checkpointing, seq 1024, both kernels. Scored only after the coefficients were frozen; never fitted. |
+| `validation/final-t4-20260921-verdicts.json` | Tesla T4 (sm_75) | 12 outcomes | separate evidence | Six point-estimate safe ceilings and six unsafe ceilings against a 14,000 MiB budget. Includes four actual OOMs and two completed runs over budget; never fitted. |
 
 **49 rows are fitted.** That is the number behind every shipped coefficient.
 
-## Known gap: the hold-out set
+## Holdout and boundary evidence
 
-`docs/SPEC.md` quotes a 12-row out-of-sample hold-out. Those rows were produced by
-`fitcheck.ipynb` (cells VALIDATION 1–4) and written to `validation.zip` **inside** the
-Kaggle session; the archive was never committed. So no row here carries role `holdout`,
-and the hold-out figures in the docs are historical — they describe an earlier fit, on
-evidence this repository cannot reproduce. Re-running that notebook and committing the
-archive is what closes it.
+The final 12 successful accuracy rows now carry role `holdout` in `manifest.json`. The
+default calibration command reads only `calibration` rows; run
+`python -m fitcheck.calibrate data/measurements/manifest.json --role holdout --check`
+to score them after the coefficients are frozen. The separate boundary file preserves
+the 12 safe/unsafe outcomes because OOM rows do not have a comparable peak measurement
+for coefficient fitting. The final evidence is narrow: one T4, NF4/FP16, LoRA r=16,
+AdamW FP32, checkpointing, seq=1024.
+
+The older notebook holdout quoted in historical sections is a different, uncommitted
+archive and remains historical; it is not used to describe the v0.3.1 beta gate.
 
 ## Adding a card
 

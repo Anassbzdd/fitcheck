@@ -63,8 +63,9 @@ _TARGET_PRESETS: dict[str, tuple[str, ...]] = {
     "full": LORA_TARGETS_FULL,
 }
 _HELP_EPILOG = """\
-Exit codes: 0 the config fits, 1 it does not fit, 2 the estimate could not be run
-(bad flags, unknown model or GPU). A prediction that does not fit is a verdict, not
+Exit codes: 0 the config passes the safety policy, 1 it does not fit or is uncertain, and
+2 the estimate could not be run (bad flags, unknown model or GPU). A
+prediction that does not fit is a verdict, not
 an error, so `fitcheck ... && accelerate launch ...` guards a training run. The REPL
 always exits 0.
 
@@ -311,14 +312,29 @@ def report_to_dict(
         "activations_per_layer_mib": mib(parts["layer_mib"]),
         "verdict": {
             "fits": report.fits,
+            "safe_fits": report.safe_fits,
+            "status": report.verdict,
             "gpu_capacity_mib": mib(report.gpu_capacity_mib),
             "headroom_mib": mib(report.headroom_mib),
+            "safe_total_mib": (
+                mib(report.safe_total_mib)
+                if report.safe_total_mib is not None
+                else None
+            ),
+            "safe_headroom_mib": (
+                mib(report.safe_headroom_mib)
+                if report.safe_headroom_mib is not None
+                else None
+            ),
             "headroom_pct": mib(
                 100.0 * report.headroom_mib / report.gpu_capacity_mib
                 if report.gpu_capacity_mib
                 else 0.0
             ),
             "max_batch_size": report.max_batch_size,
+            "estimated_max_batch_size": report.max_batch_size,
+            "recommended_batch_size": report.recommended_batch_size,
+            "recommendation_basis": report.recommendation_basis,
             "effective_batch_size": report.effective_batch_size,
         },
         "savings_hints": list(report.savings_hints),
@@ -615,7 +631,7 @@ def estimate_command(
                 )
             )
 
-    ctx.exit(0 if report.fits else _EXIT_DOES_NOT_FIT)
+    ctx.exit(0 if report.safe_fits else _EXIT_DOES_NOT_FIT)
 
 
 @click.command(

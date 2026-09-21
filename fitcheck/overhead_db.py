@@ -67,7 +67,7 @@ OVERHEAD_DB: dict[tuple[str, str, str], OverheadProfile] = {
         runs=14,
         worst_over_pct=13.9,
         worst_under_pct=-5.8,
-        source="14 runs, 5 models, seq 512-4096, fitcheck 0.3.0, manifest 2026-09-17",
+        source="14 runs, 5 models, seq 512-4096, fitcheck 0.3.0, manifest 2026-09-21",
     ),
     ("t4", "eager", "none"): OverheadProfile(
         gpu="Tesla T4",
@@ -81,7 +81,7 @@ OVERHEAD_DB: dict[tuple[str, str, str], OverheadProfile] = {
         runs=10,
         worst_over_pct=7.3,
         worst_under_pct=-3.6,
-        source="10 runs, 5 models, seq 512-4096, fitcheck 0.3.0, manifest 2026-09-17",
+        source="10 runs, 5 models, seq 512-4096, fitcheck 0.3.0, manifest 2026-09-21",
     ),
     ("t4", "flash", "nf4"): OverheadProfile(
         gpu="Tesla T4",
@@ -95,7 +95,7 @@ OVERHEAD_DB: dict[tuple[str, str, str], OverheadProfile] = {
         runs=15,
         worst_over_pct=3.3,
         worst_under_pct=-6.4,
-        source="15 runs, 5 models, seq 512-4096, fitcheck 0.3.0, manifest 2026-09-17",
+        source="15 runs, 5 models, seq 512-4096, fitcheck 0.3.0, manifest 2026-09-21",
     ),
     ("t4", "flash", "none"): OverheadProfile(
         gpu="Tesla T4",
@@ -109,7 +109,7 @@ OVERHEAD_DB: dict[tuple[str, str, str], OverheadProfile] = {
         runs=10,
         worst_over_pct=2.8,
         worst_under_pct=-2.0,
-        source="10 runs, 5 models, seq 512-4096, fitcheck 0.3.0, manifest 2026-09-17",
+        source="10 runs, 5 models, seq 512-4096, fitcheck 0.3.0, manifest 2026-09-21",
     ),
 }
 

@@ -53,6 +53,10 @@ python -m fitcheck.calibrate data/measurements/manifest.json --emit-python   # t
 python -m fitcheck.calibrate data/measurements/manifest.json --check    # grade what now ships
 ```
 
+To grade an out-of-sample holdout, run `--role holdout --check` explicitly. Holdout rows are
+deliberately absent from the default fit and from `--emit-python`; they measure generalization
+after the coefficients are frozen.
+
 Paste the `--emit-python` output over the `OVERHEAD_DB` literal in `fitcheck/overhead_db.py`.
 **Do not hand-edit it**: `tests/test_manifest.py` re-runs that command and compares character for
 character, so a typed coefficient fails CI. It also fails if the archive and the manifest disagree
@@ -69,7 +73,7 @@ sweep.
 
 ## The bar for a merge
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 847
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 851
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the floor.
   The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`, which hit
   the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails without an

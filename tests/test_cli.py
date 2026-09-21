@@ -127,6 +127,12 @@ def test_json_output_carries_every_component_and_the_verdict(
     assert payload["training"]["quantization"] == "nf4"
     assert payload["trainable_params"] == 54_525_952
     assert payload["activations_per_layer_mib"] > 0
+    assert (
+        payload["verdict"]["estimated_max_batch_size"]
+        == payload["verdict"]["max_batch_size"]
+    )
+    assert payload["verdict"]["recommended_batch_size"] == 1
+    assert payload["verdict"]["recommendation_basis"] == "point_estimate_margin"
 
 
 def test_json_output_still_exits_one_when_it_does_not_fit(

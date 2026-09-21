@@ -2,7 +2,7 @@
 
 > **PRD + Technical Design + Definition of Done — One Document**
 >
-> Version: 0.3.0 · Author: Anas · Date: September 2026
+> Version: 0.3.1 beta · Author: Anas · Date: September 2026
 
 ---
 
@@ -276,7 +276,7 @@ compute dtype:
 
 > **Full fine-tuning used to split this differently from the harness. Fixed 2026-09-20.**
 > `scripts/measure.py` reached `--optimizer-dtype fp32` by casting every trainable parameter to
-> FP32 in place. Under LoRA that is a no-op — peft already holds the adapters in FP32, and all 57
+> FP32 in place. Under LoRA that is a no-op — peft already holds the adapters in FP32, and all 69
 > archived rows show `after_load == resident_before_step` to prove it — but under `--no-lora`
 > *every* parameter is trainable, so the cast rewrote the whole model: the FP32 master copy landed
 > in the harness's *weights* reading, and the row also measured FP32 gradients and **FP32
@@ -300,7 +300,7 @@ compute dtype:
 > runs there and the hooks now prove it. Wrapping it in `torch.amp.autocast` would instead run the
 > softmax, the layer norms and the loss in FP32 on an otherwise half-precision model — a third
 > dtype regime, matching neither $\gamma$ nor the FP32 pins in `memory/activations._PROFILES`, and
-> not the one the 57 archived rows were measured under. Pure half-precision compute is what
+> not the one the 69 scorable archived rows were measured under. Pure half-precision compute is what
 > fitcheck bills; autocast would have to be modelled before it could be measured.
 
 > **Rows are rejected when the dtypes do not match the label.** `measure.py` hooks the decoder
@@ -540,7 +540,8 @@ Covers: CUDA context, cuDNN/cuBLAS workspace, PyTorch caching allocator over-res
 
 **$B$ is measured, not fitted.** It is `torch.cuda.mem_get_info()` minus
 `torch.cuda.memory_reserved()` — device memory the process holds that the caching allocator does
-not. On all 67 archived rows it came back at exactly **140.875 MiB**. See the correction note
+not. On 69 archived rows it came back at exactly **140.875 MiB**; the twelve final holdout rows
+report **141.0 MiB**. See the correction note
 below for why fitting it was the single largest defect in the pre-9.3 model.
 
 **$S$ (the sequence slope) is measured to be zero** and no shipped profile carries one.
@@ -576,7 +577,7 @@ with checkpointing **off**, or inference — falls back to `DEFAULT_OVERHEAD_PRO
 > **default** profile (not to the card's own, whose proportional coefficient is empty) when they are
 > absent. Silently billing zero fragmentation there would badly under-predict.
 
-##### Shipped constants (Tesla T4, task 9.3; re-fitted from the manifest 2026-09-17)
+##### Shipped constants (Tesla T4, task 9.3; re-fitted from the manifest 2026-09-21)
 
 | kernel | quant | regime | $F$ | ± se | n | $R^2$ |
 |:---|:---|:---|---:|---:|---:|---:|
@@ -618,14 +619,32 @@ python -m fitcheck.calibrate data/measurements/manifest.json --check
 > **Historical, not current.** An earlier fit over a 66-row population reported mean **3.1%**, worst
 > over **+12.7%**, worst under **−7.4%**, and was graded on a 12-row hold-out (models never fitted,
 > predictions registered before measuring) at mean **2.9%**, **0 of 12 outside ±8%**. Neither
-> population can be rebuilt from this repository: the hold-out archive lives in a Kaggle
+> population can be rebuilt from this repository: that historical hold-out archive lived in a Kaggle
 > `validation.zip` that was never committed, and the 66-row set does not match the archive either.
-> Those figures stand as history. The current claim is the `--check` line above, and nothing else.
+> Those figures stand as history. The final v0.3.1 holdout is a separately archived release gate;
+> the current fitted claim is the `--check` line above, and the current holdout claim is the section
+> immediately below it.
 
 The one row that exceeds ±8% is an **over**-prediction, and that asymmetry is deliberate. An
 over-prediction costs a conservative "doesn't fit"; an under-prediction costs an OOM part way
 through a real training run. `tests/test_measured_rows.py` therefore budgets the two directions
 separately, and the tight budget is on the dangerous one.
+
+##### Final holdout and release safety gate (v0.3.1 beta)
+
+The manifest now imports twelve successful accuracy rows with role `holdout`. They are scored only
+after the coefficients are frozen and are never passed to the fit. On those rows, tensor error is
+**±1.4%**, process MAE is **5.4%**, and the worst under-prediction is **−15.3%**. A separate,
+non-fitting validation file preserves twelve boundary outcomes: **12/12** point-estimate safe/unsafe
+verdicts agree with the 14,000 MiB T4 safety budget. The product's conservative reserve may turn a
+point-safe boundary into `uncertain`; that is intentional and is a stricter release guard. This evidence is narrow: one Tesla T4
+(sm_75), NF4, FP16 compute, LoRA r=16, sequence length 1024, and gradient checkpointing.
+
+The boundary runs also show why process error needs a safety envelope: one Qwen2.5-7B configuration
+repeated with nearly identical tensor allocations but a roughly 1.4 GiB process-peak difference.
+The estimator therefore exposes both the point-estimate batch ceiling and a conservative recommended
+batch. Near capacity, or when a near-capacity configuration is outside a measured reserve profile,
+the verdict is `uncertain` rather than calling a potentially unsafe fit safe.
 
 ##### What this replaced, and why the old fit failed
 
@@ -814,6 +833,7 @@ fitcheck/
 │   └── inference.py         # Component 7 — serving (v0.2), not in the training equation
 ├── gpu_db.py                # GPU name → GpuSpec(name, vram_mib, usable_mib)
 ├── overhead_db.py           # (GPU, kernel, quant) → OverheadProfile — fitted C_overhead constants
+├── safety.py                # final-holdout reserve envelope for safe/uncertain verdicts
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
 ├── calibrate.py             # Phase 3 (9.3): fits overhead_db.py from measure.py --json
@@ -1223,15 +1243,21 @@ happens to hold — the framework-developer persona in §1 gates CI on it. Top-l
 | `trainable_params` | `int` | LoRA param count, or `num_params` under `--no-lora` |
 | `memory_mib` | `object` | `weights`, `lora`, `optimizer`, `gradients`, `activations`, `overhead`, `total` |
 | `activations_per_layer_mib` | `float` | $A_{layer}$ — the per-layer figure `--verbose` renders |
-| `verdict` | `object` | `fits`, `gpu_capacity_mib`, `headroom_mib`, `headroom_pct`, `max_batch_size`, `effective_batch_size` |
+| `verdict` | `object` | `fits`, `safe_fits`, `status`, `gpu_capacity_mib`, `headroom_mib`, `safe_total_mib`, `safe_headroom_mib`, `headroom_pct`, `max_batch_size`, `estimated_max_batch_size`, `recommended_batch_size`, `recommendation_basis`, `effective_batch_size` |
 | `savings_hints` | `list[str]` | The §3.5 hint lines, unformatted |
 | `warnings` | `list[str]` | Caveats that apply to this configuration — empty when every formula used is measured. A CI job can branch on it being non-empty to refuse an estimate that rests on a derived branch |
 
-Every `*_mib` value is a float rounded to 2 dp; `fits` and `max_batch_size` are the two fields a CI
-job should actually branch on. Keys may be **added** in a minor version, never renamed or removed.
+Every `*_mib` value is a float rounded to 2 dp. `max_batch_size` (also exposed as
+`estimated_max_batch_size`) is the point-estimate ceiling; `recommended_batch_size` is the
+conservative power-of-two batch after the validated reserve; `recommendation_basis` says whether
+that reserve was available or the recommendation is only a point-estimate margin. `safe_fits` and
+`status` are the fields a CI job should branch on. Keys may be **added** in a minor version, never renamed or
+removed.
 
-**Exit codes (Mode A):** `0` the config fits · `1` it does not fit · `2` the estimate could not be run
-(bad flags, unknown GPU, unreachable config, **or a model the memory model refuses** — §3.3).
+**Exit codes (Mode A):** `0` the config passes the safety policy (validated reserve where the exact
+holdout scope applies, generous point-estimate headroom otherwise) · `1` it does not fit or is
+`uncertain` · `2` the estimate could not be run (bad flags, unknown GPU, unreachable config,
+**or a model the memory model refuses** — §3.3).
 A CI job can therefore gate on the exit status alone and never parse the JSON. The REPL is the exception and **always exits 0** — inside a session a
 doesn't-fit is a verdict on screen, not the status of the shell you came from.
 
@@ -1588,7 +1614,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
 | **Hub unreachable** (timeout, DNS failure, proxy refusal) | `HubUnavailableError`, exit 2: one line naming the failure and pointing at a retry or `HF_HUB_OFFLINE=1`. Under `huggingface_hub` 1.x the transport error is an `httpx` exception, which is not an `OSError`, so it used to escape every handler and reach the terminal as a traceback with no message — §3.3. | ✅ handled |
 | **Offline mode** | If `config.json` is cached locally, works without internet. The Hub parameter count is unavailable, so `num_params` falls back to the `config.json` formula with a warning on stderr — and the architectures that only the cross-check catches (phi-2, Qwen2.5-VL) are estimated rather than refused. | ✅ MVP |
-| **`C_overhead` fragmentation model** | Rebuilt in task 9.3 (2026-09-16) and **shipped**: `C_overhead = B + F x min(A_logits, A_layer)`, keyed per **(GPU, kernel, quantization)**. `B` is the CUDA context, now **measured** (140.875 MiB on all 67 archived T4 rows) rather than fitted -- fitting it was the main defect, because the constant column is collinear with the size column and leave-one-out moved `F` by up to 172%. The sequence slope `S` is **measured to be zero** (t = +0.4, -0.1, +0.5, -0.2). Over-reservation tracks the hump that *loses* the checkpointed `max()`, because segments cached for one allocation pattern cannot serve the other; `R^2` on `none/eager` went **-0.04 -> 0.80**. Four T4 profiles ship; everything else (other cards, int8, checkpointing off, inference) keeps the 500 MiB + 5% default. Re-fitted from `data/measurements/manifest.json` on 2026-09-17, which declares the role of every archived row so repeats and pre-9.3 rows cannot enter the fit: 49 rows fitted, scored over 57, mean 2.4%, worst under-prediction -6.4%, none past 8% in the OOM direction. (SS3.8, Component 6). Task 9.3, done. | [x] Shipped |
+| **`C_overhead` fragmentation model** | Rebuilt in task 9.3 (2026-09-16) and **shipped**: `C_overhead = B + F x min(A_logits, A_layer)`, keyed per **(GPU, kernel, quantization)**. `B` is the CUDA context, now **measured** (140.875 MiB on 69 archived T4 rows; 141.0 MiB on the twelve final holdout rows) rather than fitted -- fitting it was the main defect, because the constant column is collinear with the size column and leave-one-out moved `F` by up to 172%. The sequence slope `S` is **measured to be zero** (t = +0.4, -0.1, +0.5, -0.2). Over-reservation tracks the hump that *loses* the checkpointed `max()`, because segments cached for one allocation pattern cannot serve the other; `R^2` on `none/eager` went **-0.04 -> 0.80**. Four T4 profiles ship; everything else (other cards, int8, checkpointing off, inference) keeps the 500 MiB + 5% default. Re-fitted from `data/measurements/manifest.json` on 2026-09-21, which declares the role of every archived row so repeats, holdout, and pre-9.3 rows cannot enter the fit: 49 rows fitted, scored over 57 calibration/repeat rows, plus 12 final holdout rows kept separate; the holdout reports tensor ±1.4%, process MAE 5.4%, and worst under-prediction -15.3%. (SS3.8, Component 6). Task 9.3, done. | [x] Shipped |
 | **T4 / ECC entries in `gpu_db`** | Fixed: T4 is now `14_912 / 14_000`, the measured total. `h200` and `b200` take the `usable_mib` that is safe under the pessimistic reading of their vendor GB. Only the T4 is measured; the rest of the table is estimates. | ✅ fixed, rest unmeasured |
 | **No-checkpointing branch** | **Measured 2026-09-12 (task 9.2)** over 11 rows and 9 models: worst-case error 98.3% → 5.9%. The bracket is now $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$ and the score matrix is charged at the retained rate ($2.9\gamma$), not the transient one ($9\gamma$) — see Component 5. The 8.3 warning is **removed**: keeping a caveat that says the branch is unmeasured would now be false. | ✅ measured |
 | **`--quant int8` activations** | Billed at **$\gamma = 4$** whatever `--precision` says: `prepare_model_for_kbit_training` upcasts the layer norms to FP32 and LLM.int8() takes that FP32 input at every linear — the run prints `MatMul8bitLt: inputs will be cast from torch.float32` hundreds of times. On the one measured int8 row (TinyLlama, bs=2, seq=1024) that takes $A_{act}$ from **1,620 predicted against 3,729 measured ($-56.6\%$)** to **3,382 ($-9.3\%$)**, and the tensors tier from $-38.9\%$ to $-5.7\%$. The residual is LLM.int8()'s own FP16 outlier buffers, which are not modelled, so `estimate_warnings` attaches a caveat calling the figure a lower bound. **One model, one run** — a second int8 row on a different model is owed before the mechanism can be called general. | ⚠️ Partly measured, warned |
@@ -1809,8 +1835,9 @@ under-states the process total and makes `fitcheck` look better than it is, so t
 
 #### Measured status
 
-**67 rows are archived, all on one Tesla T4 (sm_75), FP16 compute.** `data/measurements/manifest.json`
-declares the role of each: **49 fitted, 57 scored, 10 legacy rows excluded.** The current accuracy
+**79 rows are archived, all on one Tesla T4 (sm_75), FP16 compute.** `data/measurements/manifest.json`
+declares the role of each: **49 fitted, 57 calibration/repeat rows scored, 12 final holdout rows,
+10 legacy rows excluded.** The current accuracy
 figures come from one command and are not maintained by hand:
 
 ```bash
@@ -1820,10 +1847,11 @@ python -m fitcheck.calibrate data/measurements/manifest.json --check --role cali
 worst process-tier error **13.9%**, mean **2.4%**; re-scored with the current code the tensors tier
 is worst **4.6%**, mean **0.7%**. `tests/test_docs_claims.py` fails if any document drifts from that.
 
-**Two stacks, three sessions.** `t4-2026-09-01` (10 rows) and `t4-2026-09-16` (17 rows) ran torch
+**Two stacks, four sessions.** `t4-2026-09-01` (10 rows) and `t4-2026-09-16` (17 rows) ran torch
 2.10.0+cu128 / transformers 5.0.0 / peft 0.19.1; `t4-2026-09-15` (40 rows) ran torch 2.14.0+cu130 /
-transformers 5.17.0 / peft 0.20.0. Python 3.12 throughout. The measured CUDA context is identical
-across them, which is what makes them safe to fit together.
+transformers 5.17.0 / peft 0.20.0; the final `t4-2026-09-21` session adds the twelve holdout rows
+on the first stack. Python 3.12 throughout. The measured CUDA context is close across sessions,
+but the holdout remains out of fit by design.
 
 **Everything below in this subsection is historical**, recording the 33-run population that v0.1.1
 through v0.2 were validated on (2026-09-01 to 2026-09-12). Only its first ten rows are in the

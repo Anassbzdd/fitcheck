@@ -23,6 +23,10 @@ from fitcheck.memory.optimizer import estimate_optimizer_memory
 from fitcheck.memory.overhead import estimate_overhead
 from fitcheck.memory.weights import QuantizationConfig, estimate_weight_memory
 from fitcheck.overhead_db import get_overhead_profile
+from fitcheck.safety import (
+    conservative_reserve_mib,
+    final_validation_scope_matches,
+)
 from fitcheck.utils import bytes_to_mib, precision_to_bytes
 from fitcheck.validation import (
     validate_double_quant,
@@ -85,6 +89,13 @@ class MemoryReport:
     effective_batch_size: int
     savings_hints: list[str]
     warnings: tuple[str, ...] = ()
+    safe_total_mib: float | None = None
+    safe_headroom_mib: float | None = None
+    safe_fits: bool | None = None
+    uncertain: bool = False
+    verdict: str = "unknown"
+    recommended_batch_size: int | None = None
+    recommendation_basis: str = "point_estimate_margin"
 
 
 @dataclass(frozen=True)
@@ -358,6 +369,16 @@ def _max_batch_size(
     )
 
 
+def _recommended_batch_size(max_batch_size: int) -> int:
+    if max_batch_size <= 0:
+        return 0
+    target = max(1, int(max_batch_size * 0.75))
+    batch_size = 1
+    while batch_size * 2 <= target:
+        batch_size *= 2
+    return batch_size
+
+
 def _format_delta(delta_mib: float) -> str:
     rounded_delta = round(delta_mib)
     if rounded_delta < 0:
@@ -432,6 +453,50 @@ def estimate(
     components = _compute_components(model_config, training_config, gpu_key)
     total_mib = components.total_mib
     capacity_mib = float(gpu_spec.usable_mib)
+    reserve_mib = None
+    if final_validation_scope_matches(
+        precision=training_config.precision,
+        quantization=training_config.quantization,
+        double_quant=training_config.double_quant,
+        optimizer=training_config.optimizer,
+        optimizer_dtype=training_config.optimizer_dtype,
+        lora_rank=training_config.lora_rank,
+        lora_targets=training_config.lora_targets,
+        grad_checkpoint=training_config.grad_checkpoint,
+        seq_len=training_config.seq_len,
+    ):
+        reserve_mib = conservative_reserve_mib(
+            gpu_key, training_config.flash_attn, training_config.quantization
+        )
+    safe_total_mib = total_mib + reserve_mib if reserve_mib is not None else None
+    estimated_fits = total_mib <= capacity_mib
+    safe_headroom_mib = (
+        capacity_mib - safe_total_mib if safe_total_mib is not None else None
+    )
+    if not estimated_fits:
+        verdict = "does_not_fit"
+        uncertain = False
+        safe_fits = False
+    elif safe_total_mib is not None:
+        safe_fits = safe_total_mib <= capacity_mib
+        uncertain = not safe_fits
+        verdict = "safe" if safe_fits else "uncertain"
+    else:
+        # A generous point-estimate headroom is useful, but a near-capacity
+        # estimate without an exact holdout envelope must not be called safe.
+        uncertain = (capacity_mib - total_mib) <= 0.20 * capacity_mib
+        safe_fits = not uncertain
+        verdict = "uncertain" if uncertain else "safe"
+
+    estimated_max_batch_size = _max_batch_size(
+        model_config, training_config, capacity_mib, gpu_key
+    )
+    conservative_capacity = (
+        capacity_mib - reserve_mib if reserve_mib is not None else capacity_mib
+    )
+    conservative_max_batch_size = _max_batch_size(
+        model_config, training_config, conservative_capacity, gpu_key
+    )
 
     return MemoryReport(
         weight_mib=components.weight_mib,
@@ -443,15 +508,24 @@ def estimate(
         total_mib=total_mib,
         gpu_capacity_mib=capacity_mib,
         headroom_mib=capacity_mib - total_mib,
-        fits=total_mib <= capacity_mib,
-        max_batch_size=_max_batch_size(
-            model_config, training_config, capacity_mib, gpu_key
-        ),
+        fits=estimated_fits,
+        max_batch_size=estimated_max_batch_size,
         effective_batch_size=training_config.batch_size * grad_accum_steps,
         savings_hints=_savings_hints(
             model_config, training_config, total_mib, gpu_key
         ),
         warnings=estimate_warnings(training_config),
+        safe_total_mib=safe_total_mib,
+        safe_headroom_mib=safe_headroom_mib,
+        safe_fits=safe_fits,
+        uncertain=uncertain,
+        verdict=verdict,
+        recommended_batch_size=_recommended_batch_size(
+            conservative_max_batch_size
+        ),
+        recommendation_basis=(
+            "validated_reserve" if reserve_mib is not None else "point_estimate_margin"
+        ),
     )
 
 

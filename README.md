@@ -22,23 +22,24 @@ weights, optimizer states, gradients, activations, and CUDA runtime overhead. Ev
 arithmetic over `hidden_size`, `num_hidden_layers`, `intermediate_size`, `num_key_value_heads`
 and your training flags, so no GPU, no CUDA install, and no model download is involved — the
 tool runs the same on a laptop as on the machine you're sizing for. You get the total, the
-per-component breakdown, a fits/doesn't-fit verdict against a specific card, and the largest
-micro-batch that still fits.
+per-component breakdown, a safe/uncertain/doesn't-fit verdict against a specific card, the
+point-estimate batch ceiling, and a conservative recommended batch.
 
 `fitcheck infer` does the same for the other half of the job: serving a trained model. There
 the cost is the weights that stay in memory plus the KV cache, from the same config and the
 same math. And `fitcheck advise` tries many settings instead of pricing one — what each knob
 costs, how far each one can go before it stops fitting, and the configs right at that edge.
 
-> **Accuracy status (v0.3.0, manifest `2026-09-17`): measured, and the measurements moved the
-> formulas.** Real training runs on a Tesla T4 are archived in
-> [`data/measurements/`](https://github.com/Anassbzdd/fitcheck/tree/main/data/measurements); 57 of
-> them can be re-scored offline and 49 of those are what the CUDA-overhead constants are fitted to.
-> Re-scored with the current code, the five physical components land within **4.6%** of measured
-> peak (mean 0.7%), and the full total — which includes CUDA overhead and is what the
-> fits/doesn't-fit verdict uses — within **13.9%** (mean 2.4%). Those numbers are the output of one
-> command, not a hand-kept tally: see [Validation](#validation) for the command, and
-> [what is still unmeasured](#what-is-not-measured) for the gaps.
+> **Beta accuracy status (v0.3.1, manifest `2026-09-21`): measured, with an explicit safety
+> verdict.** Real training runs on one Tesla T4 are archived in
+> [`data/measurements/`](https://github.com/Anassbzdd/fitcheck/tree/main/data/measurements). The
+> archive has **79 runs**: **49 fitted**, **57 calibration/repeat rows scored**, and **12 final
+> holdout rows** that never enter the fit. On that final holdout, tensor error is **±1.4%**,
+> process MAE is **5.4%**, and the worst under-prediction is **−15.3%**. The point-estimate
+> boundary verdicts were **12/12 correct** against the 14,000 MiB T4 safety budget. This is one Tesla T4 (sm_75),
+> NF4, FP16 compute, LoRA r=16 [q,k,v,o], AdamW FP32, gradient checkpointing, seq=1024 — not
+> general GPU or dtype coverage. The point estimate remains visible, but near-capacity results
+> are marked `UNCERTAIN` unless the measured reserve also fits.
 
 ---
 
@@ -164,8 +165,9 @@ fitcheck NousResearch/Meta-Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq
 
 ![fitcheck Mode A output: component breakdown for Llama-3.1-8B QLoRA on an RTX 4090](https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/mode-a-output.png)
 
-Exit code is `0` if the config fits, `1` if it doesn't, `2` if the estimate couldn't be run — so
-`fitcheck ... && accelerate launch ...` works as a guard in front of a training job. An
+Exit code is `0` if the config passes the safety policy, `1` if it does not fit or is uncertain,
+and `2` if the estimate couldn't be run — so `fitcheck ... && accelerate launch ...`
+works as a guard in front of a training job. An
 architecture `fitcheck` cannot model is a `2`, not a silent `0`, so the guard holds there too.
 
 > The screenshot was taken with `meta-llama/Llama-3.1-8B`, the official repo. That one is
@@ -388,9 +390,9 @@ fitcheck infer meta-llama/Llama-3.1-8B --gpu t4
 fitcheck infer meta-llama/Llama-3.1-8B --quant nf4 --json
 ```
 
-Exit codes are the training command's: `0` fits, `1` doesn't fit, `2` couldn't run. `--gpu`,
-`--vram-mib` and `--no-color` behave the same too. `fitcheck infer --help` has the full flag
-list.
+Exit codes are the training command's: `0` passes the safety policy, `1` means doesn't fit or is
+uncertain, and `2` couldn't run. `--gpu`, `--vram-mib` and `--no-color` behave
+the same too. `fitcheck infer --help` has the full flag list.
 
 ### Advisor
 
@@ -462,7 +464,7 @@ fixed share of VRAM.
 
 | | needs a GPU? | component breakdown? | LoRA / QLoRA training? | empirically validated? |
 |:---|:---|:---|:---|:---|
-| **fitcheck** | no | yes — all 6 | yes, GQA-aware | **yes — 67 archived runs** (see below) |
+| **fitcheck** | no | yes — all 6 | yes, GQA-aware | **yes — 79 archived runs** (see below) |
 | [`accelerate estimate-memory`](https://huggingface.co/docs/accelerate/main/en/usage_guides/model_size_estimator) | no | weights + a coarse training multiplier | no | not published |
 | [HF Model Memory Usage Space](https://huggingface.co/spaces/hf-accelerate/model-memory-usage) | no | same, in a web UI | no | not published |
 | [vram.asmirnov.xyz](https://vram.asmirnov.xyz/) | no | yes, but outdated and has many issues | partial | not published |
@@ -499,7 +501,7 @@ regenerated from the archive with no GPU at all. That is what the last two cells
 do. A row that is not in the archive is the only kind that needs the card again.
 
 **Library versions are part of the result.** Attention internals change between majors, so mixing rows
-from different stacks in one table without saying so would be misleading. The archive is three
+from different stacks in one table without saying so would be misleading. The archive is four
 sessions on two stacks, and `manifest.json` records which row came from which:
 
 | session | rows | torch | transformers | peft |
@@ -507,6 +509,7 @@ sessions on two stacks, and `manifest.json` records which row came from which:
 | `t4-2026-09-01` | 10 | torch 2.10.0+cu128 | transformers 5.0.0 | peft 0.19.1 |
 | `t4-2026-09-15` | 40 | torch 2.14.0+cu130 | transformers 5.17.0 | peft 0.20.0 |
 | `t4-2026-09-16` | 17 | torch 2.10.0+cu128 | transformers 5.0.0 | peft 0.19.1 |
+| `t4-2026-09-21` | 12 | torch 2.10.0+cu128 | transformers 5.0.0 | peft 0.19.1 |
 
 Python 3.12 throughout. The two stacks are safe to fit together for one specific reason and not on
 faith: `measured.cuda_context_mib` came back identical across them, so the one constant that is read
@@ -556,11 +559,13 @@ with whatever each row's `predicted` half said on the day it was written:
 | **tensors** — the five physical formulas | **4.6%** | 0.7% |
 | **process** — the full total, what the verdict uses | **13.9%** | 2.4% |
 
-**Which rows those are.** The manifest declares a role for all 67 archived rows: **49 fitted, 57
-scored**, and the remaining **10 legacy rows** excluded. The ten are the 2026-09-01 session, which
+**Which rows those are.** The manifest declares a role for all 79 archived rows: **49 fitted, 57
+calibration/repeat rows scored**, **12 final holdout rows**, and the remaining **10 legacy rows**
+excluded. The ten are the 2026-09-01 session, which
 predates `measure.py --json` and carries no embedded `model_config` — so they cannot be re-predicted
 without the Hub, which is precisely why they are excluded rather than quietly averaged in. The eight
-repeats are scored but never fitted.
+repeats are scored but never fitted. The final holdout rows are scored with
+`--role holdout --check` and never enter the fit.
 
 **How to read the gap between the two tiers.** The physical formulas are right to a few percent, and
 the process tier differs from them only by `C_overhead` — so essentially all of the extra error is
@@ -571,6 +576,24 @@ worst row, which is the safe direction for an OOM tool.
 `tests/test_docs_claims.py` re-runs the command above and fails if any number on this page has
 drifted from the archive, the shipped profiles, or the test suite. That is the one command that
 verifies the rest.
+
+### Final holdout — beta release gate
+
+The final validation archive adds twelve successful accuracy rows and twelve separate boundary
+verdicts. It is deliberately not part of the fitted coefficients:
+
+| final holdout result | value |
+|:---|:---|
+| tensor error | **±1.4%** |
+| process MAE | **5.4%** |
+| worst under-prediction | **−15.3%** |
+| boundary verdicts | **12/12 correct** point-estimate safe/unsafe outcomes against the 14,000 MiB T4 safety budget |
+
+The tensor formulas are therefore strong, while allocator overhead is still noisy. The same
+Qwen2.5-7B configuration produced a roughly 1.4 GiB process-peak difference on a repeat with
+nearly identical live tensors. FitCheck keeps the point estimate visible but marks a near-capacity
+result `UNCERTAIN` unless the measured reserve also fits. The final rows cover one Tesla T4
+(sm_75), NF4, FP16 compute, LoRA r=16 [q,k,v,o], AdamW FP32, gradient checkpointing and seq=1024.
 
 ### Historical results — the 33-run population (2026-09-01 to 2026-09-12)
 
@@ -612,7 +635,7 @@ sequence past 2048. These use LoRA/full FT on an fp16 base, not QLoRA:
 > FP32 activations under an `fp16` label. `scripts/measure.py` now keeps the compute weights at
 > `--precision` and holds the FP32 master copy in the optimizer, and refuses any row whose observed
 > dtypes contradict its flags. The LoRA and QLoRA rows are unaffected: peft already held the
-> adapters in FP32, so the cast never fired on them, and all 57 archived rows show
+> adapters in FP32, so the cast never fired on them, and all 69 scorable rows show
 > `after_load == resident_before_step` to prove it. Re-measuring full fine-tuning needs a GPU.
 
 #### Results — training, gradient checkpointing OFF (historical, 2026-09-12)
@@ -677,7 +700,7 @@ quantization)**; the output is data in `fitcheck/overhead_db.py`, shaped like `g
 **four T4 profiles** ship — both kernels × `none` and `nf4` — and every other card, `int8`,
 checkpointing-off and inference still fall back to the original 500 MiB + 5%, which errs high, the
 safe direction for an OOM tool. The base context inside those four is **read, not fitted**: it is
-`140.875 MiB on 57 of them and 141.0 MiB on the other ten`, across every archived row, and never
+`140.875 MiB on 69 of them and 141.0 MiB on the other ten`, across every archived row, and never
 once near 500. Fitting a constant the data already contains was the old model's worst defect.
 
 `python -m fitcheck.calibrate data/measurements/manifest.json --emit-python` regenerates that
@@ -751,7 +774,7 @@ Be as clear about the gaps as about the results. This list is much shorter than 
 checkpointing off, `--quant none`, `--double-quant`, full fine-tuning, seq 4096 and the serving path
 all have measured rows now — and what is left mostly needs hardware nobody here has.
 
-- **Any GPU other than this T4.** All 67 archived rows are one Tesla T4 (sm_75). That means **no
+- **Any GPU other than this T4.** All 79 archived rows are one Tesla T4 (sm_75). That means **no
   BF16 and no real FlashAttention-2** — sm_75 supports neither — so the flash code path is validated
   only through SDPA's memory-efficient backend as a stand-in. This is now the single largest gap in
   the project, and it is also why only one card ships fitted `C_overhead` constants.
@@ -774,10 +797,10 @@ all have measured rows now — and what is left mostly needs hardware nobody her
   500 MiB + 5% default: any other card, `--quant int8`, gradient checkpointing **off**, and the
   whole of `fitcheck infer`. The hump form the four profiles use has no proportional term, so it
   cannot be extrapolated to those paths — it is refused rather than stretched.
-- **The out-of-sample hold-out.** The 12-row hold-out that `docs/SPEC.md` quotes was produced in a
-  notebook session and written to an archive that was never committed. No row in the manifest
-  carries the `holdout` role today, so the hold-out figures in the docs are historical and are
-  labelled as such. `manifest.json` records this under `known_gaps`.
+- **The out-of-sample holdout scope.** The twelve final holdout rows are now committed and scored
+  separately, but they cover only one Tesla T4 (sm_75), NF4, FP16 compute, LoRA r=16, sequence
+  length 1024, and gradient checkpointing. They validate this narrow release envelope; they do not
+  generalize the fitted profiles to other GPUs, dtypes, quantizers, or serving workloads.
 - **MoE models**, which are refused rather than estimated — see [Model support](#model-support).
 - **Every GPU entry except the T4.** The T4 used to claim 15,360 MiB usable of 16,384 when the card
   actually reports 14,912 MiB total — vendor GB treated as GiB, unsafe direction — and is now
@@ -869,7 +892,7 @@ isolation.
 
 The bar for a merge:
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 847
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 851
   offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the
   floor. The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`,
   which hit the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails

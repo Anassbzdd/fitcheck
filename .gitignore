@@ -53,5 +53,10 @@ infer_problemes.md
 runs/
 runs.zip
 
+# Local measurement notebooks — canonical JSON artifacts are tracked instead.
+fitcheck.ipynb
+fitcheck_infer.ipynb
+fitcheck_final_t4.ipynb
+
 .claude/
 fix.md

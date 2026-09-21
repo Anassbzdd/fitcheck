@@ -120,8 +120,9 @@ Before building, it's critical to understand the competitive landscape and **cle
 4. **Architecture-specific** — reads `config.json` directly, uses actual `intermediate_size` instead of assuming `4h`, takes the parameter count from the Hub and grades its own formula against it, and **refuses** the architectures its formulas do not cover (MoE, nested multimodal, and anything whose parameter count disagrees by more than 2%) rather than printing a confident wrong number
 5. **Actionable advice** — "you can increase batch_size to X" or "switch to 8-bit optimizer to save Y MiB"
 6. **CLI-first** — designed for the terminal workflow where ML engineers actually work, and
-   `--json` + an exit code (0 fits / 1 doesn't / 2 error) so CI can gate a training job on it
-7. **Calibrated overhead** — the one term that cannot be derived (CUDA context + allocator fragmentation) is *fitted* per GPU and attention kernel from archived real runs, not guessed at globally; `fitcheck/calibrate.py` does the fit, `overhead_db.py` ships the result
+   `--json` + an exit code (0 passes the safety policy / 1 doesn't fit or uncertain / 2 error)
+   so CI can gate a training job on it
+7. **Calibrated overhead** — the one term that cannot be derived (CUDA context + allocator fragmentation) is *fitted* per GPU and attention kernel from archived real runs, not guessed at globally; `fitcheck/calibrate.py` does the fit, `overhead_db.py` ships the result, and the final holdout supplies a narrow safe/uncertain reserve envelope
 
 > [!IMPORTANT]
 > Your README must include this comparison table. When someone asks "how is this different from X?", they should get a clear answer immediately. This is what separates a tool that gets adoption from one that gets ignored.
@@ -712,21 +713,24 @@ humps grow with sequence length and *swap which one wins*, which looks like a se
 you model the swap. Fitted against the corrected form, the slope comes out at $t$ = +0.4, −0.1,
 +0.5, −0.2 — indistinguishable from zero in every group.
 
-> **The honest status (manifest `2026-09-17`).** Four T4 profiles ship, fitted on the **49** rows
-> the manifest declares as `calibration` and scored over **57** (those plus the eight repeats):
-> mean 2.4%, worst under-prediction −6.4%, worst over-prediction +13.9%. Quote both directions —
-> the over-prediction is the larger number, and it is the safe one.
+> **The honest status (manifest `2026-09-21`, v0.3.1 beta).** Four T4 profiles ship, fitted on
+> the **49** rows the manifest declares as `calibration` and scored over **57** (those plus the
+> eight repeats): mean 2.4%, worst under-prediction −6.4%, worst over-prediction +13.9%. A final
+> **12-row holdout** is imported separately and never fitted: tensor error **±1.4%**, process MAE
+> **5.4%**, worst under-prediction **−15.3%**. Twelve separate boundary outcomes validate the
+> point-estimate safe/unsafe verdict **12/12** against a 14,000 MiB T4 budget. Quote both directions — over-prediction
+> is the safe one, while under-prediction is what the reserve envelope protects against.
 >
 > The earlier "66 rows fitted, 12 held out (−6.2% worst, mean 2.9%)" figures are **historical**.
 > That hold-out was produced inside a notebook session and written to an archive that was never
-> committed, so no row carries the `holdout` role today and the result cannot be rebuilt from this
-> repository. `data/measurements/manifest.json` records it under `known_gaps`.
+> committed; it is distinct from the final holdout now recorded in the manifest. The final evidence
+> remains narrow: one T4, NF4/FP16, LoRA r=16 [q,k,v,o], AdamW FP32, checkpointing, seq=1024.
 >
 > What is still missing is **a second card** — every row is a Tesla T4, and $B$ is card-specific by
-> construction — plus `--quant int8`, which has no measured row at all, and the un-checkpointed
-> branch, where the `max()` this whole mechanism rests on does not exist. All three fall back to the
-> default rather than guessing. That is measurement work, not code, which is the general shape of
-> this component's remaining error.
+> construction — plus broader `--quant int8` coverage beyond one model. The no-checkpointing branch
+> is measured, but its `max()` mechanism does not exist, so it deliberately falls back to the
+> default profile. These paths fall back rather than guessing. That is measurement work, not code,
+> which is the general shape of this component's remaining error.
 
 ## Code Architecture
 
@@ -752,6 +756,7 @@ fitcheck/
 ├── display.py               # rich tables, panels, verdicts, explain text
 ├── advisor.py               # Config advisor (v0.3): sweep, frontier, per-axis ceilings
 ├── overhead_db.py           # (GPU, kernel, quant) → OverheadProfile — fitted C_overhead constants
+├── safety.py                # final holdout reserve envelope for safe/uncertain verdicts
 ├── calibrate.py             # Phase 3: fits overhead_db.py from measure.py --json runs
 └── utils.py                 # bytes↔MiB, precision→bytes lookup
 tests/
@@ -1062,7 +1067,7 @@ A third session of thirteen runs then opened the branch nobody had measured, and
 
 ### Still unmeasured
 
-- **Any GPU other than this T4.** All 67 archived rows are one card. No Ampere or newer, so no BF16 and no
+- **Any GPU other than this T4.** All 79 archived rows are one card. No Ampere or newer, so no BF16 and no
   real Flash Attention 2 — the flash path is validated only through SDPA's memory-efficient backend
   as a stand-in. This is now the largest remaining gap by a distance.
 - **`--quant int8` beyond one model**, and **FP32 compute** at all. int8 activations are billed at
@@ -1100,7 +1105,7 @@ ready to paste into the README matrix. The three traps it exists to avoid:
 | Phase | Target error | Status |
 |:---|:---|:---|
 | MVP (v0.1) | ±10%, unvalidated | superseded |
-| Validated (v0.2) | ±10% against ≥3 real measurements | **met**; on the 57 scorable archived rows the tensors tier is 4.6% worst / 0.7% mean and the process tier 13.9% / 2.4% (manifest `2026-09-17`) |
+| Validated (v0.2) | ±10% against ≥3 real measurements | **met**; on the 57 calibration/repeat rows the tensors tier is 4.6% worst / 0.7% mean and the process tier 13.9% / 2.4% (manifest `2026-09-21`), with a separate 12-row beta holdout |
 | Calibrated (v1.0) | ±5% | the fragmentation model now keys off `(GPU, kernel, quantization)` and four T4 profiles ship; what is left is **a second GPU** |
 
 ---

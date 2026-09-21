@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "manifest_id": "2026-09-17",
+ "manifest_id": "2026-09-21",
  "what": "The declared role of every archived measurement row. fitcheck.calibrate reads this file, not a glob, so a repeat, a hold-out or a legacy row cannot wander into a fit. Roles: 'calibration' (fitted), 'holdout' (scored, never fitted), 'repeat' (a re-run of a config already declared), 'excluded' (unusable, with a reason).",
  "fitted_command": "python -m fitcheck.calibrate data/measurements/manifest.json --emit-python",
  "roles": {
@@ -45,10 +45,24 @@
    "bitsandbytes": "0.50.2",
    "cuda_context_mib": 140.875,
    "emitted_by": "scripts/measure.py --json"
+  },
+  "t4-2026-09-21": {
+   "measured_on": "2026-09-21",
+   "gpu_name": "Tesla T4",
+   "capability": "sm_75",
+   "total_mib": 14912,
+   "torch": "2.10.0+cu128",
+   "transformers": "5.0.0",
+   "peft": "0.19.1",
+   "bitsandbytes": "0.50.2",
+   "cuda_context_mib": 140.875,
+   "emitted_by": "incoming/final-t4-20260921-133520.zip; imported successful accuracy rows"
   }
  },
  "known_gaps": [
-  "The 12-row out-of-sample hold-out quoted in docs/SPEC.md was produced by fitcheck.ipynb (VALIDATION 1-4) and written to validation.zip inside the Kaggle session. That archive was never committed, so no row here carries role 'holdout'. Until it is re-run and archived, the hold-out figures in the docs are historical and are labelled as such."
+  "The 12 final out-of-sample accuracy rows from run final-t4-20260921-133520 are declared holdout and scored with --role holdout --check; they are never fitted.",
+  "The 12 boundary outcomes from the same run are preserved in data/measurements/validation/final-t4-20260921-verdicts.json and are verdict evidence only, never calibration rows.",
+  "All final validation remains one Tesla T4, NF4, FP16 compute, LoRA r=16 [q,k,v,o], AdamW FP32, gradient checkpointing, seq=1024; it does not validate other GPUs, native BF16, real FlashAttention-2, or other training axes."
  ],
  "rows": [
   {
@@ -1984,6 +1998,354 @@
    },
    "model_config_sha256": "sha256:1a0297c2f5ee752fd00bdc89f32a391f61b932b6e27c95c8bcfe186c0230207a",
    "fitcheck_version": "0.3.0"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-2169f0e16ea4",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 0,
+   "model_id": "Qwen/Qwen2.5-7B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:5cd809b64178ff996e2aa16fe38d241674c7d3bd933719104a1bdadce44af6c3",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-35abf657c6f7",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 1,
+   "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:94baeeb9d9cf217c8a0561aab68206fae4bdeda0ac9a9eab1b59583a9fc1fe9c",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-368230c435f7",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 2,
+   "model_id": "deepseek-ai/deepseek-coder-1.3b-instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:6e9f97a27b04ed0421bf9e206adee8e09050240b752b8bbe4c3b85454c7eb6a6",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-4a617ca7c36c",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 3,
+   "model_id": "deepseek-ai/deepseek-coder-1.3b-instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:6e9f97a27b04ed0421bf9e206adee8e09050240b752b8bbe4c3b85454c7eb6a6",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-5b933ab49870",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 4,
+   "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:94baeeb9d9cf217c8a0561aab68206fae4bdeda0ac9a9eab1b59583a9fc1fe9c",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-74c48249f5ad",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 5,
+   "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:9309c4be065ec58ec088e6ce5bb6d05b376f4a5d019473fc9e28705e1ad60501",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-91cff4bd59e6",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 6,
+   "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:9309c4be065ec58ec088e6ce5bb6d05b376f4a5d019473fc9e28705e1ad60501",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-9542dd6f064c",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 7,
+   "model_id": "Qwen/Qwen2.5-7B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:5cd809b64178ff996e2aa16fe38d241674c7d3bd933719104a1bdadce44af6c3",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-a17e63a61ecf",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 8,
+   "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:01ad34a7caf6df1906373b788cacb79440b9da4ad018d22504fd3a1eb48b4c92",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-a396128b4c55",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 9,
+   "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:01ad34a7caf6df1906373b788cacb79440b9da4ad018d22504fd3a1eb48b4c92",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-cb26baa4af47",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 10,
+   "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "flash",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:2d6dbbc0ecffcbe155c2cb4a52dc86e2ade82885abc332adb89ecba97a9ee5b5",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
+  },
+  {
+   "run_id": "t4-2026-09-21-holdout-feca394ad10d",
+   "role": "holdout",
+   "session": "t4-2026-09-21",
+   "file": "final-t4-20260921.json",
+   "index": 11,
+   "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+   "identity": {
+    "gpu_key": "t4",
+    "kernel": "eager",
+    "quantization": "nf4",
+    "double_quant": false,
+    "precision": "fp16",
+    "optimizer": "adamw",
+    "lora_rank": 16,
+    "lora_targets": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj"
+    ],
+    "grad_checkpoint": true,
+    "batch_size": 1,
+    "seq_len": 1024
+   },
+   "model_config_sha256": "sha256:2d6dbbc0ecffcbe155c2cb4a52dc86e2ade82885abc332adb89ecba97a9ee5b5",
+   "fitcheck_version": "0.3.0",
+   "source_file": "incoming/final-t4-20260921-133520.zip"
   }
  ]
 }

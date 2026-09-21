@@ -1,0 +1,336 @@
+{
+  "provenance": {
+    "what": "Final out-of-sample T4 boundary verdict validation",
+    "run_id": "final-t4-20260921-133520",
+    "source_archive": "incoming/final-t4-20260921-133520.zip",
+    "safety_budget_mib": 14000,
+    "verdict_basis": "point estimate only; the product's conservative reserve may mark a point-safe case uncertain",
+    "scope": "6 predicted-safe ceilings and 6 predicted-unsafe ceilings; never used for fitting"
+  },
+  "results": [
+    {
+      "row_id": "02c9ed5ede39",
+      "identity": {
+        "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+        "batch_size": 4,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-fit",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 13758.79096875,
+      "predicted_fits": true,
+      "predicted_max_batch_size": 4,
+      "outcome": "completed",
+      "measured_process_mib": 13758.875,
+      "within_safety_budget": true
+    },
+    {
+      "row_id": "6ebd29204725",
+      "identity": {
+        "model_id": "deepseek-ai/deepseek-coder-1.3b-instruct",
+        "batch_size": 14,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-fit",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 13788.9170625,
+      "predicted_fits": true,
+      "predicted_max_batch_size": 14,
+      "outcome": "completed",
+      "measured_process_mib": 13502.875,
+      "within_safety_budget": true
+    },
+    {
+      "row_id": "7286009d5a41",
+      "identity": {
+        "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        "batch_size": 4,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-fit",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 12740.40709609375,
+      "predicted_fits": true,
+      "predicted_max_batch_size": 4,
+      "outcome": "completed",
+      "measured_process_mib": 12830.875,
+      "within_safety_budget": true
+    },
+    {
+      "row_id": "8008d6b10b40",
+      "identity": {
+        "model_id": "deepseek-ai/deepseek-coder-1.3b-instruct",
+        "batch_size": 15,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-oom",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 14674.365937499999,
+      "predicted_fits": false,
+      "predicted_max_batch_size": 14,
+      "outcome": "completed",
+      "measured_process_mib": 14296.875,
+      "within_safety_budget": false
+    },
+    {
+      "row_id": "82654a65349a",
+      "identity": {
+        "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+        "batch_size": 6,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-fit",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 13694.709425000001,
+      "predicted_fits": true,
+      "predicted_max_batch_size": 6,
+      "outcome": "completed",
+      "measured_process_mib": 13686.875,
+      "within_safety_budget": true
+    },
+    {
+      "row_id": "d043f8d89d19",
+      "identity": {
+        "model_id": "Qwen/Qwen2.5-7B-Instruct",
+        "batch_size": 1,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-fit",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 11149.282110742188,
+      "predicted_fits": true,
+      "predicted_max_batch_size": 1,
+      "outcome": "completed",
+      "measured_process_mib": 13412.875,
+      "within_safety_budget": true
+    },
+    {
+      "row_id": "d96e79e25a7c",
+      "identity": {
+        "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+        "batch_size": 5,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-fit",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 13449.8563125,
+      "predicted_fits": true,
+      "predicted_max_batch_size": 5,
+      "outcome": "completed",
+      "measured_process_mib": 13484.875,
+      "within_safety_budget": true
+    },
+    {
+      "row_id": "e1cbef000ac0",
+      "identity": {
+        "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        "batch_size": 5,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-oom",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 15475.30049609375,
+      "predicted_fits": false,
+      "predicted_max_batch_size": 4,
+      "outcome": "oom",
+      "measured_process_mib": null,
+      "within_safety_budget": false
+    },
+    {
+      "row_id": "ea29ce0e1bd4",
+      "identity": {
+        "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+        "batch_size": 5,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-oom",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 16374.35296875,
+      "predicted_fits": false,
+      "predicted_max_batch_size": 4,
+      "outcome": "oom",
+      "measured_process_mib": null,
+      "within_safety_budget": false
+    },
+    {
+      "row_id": "eebbfe122beb",
+      "identity": {
+        "model_id": "Qwen/Qwen2.5-7B-Instruct",
+        "batch_size": 2,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-oom",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 14344.403210742188,
+      "predicted_fits": false,
+      "predicted_max_batch_size": 1,
+      "outcome": "oom",
+      "measured_process_mib": null,
+      "within_safety_budget": false
+    },
+    {
+      "row_id": "f430f117558f",
+      "identity": {
+        "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+        "batch_size": 6,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-oom",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 15796.4010125,
+      "predicted_fits": false,
+      "predicted_max_batch_size": 5,
+      "outcome": "oom",
+      "measured_process_mib": null,
+      "within_safety_budget": false
+    },
+    {
+      "row_id": "fd13760f0183",
+      "identity": {
+        "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+        "batch_size": 7,
+        "seq_len": 1024,
+        "kernel": "flash",
+        "role": "ceiling-oom",
+        "quantization": "nf4",
+        "precision": "fp16",
+        "lora_rank": 16,
+        "lora_targets": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj"
+        ],
+        "optimizer": "adamw",
+        "grad_checkpoint": true
+      },
+      "predicted_total_mib": 15124.179225,
+      "predicted_fits": false,
+      "predicted_max_batch_size": 6,
+      "outcome": "completed",
+      "measured_process_mib": 14038.875,
+      "within_safety_budget": false
+    }
+  ]
+}

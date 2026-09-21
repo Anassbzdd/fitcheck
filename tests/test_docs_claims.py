@@ -100,11 +100,15 @@ def _collect_test_counts() -> tuple[int, int]:
     return total - network, network
 
 
-def _rescore_archive() -> dict[str, tuple[float, float]]:
+def _rescore_archive(
+    roles: set[str] | None = None,
+) -> dict[str, tuple[float, float]]:
     files = _measurement_files()
     scored: dict[str, tuple[float, float]] = {}
 
     for entry in _manifest()["rows"]:
+        if roles is not None and entry["role"] not in roles:
+            continue
         row = files[entry["file"]][entry["index"]]
         config = row.get("model_config")
         if config is None:
@@ -170,7 +174,8 @@ def test_the_archive_size_claims_match_the_archive() -> None:
     _claims(
         _README,
         f"{rows} archived runs",
-        f"{roles['calibration']} fitted, {scorable} scored",
+        f"{roles['calibration']} fitted",
+        f"{scorable} calibration/repeat rows scored",
         f"{roles['excluded']} legacy rows",
     )
     _claims_if_present(
@@ -215,7 +220,7 @@ def test_the_headline_accuracy_claim_is_the_output_of_the_documented_command() -
 
 
 def test_the_summary_error_figures_are_the_rescored_archive() -> None:
-    scored = _rescore_archive()
+    scored = _rescore_archive({"calibration", "repeat"})
     assert len(scored) == 57, f"expected 57 offline-scorable rows, got {len(scored)}"
 
     tensors = [pair[0] for pair in scored.values()]
@@ -236,10 +241,30 @@ def test_the_summary_error_figures_are_the_rescored_archive() -> None:
     )
 
 
+def test_the_final_holdout_claims_match_the_imported_rows() -> None:
+    scored = _rescore_archive({"holdout"})
+    assert len(scored) == 12
+
+    tensors = [pair[0] for pair in scored.values()]
+    process = [pair[1] for pair in scored.values()]
+    worst_tensor = max(abs(value) for value in tensors)
+    mean_process = sum(abs(value) for value in process) / len(process)
+    worst_under = min(process)
+
+    _claims(
+        _README,
+        f"**±{worst_tensor:.1f}%**",
+        f"process MAE is **{mean_process:.1f}%**",
+        f"worst under-prediction is **−{abs(worst_under):.1f}%**",
+        "**12/12 correct**",
+        "one Tesla T4 (sm_75), NF4, FP16 compute, LoRA r=16",
+    )
+
+
 def test_the_measurement_stack_is_described_per_session_not_in_one_lump() -> None:
     sessions = _manifest()["sessions"]
     counts = Counter(row["session"] for row in _manifest()["rows"])
-    assert len(sessions) == 3
+    assert len(sessions) == 4
 
     for name, session in sessions.items():
         stack = (
@@ -249,7 +274,10 @@ def test_the_measurement_stack_is_described_per_session_not_in_one_lump() -> Non
         _claims(_README, stack)
 
     assert {session["gpu_name"] for session in sessions.values()} == {"Tesla T4"}
-    _claims(_README, "All 67 archived rows are one Tesla T4 (sm_75)")
+    _claims(
+        _README,
+        f"All {sum(counts.values())} archived rows are one Tesla T4 (sm_75)",
+    )
 
 
 def test_the_cuda_context_claim_matches_every_archived_row() -> None:
@@ -259,7 +287,15 @@ def test_the_cuda_context_claim_matches_every_archived_row() -> None:
         for row in runs
     }
     assert measured == {140.875, 141.0}, measured
-    _claims(_README, "140.875 MiB on 57 of them and 141.0 MiB on the other ten")
+    counts = Counter(
+        row["measured"]["cuda_context_mib"]
+        for runs in _measurement_files().values()
+        for row in runs
+    )
+    _claims(
+        _README,
+        f"140.875 MiB on {counts[140.875]} of them and 141.0 MiB on the other ten",
+    )
 
 
 def test_the_test_counts_are_the_suites_own_counts() -> None:

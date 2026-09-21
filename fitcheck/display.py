@@ -18,7 +18,6 @@ from fitcheck.estimator import (
     ServingConfig,
     TrainingConfig,
     _activation_precision,
-    _activation_profile_for,
     _format_delta,
     _gradient_precision,
     activation_breakdown,
@@ -26,6 +25,7 @@ from fitcheck.estimator import (
     trainable_params,
 )
 from fitcheck.gpu_db import GpuSpec, gpu_key_for, list_gpus
+from fitcheck.memory.activations import _validate_quantization as _activation_profile_for
 from fitcheck.memory.optimizer import (
     _MASTER_WEIGHT_BYTES_PER_PARAM,
     _keeps_master_weights,
@@ -223,12 +223,24 @@ def _component_table(
         Text(_mib(report.headroom_mib), style=verdict_style),
         _percent(_fraction(report.headroom_mib, report.gpu_capacity_mib), decimals=0),
     )
+    if report.safe_total_mib is not None:
+        table.add_row("Conservative peak", _mib(report.safe_total_mib), "")
+        table.add_row(
+            "Conservative headroom",
+            Text(_mib(report.safe_headroom_mib or 0.0), style=verdict_style),
+            _percent(
+                _fraction(report.safe_headroom_mib or 0.0, report.gpu_capacity_mib),
+                decimals=0,
+            ),
+        )
     return table
 
 
 def _verdict_style(report: MemoryReport | InferenceReport) -> str:
     if not report.fits:
         return _STYLE_OOM
+    if isinstance(report, MemoryReport) and report.uncertain:
+        return _STYLE_TIGHT
     headroom = _fraction(report.headroom_mib, report.gpu_capacity_mib)
     return _STYLE_FITS if headroom > _TIGHT_HEADROOM_FRACTION else _STYLE_TIGHT
 
@@ -259,6 +271,12 @@ def _verdict_line(
             glyphs.oom,
             f"DOES NOT FIT {glyphs.arrow} over by {_mib(-report.headroom_mib)} MiB",
         )
+    elif isinstance(report, MemoryReport) and report.uncertain:
+        icon, message = (
+            glyphs.tight,
+            f"UNCERTAIN {glyphs.arrow} point estimate fits, but the validated "
+            "confidence envelope does not leave a safe margin",
+        )
     elif verdict_style == _STYLE_TIGHT:
         icon, message = (
             glyphs.tight,
@@ -282,25 +300,46 @@ def _batch_suggestion(report: MemoryReport, training: TrainingConfig | None) -> 
             "--grad-checkpoint / --flash-attn, or quantize the base with --quant nf4."
         )
 
+    recommended = report.recommended_batch_size
+    recommendation_label = (
+        "Conservative recommended batch"
+        if report.recommendation_basis == "validated_reserve"
+        else "Point-margin recommended batch"
+    )
     if training is None:
-        return (
+        message = (
             f"Max micro-batch size at this sequence length: {report.max_batch_size}."
         )
+        if recommended is not None:
+            message += (
+                f" This is the estimated ceiling. {recommendation_label}: "
+                f"{recommended}."
+            )
+        return message
     if report.max_batch_size > training.batch_size:
-        return (
+        message = (
             f"You could increase batch_size to {report.max_batch_size} before "
-            "hitting the memory ceiling."
+            "hitting the estimated memory ceiling."
         )
+        if recommended is not None:
+            message += f" {recommendation_label}: {recommended}."
+        return message
     if report.max_batch_size < training.batch_size:
-        return (
+        message = (
             f"Drop batch_size to {report.max_batch_size} to fit, then use "
             "--grad-accum to keep the effective batch at "
             f"{report.effective_batch_size}."
         )
-    return (
+        if recommended is not None:
+            message += f" {recommendation_label}: {recommended}."
+        return message
+    message = (
         f"batch_size {training.batch_size} is already the maximum that fits at this "
         "sequence length."
     )
+    if recommended is not None:
+        message += f" {recommendation_label}: {recommended}."
+    return message
 
 
 def _hint_savings_mib(hint: str) -> float:

@@ -273,7 +273,7 @@ def test_golden_report_carries_no_warning(golden_report: MemoryReport) -> None:
 def test_no_checkpointing_no_longer_warns(
     llama_model: ModelConfig, qlora_training: TrainingConfig
 ) -> None:
-    """Task 9.2 measured this branch, so the 8.3 'derived, not measured' caveat is
+    """This branch was measured, so the 8.3 'derived, not measured' caveat is
     gone. A warning saying the branch is unmeasured would now be false."""
     for flash_attn in (True, False):
         report = estimate(
@@ -352,7 +352,7 @@ def test_report_is_json_serializable_for_ci(golden_report: MemoryReport) -> None
     assert payload["max_batch_size"] == _GOLDEN_MAX_BATCH
 
 
-# --- Inference serving (Component 7 + Component 6), task 6.5 ---
+# --- Inference serving (Component 7 + Component 6) ---
 
 _SERVING_W_BASE_FP16 = 15_316.51
 _SERVING_KV_2048 = 256.0

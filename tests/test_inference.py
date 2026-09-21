@@ -238,7 +238,7 @@ def test_rejects_non_model_config(bad_config: object) -> None:
         estimate_inference_memory(bad_config, "fp16", 2048, 1)
 
 
-# --- Gap 2 from task 6.4: precision and quantization are two axes, not one ---
+# --- Precision and quantization are two axes, not one ---
 
 
 def test_quantization_defaults_to_none(llama: ModelConfig) -> None:

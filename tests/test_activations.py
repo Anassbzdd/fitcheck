@@ -423,7 +423,7 @@ def test_parts_reconstruct_the_public_estimate(llama: ModelConfig) -> None:
 
 
 def test_no_checkpointing_branch_is_measured_not_derived(llama: ModelConfig) -> None:
-    """Task 9.2 measured this branch on a T4 over 11 rows and 9 models, so the
+    """This branch was measured on a T4 over 11 rows and 9 models, so the
     'derived, not measured' caveat 8.3 attached to it is gone. Keeping a warning
     that says the branch is unmeasured would now be false."""
     assert _estimate(llama, flash_attn=False, grad_checkpoint=False) == pytest.approx(
@@ -435,7 +435,7 @@ def test_no_checkpointing_branch_is_measured_not_derived(llama: ModelConfig) -> 
 
 
 # ---------------------------------------------------------------------------------
-# The unquantized profile (task 9.3, measured 2026-09-15)
+# The unquantized profile (measured 2026-09-15)
 # ---------------------------------------------------------------------------------
 
 

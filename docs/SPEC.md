@@ -195,7 +195,7 @@ For GQA targets, $d_{out}^{(k)} = d_{out}^{(v)} = n_{kv} \cdot d_k$, not $h$.
 > base model is FP16 or BF16. An FP32 base gives FP32 adapters anyway. There is no configuration
 > reachable from the CLI where the adapters are half precision.
 >
-> **Measured, 2026-09-12 (task 9.2).** All 14 LoRA runs across both ground-truth sessions showed
+> **Measured, 2026-09-12.** All 14 LoRA runs across both ground-truth sessions showed
 > $W_{lora}$ at exactly twice the prediction and $G_{grad}$ at exactly $-50.0\%$ — not
 > approximately, exactly, on every row, including nine runs with `--quant none`. The harness's
 > `RESIDENT WEIGHT BYTES BY STORAGE` block places the upcast at **load time**, before the optimizer
@@ -324,7 +324,7 @@ are on the compute dtype.
 #### Component 5: Activations ($A_{act}$) — The Hard One
 
 **The saved-tensor table below is the *derivation*. It is no longer the *coefficient*.** It accounts for
-twelve tensors and six hidden-width ones; measurement (task 9.2, 11 no-checkpoint rows over 9 models)
+twelve tensors and six hidden-width ones; measurement (11 no-checkpoint rows over 9 models)
 says the real hidden-width count is **fifteen**. The derivation is kept because it is what makes the
 shape of the formula legible — which terms scale with tokens, which with $s^2$, which with $d_{ff}$ —
 and that shape is confirmed exactly. The *count* is measured, and the measurement wins. The nine
@@ -441,7 +441,7 @@ between them is the score matrix, and Flash removes it.
 
 **Why $2L\gamma bsh$ and not $L\gamma bsh$ — and why that is only true with a quantized base.**
 The $2L$ above, the four $A_{logits}$ copies and the $9\gamma$ score matrix were all measured on QLoRA
-runs and then applied to every run. **That was wrong, and it is corrected as of 2026-09-15 (task 9.3).**
+runs and then applied to every run. **That was wrong, and it is corrected as of 2026-09-15.**
 See *Activation profiles* immediately below. Every formula and every golden number in this document is
 stated for the **quantized** profile and is unchanged by the correction.
 
@@ -494,7 +494,7 @@ Two caveats, both recorded rather than resolved:
 > Llama-3.1-8B config it saves exactly 0 MiB. Measured: SmolLM2 eager vs SDPA differed by 16 MiB out of
 > 5,297. Flash only starts paying once the sequence is long enough for $A_{layer}$ to overtake $A_{logits}$.
 
-> **The no-checkpointing branch is measured as of 2026-09-12 (task 9.2), and the 8.3 warning is gone.**
+> **The no-checkpointing branch is measured as of 2026-09-12, and the 8.3 warning is gone.**
 > It used to charge the derived $4h + 2n_hd_k$ bracket *and* all nine score-matrix copies in every
 > layer at once. Two errors pulling opposite ways, which is exactly why neither was spotted: the
 > 9-copy term over-counted, the bracket under-counted, and the over-count was bigger, so the total
@@ -526,7 +526,7 @@ those are cannot get that from this document yet. That is an honest gap, not a r
 4. **Gradient checkpointing** uses the practical default (checkpoint every layer), storing $2L$ hidden-state tensors, plus whichever of $A_{logits}$ and one layer's full activations is larger — a max, not a sum.
 5. **$\gamma$ is derived from the compute precision**, never hardcoded to 2. Under `--precision fp32` every row in the table doubles — and under `--quant int8` it is 4 regardless of `--precision`, because bitsandbytes hands LLM.int8() FP32 inputs (§3.7). The orchestrator resolves this in `estimator._activation_precision`; `$A_{logits}$` is FP32 on every path and is not affected either way.
 6. **$d_k$ comes from `config.json`**, not from $h/n_h$ (§3.3). The $n_h d_k$ and $n_{kv} d_k$ widths equal $h$ and $h\frac{n_{kv}}{n_h}$ only when $n_h d_k = h$.
-7. **The score-matrix copy count depends on the checkpointing regime** — `_EAGER_ATTENTION_COPIES = 9` with checkpointing on, `_EAGER_RETAINED_COPIES = 2.9` with it off. Using one constant for both branches is the bug task 9.2 fixed; do not collapse them back into one.
+7. **The score-matrix copy count depends on the checkpointing regime** — `_EAGER_ATTENTION_COPIES = 9` with checkpointing on, `_EAGER_RETAINED_COPIES = 2.9` with it off. Using one constant for both branches caused a bug; do not collapse them back into one.
 
 **Implementation:** `memory/activations.py` — function `estimate_activation_memory(config, batch_size, seq_len, grad_checkpoint, flash_attn, precision)`. `_ActivationParts` carries `layer_bytes` (the transient peak) and `retained_layer_bytes` (what every layer keeps) separately, and the two branches take one each.
 
@@ -542,7 +542,7 @@ Covers: CUDA context, cuDNN/cuBLAS workspace, PyTorch caching allocator over-res
 `torch.cuda.memory_reserved()` — device memory the process holds that the caching allocator does
 not. On 69 archived rows it came back at exactly **140.875 MiB**; the twelve final holdout rows
 report **141.0 MiB**. See the correction note
-below for why fitting it was the single largest defect in the pre-9.3 model.
+below for why fitting it was the single largest defect in the previous model.
 
 **$S$ (the sequence slope) is measured to be zero** and no shipped profile carries one.
 
@@ -567,7 +567,7 @@ it drives $F$ apart by a factor of 2–3 at the same kernel.
 Profiles live in `fitcheck/overhead_db.py` as `OverheadProfile` rows, exactly the way `gpu_db.py`
 holds card specs, and are produced by `fitcheck/calibrate.py` from archived
 `scripts/measure.py --json` runs. Anything with no fitted row — another card, `--quant int8`, a run
-with checkpointing **off**, or inference — falls back to `DEFAULT_OVERHEAD_PROFILE`, the pre-9.3
+with checkpointing **off**, or inference — falls back to `DEFAULT_OVERHEAD_PROFILE`, the previous
 **500 MiB and a flat 5%** legacy form. That is also why the golden set did not move: it is a 4090.
 
 > **The hump form requires gradient checkpointing.** With checkpointing off, $A_{act}$ is
@@ -577,7 +577,7 @@ with checkpointing **off**, or inference — falls back to `DEFAULT_OVERHEAD_PRO
 > **default** profile (not to the card's own, whose proportional coefficient is empty) when they are
 > absent. Silently billing zero fragmentation there would badly under-predict.
 
-##### Shipped constants (Tesla T4, task 9.3; re-fitted from the manifest 2026-09-21)
+##### Shipped constants (Tesla T4; re-fitted from the manifest 2026-09-21)
 
 | kernel | quant | regime | $F$ | ± se | n | $R^2$ |
 |:---|:---|:---|---:|---:|---:|---:|
@@ -598,7 +598,7 @@ python -m fitcheck.calibrate data/measurements/manifest.json --emit-python
 prints the `OVERHEAD_DB` literal in `fitcheck/overhead_db.py` character for character.
 `tests/test_manifest.py` holds it to that, so the shipped numbers cannot drift away from the rows
 they came from. **49 rows are fitted** — the 8 bit-identical repeats in the 2026-09-15 sweep and the
-10 pre-9.3 rows in the 2026-09-01 file are declared `repeat` and `excluded` and never enter the fit.
+10 earlier rows in the 2026-09-01 file are declared `repeat` and `excluded` and never enter the fit.
 
 Both `flash` profiles leave the layer-win coefficient **empty**, and `fragmentation_for` falls back
 to the logits-win value. That is not an oversight: under Flash Attention the score matrix is gone, so
@@ -648,7 +648,7 @@ the verdict is `uncertain` rather than calling a potentially unsafe fit safe.
 
 ##### What this replaced, and why the old fit failed
 
-The pre-9.3 form was $B + f(s) \times (W_{base} + A_{act})$ with $B$, $F$ and $S$ all fitted. Three
+The previous form was $B + f(s) \times (W_{base} + A_{act})$ with $B$, $F$ and $S$ all fitted. Three
 compounding defects, largest first:
 
 1. **$B$ was fitted, but it is measured.** The constant column is collinear with the size column, so
@@ -681,7 +681,7 @@ peak in the archive.
 
 > **Why this component was rebuilt — the diagnosis, as of 2026-09-12 (historical; the block
 > after it is the current state).** This was then the least accurate component, by a wide margin,
-> and the only one that was. With the Component 5 corrections of task 9.2 shipped, the tensors tier (which
+> and the only one that was. With the Component 5 corrections shipped, the tensors tier (which
 > excludes $C_{overhead}$) lands within 3.4% on the original ten rows and within 5.1% on the
 > thirteen new ones — the one exception is the seq-4096 row at +17.4%, and that row's problem is
 > also fragmentation. Everything left is here.
@@ -767,7 +767,7 @@ $$M_{infer} = W_{base} + \text{KV} + C_{overhead}, \qquad \text{KV} = 2 \times L
    logits row, and whatever the runtime materializes to get there — and none of it is in the formula.
 
 > **The KV formula is exact; the missing transient is what grows.** Measured across four serving runs
-> (task 9.2), the cache term is **+0.0%** on every one, including heavy GQA (Qwen2.5-1.5B, 2 KV heads)
+> the cache term is **+0.0%** on every one, including heavy GQA (Qwen2.5-1.5B, 2 KV heads)
 > and an NF4 base, and weights land within 0.1%. The error is entirely the unmodelled transient, and
 > it scales with concurrency:
 >
@@ -934,7 +934,7 @@ class MemoryReport:
 ```
 
 > **`warnings` carries the caveats, it does not change the number.** Empty means every formula the
-> estimate used has a measured row behind it. Since task 9.2 closed the no-checkpointing branch, the
+> estimate used has a measured row behind it. Since measurement closed the no-checkpointing branch, the
 > only training-side entry comes from `--quant int8` (§3.7); `estimate_warnings(training)` computes
 > it and is public, so the REPL and the advisor can ask the same question without building a full
 > report. `InferenceReport` carries the same field, filled by `inference_warnings(serving)`, which
@@ -1614,9 +1614,9 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Private / gated HF models** | `huggingface_hub` handles auth via `HF_TOKEN` env var. | ✅ MVP |
 | **Hub unreachable** (timeout, DNS failure, proxy refusal) | `HubUnavailableError`, exit 2: one line naming the failure and pointing at a retry or `HF_HUB_OFFLINE=1`. Under `huggingface_hub` 1.x the transport error is an `httpx` exception, which is not an `OSError`, so it used to escape every handler and reach the terminal as a traceback with no message — §3.3. | ✅ handled |
 | **Offline mode** | If `config.json` is cached locally, works without internet. The Hub parameter count is unavailable, so `num_params` falls back to the `config.json` formula with a warning on stderr — and the architectures that only the cross-check catches (phi-2, Qwen2.5-VL) are estimated rather than refused. | ✅ MVP |
-| **`C_overhead` fragmentation model** | Rebuilt in task 9.3 (2026-09-16) and **shipped**: `C_overhead = B + F x min(A_logits, A_layer)`, keyed per **(GPU, kernel, quantization)**. `B` is the CUDA context, now **measured** (140.875 MiB on 69 archived T4 rows; 141.0 MiB on the twelve final holdout rows) rather than fitted -- fitting it was the main defect, because the constant column is collinear with the size column and leave-one-out moved `F` by up to 172%. The sequence slope `S` is **measured to be zero** (t = +0.4, -0.1, +0.5, -0.2). Over-reservation tracks the hump that *loses* the checkpointed `max()`, because segments cached for one allocation pattern cannot serve the other; `R^2` on `none/eager` went **-0.04 -> 0.80**. Four T4 profiles ship; everything else (other cards, int8, checkpointing off, inference) keeps the 500 MiB + 5% default. Re-fitted from `data/measurements/manifest.json` on 2026-09-21, which declares the role of every archived row so repeats, holdout, and pre-9.3 rows cannot enter the fit: 49 rows fitted, scored over 57 calibration/repeat rows, plus 12 final holdout rows kept separate; the holdout reports tensor ±1.4%, process MAE 5.4%, and worst under-prediction -15.3%. (SS3.8, Component 6). Task 9.3, done. | [x] Shipped |
+| **`C_overhead` fragmentation model** | Rebuilt and **shipped** on 2026-09-16: `C_overhead = B + F x min(A_logits, A_layer)`, keyed per **(GPU, kernel, quantization)**. `B` is the CUDA context, now **measured** (140.875 MiB on 69 archived T4 rows; 141.0 MiB on the twelve final holdout rows) rather than fitted -- fitting it was the main defect, because the constant column is collinear with the size column and leave-one-out moved `F` by up to 172%. The sequence slope `S` is **measured to be zero** (t = +0.4, -0.1, +0.5, -0.2). Over-reservation tracks the hump that *loses* the checkpointed `max()`, because segments cached for one allocation pattern cannot serve the other; `R^2` on `none/eager` went **-0.04 -> 0.80**. Four T4 profiles ship; everything else (other cards, int8, checkpointing off, inference) keeps the 500 MiB + 5% default. Re-fitted from `data/measurements/manifest.json` on 2026-09-21, which declares the role of every archived row so repeats, holdout, and earlier rows cannot enter the fit: 49 rows fitted, scored over 57 calibration/repeat rows, plus 12 final holdout rows kept separate; the holdout reports tensor ±1.4%, process MAE 5.4%, and worst under-prediction -15.3%. (SS3.8, Component 6). | [x] Shipped |
 | **T4 / ECC entries in `gpu_db`** | Fixed: T4 is now `14_912 / 14_000`, the measured total. `h200` and `b200` take the `usable_mib` that is safe under the pessimistic reading of their vendor GB. Only the T4 is measured; the rest of the table is estimates. | ✅ fixed, rest unmeasured |
-| **No-checkpointing branch** | **Measured 2026-09-12 (task 9.2)** over 11 rows and 9 models: worst-case error 98.3% → 5.9%. The bracket is now $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$ and the score matrix is charged at the retained rate ($2.9\gamma$), not the transient one ($9\gamma$) — see Component 5. The 8.3 warning is **removed**: keeping a caveat that says the branch is unmeasured would now be false. | ✅ measured |
+| **No-checkpointing branch** | **Measured 2026-09-12** over 11 rows and 9 models: worst-case error 98.3% → 5.9%. The bracket is now $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$ and the score matrix is charged at the retained rate ($2.9\gamma$), not the transient one ($9\gamma$) — see Component 5. The 8.3 warning is **removed**: keeping a caveat that says the branch is unmeasured would now be false. | ✅ measured |
 | **`--quant int8` activations** | Billed at **$\gamma = 4$** whatever `--precision` says: `prepare_model_for_kbit_training` upcasts the layer norms to FP32 and LLM.int8() takes that FP32 input at every linear — the run prints `MatMul8bitLt: inputs will be cast from torch.float32` hundreds of times. On the one measured int8 row (TinyLlama, bs=2, seq=1024) that takes $A_{act}$ from **1,620 predicted against 3,729 measured ($-56.6\%$)** to **3,382 ($-9.3\%$)**, and the tensors tier from $-38.9\%$ to $-5.7\%$. The residual is LLM.int8()'s own FP16 outlier buffers, which are not modelled, so `estimate_warnings` attaches a caveat calling the figure a lower bound. **One model, one run** — a second int8 row on a different model is owed before the mechanism can be called general. | ⚠️ Partly measured, warned |
 | **Serving activations (`fitcheck infer`)** | Not modelled at all: $M_{infer}$ is resident memory only. Measured $-2.8\%$ at 1 concurrent request and $-23.2\%$ at 16, the unsafe direction, growing with concurrency. `inference_warnings` attaches a caveat above 4 concurrent naming both numbers. No coefficient is fitted, because 838 MiB of transient at 16 concurrent is far larger than any identified mechanism and one data point cannot settle it — see Component 7. | ⚠️ Unmeasured, warned |
 | **Full fine-tuning term split** | fitcheck keeps the FP32 master copy in $S_{optim}$ (12 B/param). `measure.py` used to upcast in place so it landed in *weights* — +50% / −50% / −50% across three terms with a **sum exact to the MiB** (2,479 vs 2,479) — and that cast also made an `fp16` row measure FP32 activations. Harness fixed 2026-09-20 (Component 4); the fitcheck terms are unchanged. | ⚠️ harness fixed, full-FT row not re-measured |
@@ -1867,13 +1867,13 @@ three sequence lengths, both attention kernels:
 | **process** | **14.7%** | 5.5% | SmolLM2 bs4 seq1024 eager |
 | allocator | 20.2% | 9.5% | SmolLM2 bs4 seq1024 eager |
 
-Two of those ten moved under task 9.2's wider bracket, both for the better (TinyLlama seq-1024 eager
+Two of those ten moved under the wider bracket, both for the better (TinyLlama seq-1024 eager
 $-3.4\% \to -1.0\%$, seq-2048 eager $+0.7\% \to +2.8\%$); the other eight are unchanged, because
 $A_{logits}$ wins the $\max()$ and absorbs the change.
 
 The thirteen new rows, which are where the formula was actually wrong:
 
-| branch | before 9.2 | after 9.2 |
+| branch | before correction | after correction |
 |:---|---:|---:|
 | tensors tier, checkpointing **off** (11 rows) | **33.7%** worst | **4.4%** worst |
 | $A_{act}$ alone, checkpointing **off** | 98.3% worst | 6.8% worst |
@@ -1884,7 +1884,7 @@ Read that as: **the five physical formulas are right to a few percent on every b
 and $C_{overhead}$ is not.** The allocator and process tiers differ from the tensors tier only by the
 overhead model. The one row still above 10% on the tensors tier — SmolLM2-360M at seq 4096, +17.4% —
 is also an overhead row: its allocator reserved 7,304 MiB against 4,909 allocated, the worst
-fragmentation this project has measured. See Component 6 and task 9.3.
+fragmentation this project has measured. See Component 6.
 
 **What has still never been measured**, stated as plainly as the results: any GPU other than this T4,
 therefore no BF16 and no real FlashAttention-2 (sm_75 supports neither — the flash path is validated
@@ -2095,7 +2095,7 @@ The same configuration at $b = 1$ costs 14,756 MiB and fits comfortably.
 Displayed rounded as **30,607 MiB**. Tests assert the unrounded total within a tolerance, never the display
 string.
 
-> **Unchanged by task 9.2 (2026-09-12), and that is the point.** The bracket widened from 69,632 to
+> **Unchanged by the 2026-09-12 correction, and that is the point.** The bracket widened from 69,632 to
 > 105,472, so $A_{layer}$ went 1,088 → 1,648 MiB — and every number in the table above stayed exactly
 > where it was, because 1,648 still loses the $\max()$ to $A_{logits}$. A correction that moves an
 > intermediate by 51% and the headline total by zero is the clearest possible demonstration of why

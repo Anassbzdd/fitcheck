@@ -1051,7 +1051,7 @@ They were not a rubber stamp. Three things in Component 5 were wrong and the mea
 
 > [!WARNING]
 > **Points 2 and 3 were measured on QLoRA runs only, and then applied to every run.** That is the
-> error task 9.3 found on 2026-09-15: with an unquantized base the store is $L\gamma bsh$ and the
+> error found on 2026-09-15: with an unquantized base the store is $L\gamma bsh$ and the
 > score matrix is $7.4\gamma$. Every run in this session was QLoRA, so the session's own numbers
 > stand -- what was wrong was treating them as unconditional. The store 'doubling' was really the
 > dtype changing: $L$ FP32 tensors, not $2L$ at $\gamma$.

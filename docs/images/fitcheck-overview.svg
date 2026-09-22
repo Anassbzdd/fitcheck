@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-labelledby="title description">
+  <title id="title">FitCheck: from model config to memory decision</title>
+  <desc id="description">A technical architecture diagram. Model config.json flows into FitCheck's pure-math estimator. The training lane prices six memory components and produces a verdict or an explain breakdown. A separate serving lane estimates weights, KV cache, and overhead for the infer command.</desc>
+
+  <defs>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.07"/>
+    </filter>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .title { font: 700 32px Inter, "Segoe UI", Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 16px Inter, "Segoe UI", Arial, sans-serif; fill: #475569; }
+      .eyebrow { font: 700 13px Inter, "Segoe UI", Arial, sans-serif; letter-spacing: 1.5px; fill: #475569; }
+      .card-title { font: 700 20px Inter, "Segoe UI", Arial, sans-serif; fill: #0f172a; }
+      .component-title { font: 700 16px Inter, "Segoe UI", Arial, sans-serif; fill: #0f172a; }
+      .body { font: 400 15px Inter, "Segoe UI", Arial, sans-serif; fill: #475569; }
+      .small { font: 400 13px Inter, "Segoe UI", Arial, sans-serif; fill: #64748b; }
+      .small-strong { font: 600 13px Inter, "Segoe UI", Arial, sans-serif; fill: #334155; }
+      .mono { font: 600 13px ui-monospace, SFMono-Regular, Consolas, monospace; fill: #1e3a8a; }
+      .mono-dark { font: 600 13px ui-monospace, SFMono-Regular, Consolas, monospace; fill: #0f172a; }
+      .chip { font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; fill: #1e3a8a; }
+      .number { font: 700 13px Inter, "Segoe UI", Arial, sans-serif; fill: #ffffff; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="900" fill="#f8fafc"/>
+  <rect x="24" y="24" width="1232" height="852" rx="24" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+
+  <text x="64" y="80" class="title">How FitCheck turns a model config into a memory decision</text>
+  <text x="64" y="111" class="subtitle">Read a few KB of metadata, price the memory, then compare it with a GPU budget before you start a job.</text>
+
+  <!-- Input -->
+  <text x="55" y="154" class="eyebrow">INPUT</text>
+  <rect x="55" y="175" width="220" height="205" rx="16" fill="#eff6ff" stroke="#93c5fd" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="77" y="198" width="43" height="49" rx="7" fill="#2563eb"/>
+  <path d="M88 208 h21 v7 h-21z M88 221 h21 v7 h-21z M88 234 h14 v7 h-14z" fill="#dbeafe"/>
+  <text x="136" y="216" class="component-title">Model config.json</text>
+  <text x="136" y="238" class="small">Hub fetch or local cache</text>
+  <line x1="77" y1="266" x2="253" y2="266" stroke="#bfdbfe" stroke-width="2"/>
+  <text x="77" y="292" class="small-strong">• layers, hidden size, heads</text>
+  <text x="77" y="316" class="small-strong">• vocabulary, MLP, KV heads</text>
+  <text x="77" y="340" class="small-strong">• total parameter count</text>
+  <rect x="77" y="350" width="176" height="20" rx="6" fill="#dbeafe"/>
+  <text x="165" y="364" text-anchor="middle" class="chip">metadata only · no weights</text>
+
+  <!-- Clear top rail: input to engine to training -->
+  <line x1="275" y1="277" x2="329" y2="277" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
+
+  <!-- Core estimator -->
+  <text x="330" y="154" class="eyebrow">CORE ESTIMATOR</text>
+  <rect x="330" y="175" width="240" height="205" rx="16" fill="#eef2ff" stroke="#a5b4fc" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="359" cy="215" r="15" fill="#4f46e5"/>
+  <path d="M352 215 h14 M359 208 v14" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="386" y="221" class="card-title">FitCheck</text>
+  <text x="353" y="248" class="small">Pure math: no torch, CUDA,</text>
+  <text x="353" y="265" class="small">or model weights at estimate time.</text>
+  <line x1="353" y1="280" x2="547" y2="280" stroke="#c7d2fe" stroke-width="2"/>
+  <rect x="353" y="297" width="52" height="31" rx="8" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="379" y="318" text-anchor="middle" class="mono-dark">parse</text>
+  <line x1="405" y1="313" x2="423" y2="313" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-slate)"/>
+  <rect x="426" y="297" width="52" height="31" rx="8" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="452" y="318" text-anchor="middle" class="mono-dark">price</text>
+  <line x1="478" y1="313" x2="496" y2="313" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-slate)"/>
+  <rect x="499" y="297" width="48" height="31" rx="8" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="523" y="318" text-anchor="middle" class="mono-dark">fit</text>
+  <text x="353" y="349" class="small">CLI flags: quantization, batch, seq,</text>
+  <text x="353" y="367" class="small">optimizer, and target GPU.</text>
+
+  <line x1="570" y1="277" x2="618" y2="277" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
+
+  <!-- Training lane -->
+  <rect x="620" y="145" width="585" height="335" rx="18" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="648" y="181" class="eyebrow">TRAINING MEMORY MODEL</text>
+  <text x="648" y="204" class="body">Peak VRAM is the sum of six components.</text>
+  <rect x="1023" y="164" width="154" height="28" rx="7" fill="#e0e7ff"/>
+  <text x="1100" y="183" text-anchor="middle" class="mono">fitcheck MODEL_ID</text>
+
+  <rect x="648" y="225" width="258" height="65" rx="10" fill="#ffffff" stroke="#bfdbfe" stroke-width="2"/>
+  <circle cx="671" cy="249" r="12" fill="#2563eb"/><text x="671" y="254" text-anchor="middle" class="number">1</text>
+  <text x="692" y="254" class="component-title">Base weights</text>
+  <text x="666" y="278" class="small">quantized or full-precision storage</text>
+
+  <rect x="930" y="225" width="247" height="65" rx="10" fill="#ffffff" stroke="#ddd6fe" stroke-width="2"/>
+  <circle cx="953" cy="249" r="12" fill="#7c3aed"/><text x="953" y="254" text-anchor="middle" class="number">2</text>
+  <text x="974" y="254" class="component-title">LoRA adapters</text>
+  <text x="948" y="278" class="small">trainable adapter parameters</text>
+
+  <rect x="648" y="303" width="258" height="65" rx="10" fill="#ffffff" stroke="#fed7aa" stroke-width="2"/>
+  <circle cx="671" cy="327" r="12" fill="#ea580c"/><text x="671" y="332" text-anchor="middle" class="number">3</text>
+  <text x="692" y="332" class="component-title">Optimizer states</text>
+  <text x="666" y="356" class="small">AdamW, Adam8bit, or SGD state</text>
+
+  <rect x="930" y="303" width="247" height="65" rx="10" fill="#ffffff" stroke="#fecdd3" stroke-width="2"/>
+  <circle cx="953" cy="327" r="12" fill="#e11d48"/><text x="953" y="332" text-anchor="middle" class="number">4</text>
+  <text x="974" y="332" class="component-title">Gradients</text>
+  <text x="948" y="356" class="small">for the trainable parameters</text>
+
+  <rect x="648" y="381" width="258" height="65" rx="10" fill="#ffffff" stroke="#a7f3d0" stroke-width="2"/>
+  <circle cx="671" cy="405" r="12" fill="#059669"/><text x="671" y="410" text-anchor="middle" class="number">5</text>
+  <text x="692" y="410" class="component-title">Activations</text>
+  <text x="666" y="434" class="small">micro-batch × sequence × layers</text>
+
+  <rect x="930" y="381" width="247" height="65" rx="10" fill="#ffffff" stroke="#bae6fd" stroke-width="2"/>
+  <circle cx="953" cy="405" r="12" fill="#0891b2"/><text x="953" y="410" text-anchor="middle" class="number">6</text>
+  <text x="974" y="410" class="component-title">CUDA overhead</text>
+  <text x="948" y="434" class="small">context + allocator reserve</text>
+  <text x="648" y="467" class="small">Result: peak VRAM in MiB, compared with the target GPU’s usable memory.</text>
+
+  <!-- Training results: vertical arrow has its own empty channel -->
+  <line x1="912" y1="480" x2="912" y2="518" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
+  <rect x="620" y="525" width="585" height="170" rx="18" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="648" y="557" class="eyebrow">TRAINING RESULTS</text>
+
+  <rect x="648" y="570" width="258" height="100" rx="11" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+  <text x="669" y="598" class="component-title">Training verdict</text>
+  <text x="669" y="622" class="mono">FIT · OOM · UNCERTAIN</text>
+  <text x="669" y="646" class="small">headroom + max micro-batch</text>
+
+  <rect x="930" y="570" width="247" height="100" rx="11" fill="#f5f3ff" stroke="#c4b5fd" stroke-width="2"/>
+  <text x="951" y="598" class="component-title">Plain-English breakdown</text>
+  <text x="951" y="622" class="mono">--explain</text>
+  <text x="951" y="646" class="small">largest component; toggle prices</text>
+  <text x="951" y="664" class="small">savings hints</text>
+
+  <!-- Separate serving lane -->
+  <path d="M450 380 V798 H618" fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="7 7" marker-end="url(#arrow-slate)"/>
+  <text x="467" y="735" class="eyebrow">SERVING PATH</text>
+  <text x="467" y="757" class="small">separate from training</text>
+
+  <rect x="620" y="745" width="300" height="105" rx="16" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="644" y="775" class="eyebrow">SERVING MEMORY MODEL</text>
+  <rect x="644" y="790" width="72" height="28" rx="7" fill="#ffffff" stroke="#a5f3fc"/>
+  <text x="680" y="809" text-anchor="middle" class="mono-dark">weights</text>
+  <text x="726" y="809" class="body">+</text>
+  <rect x="741" y="790" width="77" height="28" rx="7" fill="#ffffff" stroke="#a5f3fc"/>
+  <text x="779" y="809" text-anchor="middle" class="mono-dark">KV cache</text>
+  <text x="828" y="809" class="body">+</text>
+  <rect x="843" y="790" width="53" height="28" rx="7" fill="#ffffff" stroke="#a5f3fc"/>
+  <text x="869" y="809" text-anchor="middle" class="mono-dark">overhead</text>
+  <text x="644" y="837" class="small">sequence length × concurrent requests</text>
+
+  <line x1="920" y1="798" x2="952" y2="798" stroke="#64748b" stroke-width="3" marker-end="url(#arrow-slate)"/>
+  <rect x="954" y="745" width="251" height="105" rx="16" fill="#ecfeff" stroke="#67e8f9" stroke-width="2"/>
+  <text x="976" y="775" class="component-title">Serving result</text>
+  <text x="976" y="800" class="mono">fitcheck infer MODEL_ID</text>
+  <text x="976" y="823" class="small">total VRAM + headroom</text>
+  <text x="976" y="841" class="small">max fitting concurrency</text>
+
+  <!-- Footer -->
+  <line x1="55" y1="850" x2="1205" y2="850" stroke="#e2e8f0" stroke-width="2"/>
+  <circle cx="67" cy="870" r="5" fill="#2563eb"/>
+  <text x="80" y="875" class="small">Training: peak-memory estimate</text>
+  <circle cx="304" cy="870" r="5" fill="#64748b"/>
+  <text x="317" y="875" class="small">Serving: resident memory + KV cache</text>
+  <text x="1205" y="875" text-anchor="end" class="small">MiB throughout · use --json for CI/CD</text>
+</svg>

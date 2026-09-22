@@ -20,6 +20,10 @@ FitCheck estimates whether a LoRA, QLoRA, or full fine-tuning configuration is l
 
 The estimate includes base weights, LoRA adapters, optimizer states, gradients, activations, and CUDA/allocator overhead. The result is a MiB total, a component breakdown, a fit verdict, and the largest micro-batch that fits. An inference mode also estimates resident weights and KV-cache memory.
 
+<p align="center">
+  <img src="docs/images/fitcheck-overview.svg" alt="FitCheck flow from model config.json through six training memory components to training verdicts, explanations, and serving estimates" width="100%">
+</p>
+
 ## Who it is for
 
 FitCheck is for ML students, researchers, and startup engineers choosing a GPU or checking a training job in CI. It helps catch an obvious OOM before a long download, a paid GPU session, or a teammate's time is wasted.
@@ -35,6 +39,10 @@ pip install fitcheck-llm
 ```bash
 fitcheck NousResearch/Meta-Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq-len 2048 --optimizer adamw --flash-attn --gpu 4090
 ```
+
+<p align="center">
+  <img src="docs/images/fitcheck-llama-qlora-4090-output.png" alt="FitCheck QLoRA memory estimate for Meta-Llama-3.1-8B on an RTX 4090" width="100%">
+</p>
 
 The runtime uses Click, Rich, and `huggingface-hub`; it does not require `torch` or CUDA. Gated Hugging Face models still need normal Hub access, for example `hf auth login`.
 

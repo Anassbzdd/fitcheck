@@ -28,10 +28,6 @@ _ARCHIVE = Path(__file__).resolve().parents[1] / "data" / "measurements"
 _T4_ROWS = _ARCHIVE / "t4-qlora-2026-09-01.json"
 
 
-# ---------------------------------------------------------------------------------
-# Fixtures: synthetic runs with a known answer
-# ---------------------------------------------------------------------------------
-
 _TRUE_BASE = 140.0
 _TRUE_FRAGMENTATION = 0.18
 
@@ -108,19 +104,12 @@ def _payload(**run_overrides: object) -> dict[str, object]:
     }
 
 
-# ---------------------------------------------------------------------------------
-# Parsing
-# ---------------------------------------------------------------------------------
-
-
 def test_parse_run_reduces_a_measure_py_payload_to_the_fit_inputs() -> None:
     run = parse_run(_payload())
 
     assert run.key == ("t4", "eager", "none")
     assert run.basis_mib == pytest.approx(4_000.0)
-    # tensors = predicted total minus the overhead the prediction already carried.
     assert run.tensors_mib == pytest.approx(5_000.0)
-    # process = the allocator pool plus the context outside it.
     assert run.process_mib == pytest.approx(6_141.0)
     assert run.residual_mib == pytest.approx(1_141.0)
     assert run.fragmentation == pytest.approx(0.2)
@@ -161,8 +150,6 @@ def test_a_run_with_a_bad_seq_len_is_refused() -> None:
 
 
 def test_a_run_with_a_non_finite_measurement_is_refused() -> None:
-    # json.load() reads the bare literals NaN and Infinity, and one of either would
-    # poison every coefficient fitted from the group without a word.
     payload = _payload()
     payload["measured"]["peak_reserved_mib"] = float("nan")  # type: ignore[index]
 
@@ -213,11 +200,6 @@ def test_load_runs_reports_the_file_that_could_not_be_read(tmp_path: Path) -> No
 
     with pytest.raises(CalibrationError, match=re.escape("missing.json")):
         load_runs([tmp_path / "missing.json"])
-
-
-# ---------------------------------------------------------------------------------
-# The fit
-# ---------------------------------------------------------------------------------
 
 
 def test_the_fit_recovers_the_constants_it_was_generated_from() -> None:
@@ -313,11 +295,6 @@ def test_a_fitted_profile_records_its_own_worst_case_both_ways() -> None:
     assert "runs" in profile.source
 
 
-# ---------------------------------------------------------------------------------
-# Grouping
-# ---------------------------------------------------------------------------------
-
-
 def test_groups_are_fitted_separately_per_gpu_and_kernel() -> None:
     runs = [
         *_synthetic_group(kernel="eager", fragmentation=0.25),
@@ -368,11 +345,6 @@ def test_calibrate_rejects_a_non_numeric_safety_margin() -> None:
         calibrate(_synthetic_group(), safety_mib="200")
 
 
-# ---------------------------------------------------------------------------------
-# Scoring the shipped constants
-# ---------------------------------------------------------------------------------
-
-
 def test_score_grades_the_shipped_constants_without_fitting() -> None:
     runs = _synthetic_group()
 
@@ -405,11 +377,6 @@ def test_score_can_grade_a_candidate_profile_instead() -> None:
     assert max(abs(error) for error in errors) < 1e-9
 
 
-# ---------------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------------
-
-
 def test_the_emitted_literal_evaluates_back_to_the_fitted_profiles() -> None:
     result = calibrate(_synthetic_group())
     namespace: dict[str, object] = {"OverheadProfile": OverheadProfile}
@@ -429,7 +396,7 @@ def test_the_report_names_every_group_and_every_row() -> None:
 
     assert "t4 / eager" in report
     assert "SKIPPED" in report
-    assert report.count("model") >= 5  # the row table lists every fitted run
+    assert report.count("model") >= 5
     assert "worst process-tier error" in report
 
 
@@ -438,11 +405,6 @@ def test_render_check_summarises_one_line_per_group() -> None:
 
     assert "t4/eager" in text
     assert "worst process-tier error with the shipped constants" in text
-
-
-# ---------------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------------
 
 
 def _write(tmp_path: Path, runs: list[dict[str, object]]) -> Path:
@@ -500,7 +462,6 @@ def test_cli_exits_one_when_nothing_reaches_the_minimum(tmp_path, capsys) -> Non
 
 def test_cli_exits_one_when_the_fit_misses_the_error_budget(tmp_path, capsys) -> None:
     payloads = _payloads_spanning_sizes()
-    # Bend one row away from the line so the fit has a residual to fail on.
     payloads[0]["measured"]["peak_reserved_mib"] *= 1.4  # type: ignore[index]
     path = _write(tmp_path, payloads)
 
@@ -516,20 +477,12 @@ def test_cli_exits_two_on_unreadable_input(tmp_path, capsys) -> None:
     assert "calibrate:" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------------
-# The archived T4 rows
-# ---------------------------------------------------------------------------------
-
-
 def test_the_archived_t4_rows_parse_and_group_as_expected() -> None:
     runs = load_runs([_T4_ROWS])
 
     assert len(runs) == 10
-    # The archive is QLoRA, so quantization -- now part of the key -- is nf4.
     assert {run.key for run in runs} == {("t4", "eager", "nf4"), ("t4", "flash", "nf4")}
-    # The measured CUDA context is nowhere near the 500 MiB the default profile bills.
     assert all(130.0 <= run.context_mib <= 150.0 for run in runs)
-    # And the measured fragmentation is nowhere near the flat 5% either.
     assert all(run.fragmentation > 0.05 for run in runs)
 
 
@@ -555,11 +508,6 @@ def test_fitting_the_archived_rows_beats_the_constants_fitcheck_ships() -> None:
     for key, fit in result.fits.items():
         shipped_worst = max(abs(error) for error in shipped[key])
         assert fit.worst_abs_pct < shipped_worst
-
-
-# ---------------------------------------------------------------------------------
-# Gradient checkpointing: the hump form does not exist without it
-# ---------------------------------------------------------------------------------
 
 
 def _hump_run(*, grad_checkpoint: bool | None, basis_mib: float) -> CalibrationRun:

@@ -34,11 +34,6 @@ _CHECK_ARGS = [
 ]
 
 
-# ---------------------------------------------------------------------------------
-# The artifacts
-# ---------------------------------------------------------------------------------
-
-
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8").replace(" ", " ")
 
@@ -95,7 +90,7 @@ def _collect_test_counts() -> tuple[int, int]:
     assert match is not None, f"could not read a collection count from:\n{result.stdout}"
     if match.group(1) is not None:
         network, total = int(match.group(1)), int(match.group(2))
-    else:  # every test is a network test -- cannot happen here, but be explicit
+    else:
         network = total = int(match.group(3))
     return total - network, network
 
@@ -141,15 +136,8 @@ def _rescore_archive(
     return scored
 
 
-# ---------------------------------------------------------------------------------
-# The claims
-# ---------------------------------------------------------------------------------
-
-
 def _claims_if_present(doc: Path, *claims: str) -> None:
-    # CLAUDE.md is internal agent scaffolding and is gitignored, so a clean checkout --
-    # CI's included -- has no copy of it. Enforce its numbers wherever the file exists,
-    # and let the tracked docs carry the check where it does not.
+    # Check internal scaffolding when present; tracked docs are the CI fallback.
     if doc.exists():
         _claims(doc, *claims)
 

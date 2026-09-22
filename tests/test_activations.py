@@ -28,8 +28,8 @@ _A_LAYER_NO_FLASH = _A_LAYER_FLASH + 9 * _SCORE_MATRIX
 _A_LAYER_RETAINED = _A_LAYER_FLASH + 2.9 * _SCORE_MATRIX
 
 
-_A_ACT_CKPT_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_FLASH)          # 20,128
-_A_ACT_CKPT_NO_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_NO_FLASH)    # 20,128
+_A_ACT_CKPT_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_FLASH)
+_A_ACT_CKPT_NO_FLASH = _CKPT_STORE + max(_LOGITS, _A_LAYER_NO_FLASH)
 _A_ACT_NO_CKPT_FLASH = 32 * _A_LAYER_FLASH + _LOGITS
 _A_ACT_NO_CKPT_NO_FLASH = 32 * _A_LAYER_RETAINED + _LOGITS
 
@@ -193,14 +193,12 @@ def test_quantized_base_pins_the_checkpoint_store_to_fp32(llama: ModelConfig) ->
 
     assert bf16.checkpoint_store_bytes == fp32.checkpoint_store_bytes
     assert fp32.checkpoint_store_bytes / 1024**2 == pytest.approx(_CKPT_STORE, rel=1e-9)
-    # The layer bracket still scales, so the profile is not ignoring gamma outright.
     assert fp32.layer_bytes == pytest.approx(2 * bf16.layer_bytes, rel=1e-9)
 
 
 def test_reads_intermediate_size_from_config_instead_of_assuming_4h(
     llama: ModelConfig,
 ) -> None:
-    # Checkpointing off, so the layer hump is visible instead of hidden by the max().
     four_h = _model_config(intermediate_size=4 * 4096)
     bracket = 12 * 4096 + 3 * 4096 + 1 * 1024 + 3 * (4 * 4096)
     a_layer = 2 * _GOLDEN_BATCH * _GOLDEN_SEQ * bracket / 1024**2
@@ -224,8 +222,6 @@ def test_gqa_kv_width_is_smaller_than_mha(llama: ModelConfig) -> None:
 def test_gemma2_uses_head_dim_not_hidden_size_for_q_and_attn_output(
     gemma2_9b: ModelConfig,
 ) -> None:
-    # bracket = 12*3584 + 3*(16*256) + 1*(8*256) + 3*14336 = 100,352
-    # A_layer = 2 * 4*2048 * 100,352 B = 1,568 MiB
     assert _estimate(gemma2_9b, grad_checkpoint=False) == pytest.approx(
         42 * 1_568.0 + _LOGITS, rel=1e-9
     )
@@ -234,7 +230,6 @@ def test_gemma2_uses_head_dim_not_hidden_size_for_q_and_attn_output(
 def test_gemma2_differs_from_the_n_h_d_k_equals_h_assumption(
     gemma2_9b: ModelConfig,
 ) -> None:
-    # Same model with the Llama-shaped assumption baked in (d_k = h/n_h = 224).
     as_if_square = _model_config(
         hidden_size=3584,
         num_layers=42,
@@ -324,8 +319,6 @@ def test_rejects_invalid_batch_size_and_seq_len(
 def test_rejects_a_seq_len_past_the_shape_limit(
     llama: ModelConfig, flash_attn: bool
 ) -> None:
-    # 10**155 squared is past the largest float, so the score matrix used to raise
-    # OverflowError -- on the flash path too, where the term is never billed.
     with pytest.raises(ValueError, match="seq_len must be at most 16,777,216"):
         _estimate(llama, seq_len=10**155, flash_attn=flash_attn)
 
@@ -386,10 +379,6 @@ def test_attention_matrix_part_is_nine_gamma_and_only_without_flash(
 def test_retained_score_matrix_is_smaller_than_the_transient_one(
     llama: ModelConfig,
 ) -> None:
-    """Two regimes, two constants. With checkpointing on, one layer is live and
-    peaks at 9 copies. With it off, every layer stays live and keeps ~2.9 -- so
-    charging 9 copies in all L layers at once, as fitcheck used to, cannot happen.
-    Measured on a T4: worst-case error on that branch fell from 98.3% to 5.9%."""
     eager = _parts(llama, flash_attn=False)
 
     assert eager.retained_layer_bytes < eager.layer_bytes
@@ -423,9 +412,6 @@ def test_parts_reconstruct_the_public_estimate(llama: ModelConfig) -> None:
 
 
 def test_no_checkpointing_branch_is_measured_not_derived(llama: ModelConfig) -> None:
-    """This branch was measured on a T4 over 11 rows and 9 models, so the
-    'derived, not measured' caveat 8.3 attached to it is gone. Keeping a warning
-    that says the branch is unmeasured would now be false."""
     assert _estimate(llama, flash_attn=False, grad_checkpoint=False) == pytest.approx(
         _A_ACT_NO_CKPT_NO_FLASH, rel=1e-9
     )
@@ -434,20 +420,8 @@ def test_no_checkpointing_branch_is_measured_not_derived(llama: ModelConfig) -> 
     )
 
 
-# ---------------------------------------------------------------------------------
-# The unquantized profile (measured 2026-09-15)
-# ---------------------------------------------------------------------------------
-
-
 def test_unquantized_profile_is_the_three_measured_constants() -> None:
-    """These three are the correction, and they are the whole of it.
-
-    Before 2026-09-15 fitcheck billed every run with the QLoRA constants (2 checkpoint
-    tensors per layer at gamma, 4 logits copies, c=9). Refitting the same structure to
-    the 16 `--quant none` rows of the T4 sweep returns 0.90L / 3.56 copies / c=7.30, and
-    to the 16 nf4 rows 1.93L / 4.04 copies / c=9.15 -- the shipped set, unmoved. So the
-    constants were never wrong, only unconditional.
-    """
+    """The unquantized path has its own measured activation constants."""
     none, nf4 = _PROFILES["none"], _PROFILES["nf4"]
 
     assert (none.checkpoint_tensors_per_layer, none.logits_copies) == (1, 3.5)
@@ -462,17 +436,11 @@ def test_unquantized_profile_is_the_three_measured_constants() -> None:
 def test_quantizing_the_base_raises_activation_memory_at_equal_gamma(
     llama: ModelConfig,
 ) -> None:
-    """Same compute dtype, same shape -- nf4 still holds more. Measured, not an artefact.
-
-    TinyLlama-1.1B bs=2 seq=2048 flash: 1.33 MiB of activation per token under nf4
-    against 1.04 under `--quant none`, both at gamma=2. peft's kbit prep upcasts, and
-    fitcheck used to bill every run at the quantized rate.
-    """
+    """Quantized base preparation pins part of activation storage to FP32."""
     quantized = _estimate(llama, quantization="nf4")
     plain = _estimate(llama, quantization="none")
 
     assert quantized > plain
-    # The store doubles (gamma 2 -> FP32) and the logits go 3.5 -> 4 copies.
     assert quantized - plain == pytest.approx(
         (_CKPT_STORE - _ckpt_store_none(2.0)) + (_LOGITS - _LOGITS_NONE), rel=1e-9
     )

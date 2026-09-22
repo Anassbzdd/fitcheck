@@ -1,4 +1,3 @@
-# Component 6
 from __future__ import annotations
 
 from math import isfinite, log2

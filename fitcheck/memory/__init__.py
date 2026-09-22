@@ -1,4 +1,3 @@
-# re-exports all estimate_* functions
 from __future__ import annotations
 
 from fitcheck.memory.activations import estimate_activation_memory

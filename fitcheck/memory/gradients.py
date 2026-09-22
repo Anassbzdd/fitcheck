@@ -1,4 +1,3 @@
-# Component 4
 from __future__ import annotations
 
 from fitcheck.utils import bytes_to_mib, precision_to_bytes

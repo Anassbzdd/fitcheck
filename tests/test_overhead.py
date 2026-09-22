@@ -77,11 +77,6 @@ def test_seq_len_does_not_move_an_uncalibrated_card() -> None:
         )
 
 
-# ---------------------------------------------------------------------------------
-# Fitted profiles
-# ---------------------------------------------------------------------------------
-
-
 def _profile(**overrides: object) -> OverheadProfile:
     fields = {
         "gpu": "Test GPU",
@@ -146,11 +141,6 @@ def test_the_slope_is_ignored_when_no_seq_len_is_given() -> None:
     assert estimate_overhead(1_000.0, 3_000.0, profile) == pytest.approx(
         estimate_overhead(1_000.0, 3_000.0, profile, REFERENCE_SEQ_LEN), rel=1e-12
     )
-
-
-# ---------------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("bad_value", [-1.0, True, "500", None])

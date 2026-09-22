@@ -11,7 +11,6 @@ class GpuSpec:
 
 
 GPU_DB: dict[str, GpuSpec] = {
-    # Consumer GPUs
     "3060-12": GpuSpec("RTX 3060 12GB", 12_288, 11_500),
     "4070ti": GpuSpec("RTX 4070 Ti", 12_288, 11_500),
     "5070": GpuSpec("RTX 5070", 12_288, 11_500),
@@ -21,21 +20,18 @@ GPU_DB: dict[str, GpuSpec] = {
     "4090": GpuSpec("RTX 4090", 24_576, 23_500),
     "5090": GpuSpec("RTX 5090", 32_768, 31_000),
 
-    # Older / cloud GPUs
-    # Measured: 14,912 MiB total with ECC on, not the 16,384 a "16 GB" label suggests.
+    # ECC-on capacity, not the advertised 16 GB.
     "t4": GpuSpec("Tesla T4", 14_912, 14_000),
     "p100-16": GpuSpec("Tesla P100 16GB", 16_384, 15_500),
     "v100-16": GpuSpec("Tesla V100 16GB", 16_384, 15_000),
     "l4": GpuSpec("L4 24GB", 24_576, 23_000),
     "a10": GpuSpec("A10 24GB", 24_576, 23_000),
 
-    # Workstation / pro GPUs
     "a6000": GpuSpec("RTX A6000 48GB", 49_152, 46_000),
     "rtx6000-ada": GpuSpec("RTX 6000 Ada 48GB", 49_152, 46_000),
     "l40": GpuSpec("L40 48GB", 49_152, 46_000),
     "l40s": GpuSpec("L40S 48GB", 49_152, 46_000),
 
-    # Datacenter GPUs
     "a100-40": GpuSpec("A100 40GB", 40_960, 39_500),
     "a100-80": GpuSpec("A100 80GB", 81_920, 79_000),
     "h100": GpuSpec("H100 80GB", 81_920, 79_000),

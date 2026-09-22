@@ -1,12 +1,8 @@
-# The shared input contract: one place every interface validates against.
 from __future__ import annotations
 
 COMPUTE_PRECISIONS: tuple[str, ...] = ("fp32", "fp16", "bf16")
 
-# Upper bounds on the shape inputs. They are not a claim about what a GPU can run --
-# they are the point past which a number is a typo, not a training shape. Without them
-# a large enough seq_len overflows the float byte counts and the user gets an
-# OverflowError traceback instead of a message.
+# Reject impossible shapes before byte arithmetic can overflow.
 MAX_SEQ_LEN = 1 << 24  # 16,777,216 tokens -- past every published context window
 MAX_SEQUENCES = 1 << 20  # 1,048,576 -- the estimator's own batch-search ceiling
 

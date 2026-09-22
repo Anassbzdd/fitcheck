@@ -320,11 +320,8 @@ def test_int8_bills_activations_at_fp32(
         rel=1e-9,
     )
 
-    # Only the gamma-scaled terms move. A_logits is fp32 on every path, and it
-    # wins the max() here, so the checkpoint store is the whole of the increase.
-    # int8 keeps its pre-2026-09-15 constants (2 checkpoint tensors per layer, 4 logits
-    # copies, c=9) on purpose: there is no int8 row in the calibration sweep and the one
-    # archived int8 measurement already under-predicts. See memory/activations._PROFILES.
+    # A_logits remains FP32 and wins the max(); only the checkpoint store increases.
+    # Keep int8 constants conservative because no calibration row exists for it.
     assert estimate(llama_model, int8, get_gpu("4090")).activation_mib == 24_224.0
     assert estimate(llama_model, qlora_training, get_gpu("4090")).activation_mib == 20_128.0
 
@@ -352,7 +349,6 @@ def test_report_is_json_serializable_for_ci(golden_report: MemoryReport) -> None
     assert payload["max_batch_size"] == _GOLDEN_MAX_BATCH
 
 
-# --- Inference serving (Component 7 + Component 6) ---
 
 _SERVING_W_BASE_FP16 = 15_316.51
 _SERVING_KV_2048 = 256.0

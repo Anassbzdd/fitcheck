@@ -117,11 +117,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--decode-steps must be < --seq-len")
 
 
-# ---------------------------------------------------------------------------------
-# Model construction
-# ---------------------------------------------------------------------------------
-
-
 def _torch_dtype(precision: str):
     import torch
 
@@ -215,11 +210,6 @@ def cached_token_count(cache: Any, fallback: int) -> int:
         if value > 0:
             return value
     return fallback
-
-
-# ---------------------------------------------------------------------------------
-# Measurement
-# ---------------------------------------------------------------------------------
 
 
 @dataclass
@@ -420,11 +410,6 @@ def measure(args: argparse.Namespace) -> InferenceMeasurement:
     )
 
 
-# ---------------------------------------------------------------------------------
-# Prediction (imports fitcheck, which never imports torch -- the dependency is one-way)
-# ---------------------------------------------------------------------------------
-
-
 def predict(args: argparse.Namespace):
     from fitcheck.config_parser import fetch_model_config
     from fitcheck.estimator import ServingConfig, estimate_inference
@@ -439,11 +424,6 @@ def predict(args: argparse.Namespace):
     )
     model_config = fetch_model_config(args.model_id)
     return model_config, estimate_inference(model_config, serving, get_gpu(args.gpu))
-
-
-# ---------------------------------------------------------------------------------
-# Reporting
-# ---------------------------------------------------------------------------------
 
 
 def _error_pct(predicted: float, actual: float) -> float:

@@ -40,11 +40,6 @@ def _archived_row_count() -> int:
     return total
 
 
-# ---------------------------------------------------------------------------------
-# The manifest covers the archive, exactly once each
-# ---------------------------------------------------------------------------------
-
-
 def test_every_archived_row_has_exactly_one_declared_role() -> None:
     rows = _manifest()["rows"]
     pointers = Counter((row["file"], row["index"]) for row in rows)
@@ -78,11 +73,6 @@ def test_every_row_names_the_session_it_was_measured_in() -> None:
             assert field in session, f"{name} does not record {field}"
 
 
-# ---------------------------------------------------------------------------------
-# Roles gate the fit
-# ---------------------------------------------------------------------------------
-
-
 def test_only_calibration_rows_are_loaded_by_default() -> None:
     declared = Counter(row["role"] for row in _manifest()["rows"])
     loaded = load_manifest(_MANIFEST)
@@ -100,12 +90,7 @@ def test_repeats_and_excluded_rows_are_reachable_but_never_by_default() -> None:
 
 
 def test_a_glob_over_the_archive_yields_the_declared_set_not_the_directory() -> None:
-    """The old documented command still works, and now it is the declared one.
-
-    `data/measurements/*.json` sweeps the manifest up with the measurement files. The
-    manifest wins, so the raw files it covers are not read a second time -- otherwise
-    the eight repeats and the ten legacy rows would be back in the fit.
-    """
+    """Manifest-covered files are not loaded a second time through the glob."""
     globbed = load_runs(sorted(_ARCHIVE.glob("*.json")))
     declared = load_manifest(_MANIFEST)
 
@@ -113,7 +98,7 @@ def test_a_glob_over_the_archive_yields_the_declared_set_not_the_directory() -> 
 
 
 def test_mixing_hump_and_legacy_rows_in_one_group_is_refused() -> None:
-    """One pre-9.3 row used to drag a whole group onto the legacy form, silently."""
+    """A fitted group cannot mix rows with and without activation humps."""
     runs = load_manifest(_MANIFEST)
     legacy = load_manifest(_MANIFEST, ["excluded"])
     contaminated = [run for run in runs if run.key == legacy[0].key] + [legacy[0]]
@@ -139,11 +124,6 @@ def test_a_manifest_from_a_future_schema_is_refused(tmp_path: Path) -> None:
     )
     with pytest.raises(CalibrationError, match="schema_version"):
         load_manifest(tmp_path / "manifest.json")
-
-
-# ---------------------------------------------------------------------------------
-# The shipped database is what the declared rows produce
-# ---------------------------------------------------------------------------------
 
 
 def test_the_documented_command_reproduces_the_shipped_database() -> None:

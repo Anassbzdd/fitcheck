@@ -18,11 +18,8 @@ from fitcheck.cli import main
 
 _MODEL = "meta-llama/Llama-3.1-8B"
 
-# Wide enough that rich never folds a table cell mid-word, so the assertions below
-# can look for whole phrases.
 _ENV = {"COLUMNS": "200", "TERM": "dumb", "NO_COLOR": "1"}
 
-# The golden config at bs=1: 14,756 MiB on a 4090, which fits.
 _FITTING = (
     "--qlora",
     "--lora-r", "64",
@@ -64,7 +61,6 @@ def _flat(result: Result) -> str:
     return " ".join(result.output.split())
 
 
-# --------------------------------------------------------------------------- exit codes
 
 
 def test_a_fitting_config_exits_zero(runner: CliRunner, llama_on_hub: None) -> None:
@@ -98,7 +94,6 @@ def test_an_unreadable_config_exits_two(
     assert result.exit_code == 2
 
 
-# --------------------------------------------------------------------------- output flags
 
 
 def test_list_gpus_prints_the_database_and_exits_zero(runner: CliRunner) -> None:
@@ -199,7 +194,6 @@ def test_package_version_falls_back_when_the_dist_is_missing(
     assert cli._package_version() == "unknown"
 
 
-# --------------------------------------------------------------------------- infer
 
 
 def test_infer_prices_weights_plus_kv_cache(runner: CliRunner, llama_on_hub: None) -> None:
@@ -248,7 +242,6 @@ def test_infer_refuses_double_quant_outside_nf4(
     assert "--double-quant" in _flat(result)
 
 
-# --------------------------------------------------------------------------- advise
 
 
 def test_advise_sweeps_and_exits_zero_when_something_fits(
@@ -340,7 +333,6 @@ def test_advise_rejects_an_empty_sweep_axis(runner: CliRunner, llama_on_hub: Non
     assert "at least one value is required" in _flat(result)
 
 
-# --------------------------------------------------------------------------- validation
 
 
 def test_lora_targets_accepts_a_preset_and_a_bare_module_list() -> None:
@@ -424,7 +416,6 @@ def test_a_vram_override_prices_a_card_outside_the_database(
     assert payload["gpu"]["vram_mib"] == 40_000
 
 
-# --------------------------------------------------------------------------- Mode B door
 
 
 def test_no_model_id_enters_the_repl_and_exits_zero(

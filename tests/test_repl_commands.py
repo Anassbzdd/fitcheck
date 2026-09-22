@@ -90,7 +90,6 @@ def loaded(llama_model: ModelConfig) -> _Repl:
     )
 
 
-# ----------------------------------------------------------------------- model / gpu
 
 
 def test_model_loads_a_config_and_reports_the_geometry(llama_on_hub: None) -> None:
@@ -156,7 +155,6 @@ def test_an_unknown_card_suggests_the_vram_override(loaded: _Repl) -> None:
     assert "--vram-mib 24000" in message
 
 
-# ----------------------------------------------------------------------- memory
 
 
 def test_memory_estimates_and_remembers_the_flags(loaded: _Repl) -> None:
@@ -264,7 +262,6 @@ def test_double_quant_is_dropped_when_the_base_stops_being_nf4(loaded: _Repl) ->
     assert loaded.session.training.double_quant is False
 
 
-# ----------------------------------------------------------------------- infer
 
 
 def test_infer_prices_weights_plus_the_kv_cache(loaded: _Repl) -> None:
@@ -313,7 +310,6 @@ def test_infer_refuses_double_quant_outside_nf4(loaded: _Repl) -> None:
         loaded.run("infer --quant int8 --double-quant")
 
 
-# ----------------------------------------------------------------------- advise
 
 
 def test_advise_sweeps_and_remembers_the_bounds(loaded: _Repl) -> None:
@@ -371,7 +367,6 @@ def test_advise_shares_the_training_flags_with_memory(loaded: _Repl) -> None:
     assert loaded.session.last is None
 
 
-# ----------------------------------------------------------------------- explain
 
 
 def test_explain_reuses_the_last_report(loaded: _Repl) -> None:
@@ -392,7 +387,6 @@ def test_explain_takes_no_arguments(loaded: _Repl) -> None:
     assert "explain takes no arguments" in loaded.fails("explain --batch-size 4")
 
 
-# ----------------------------------------------------------------------- compare
 
 
 def test_compare_prices_the_config_on_every_named_card(loaded: _Repl) -> None:
@@ -420,7 +414,6 @@ def test_compare_needs_at_least_one_card(loaded: _Repl) -> None:
     assert "Usage: compare <gpu>" in loaded.fails("compare --infer")
 
 
-# ----------------------------------------------------------------------- show / state
 
 
 def test_show_reports_an_empty_session() -> None:
@@ -453,7 +446,6 @@ def test_the_state_alias_reaches_show(loaded: _Repl) -> None:
     assert "session" in loaded.run("state")
 
 
-# ----------------------------------------------------------------------- gpus / reset
 
 
 def test_gpus_prints_the_database(loaded: _Repl) -> None:
@@ -485,7 +477,6 @@ def test_reset_takes_no_arguments(loaded: _Repl) -> None:
     assert "reset takes no arguments" in loaded.fails("reset all")
 
 
-# ----------------------------------------------------------------------- help / dispatch
 
 
 def test_help_lists_every_command(loaded: _Repl) -> None:
@@ -539,7 +530,6 @@ def test_exit_raises_the_sentinel(loaded: _Repl) -> None:
         loaded.run("exit")
 
 
-# ----------------------------------------------------------------------- the loop
 
 
 def _drive(monkeypatch: pytest.MonkeyPatch, script: str, **kwargs: Any) -> tuple[int, str]:

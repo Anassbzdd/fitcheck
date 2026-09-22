@@ -37,14 +37,15 @@ runs/
 runs.zip
 
 # Internal agent scaffolding — not project documentation.
-# docs/ IS tracked on purpose: SPEC.md and Blueprint.md are the public "how it works"
-# reference, and README's how-it-works section links to them (SPEC.md Definition of Done #5).
+# docs/ is tracked on purpose: SPEC.md is the public technical reference.
+# README's how-it-works section links to it (SPEC.md Definition of Done #5).
 CLAUDE.md
 .claude/
 AGENTS.md
 
 docs/TASKS.md
 docs/ADVISOR.md
+docs/Blueprint.md
 AUDIT.md
 infer_problemes.md
 

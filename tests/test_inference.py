@@ -238,7 +238,6 @@ def test_rejects_non_model_config(bad_config: object) -> None:
         estimate_inference_memory(bad_config, "fp16", 2048, 1)
 
 
-# --- Precision and quantization are two axes, not one ---
 
 
 def test_quantization_defaults_to_none(llama: ModelConfig) -> None:
@@ -276,7 +275,6 @@ def test_nf4_weights_are_packed_plus_scales_plus_a_float_slice(
 
 
 def test_scale_overhead_is_not_skipped_under_quantization(llama: ModelConfig) -> None:
-    """`--precision int4` used to bill 0.5 B/param and no absmax at all."""
     nf4 = estimate_inference_memory(llama, "fp16", 2048, 1, "nf4")
 
     quantized_params = _LLAMA_31_8B_PARAMS - llama.num_unquantized_params
@@ -400,8 +398,6 @@ def test_rejects_quantizing_a_model_with_no_quantizable_weights() -> None:
 
 
 def test_rejects_shapes_past_the_limits(llama: ModelConfig) -> None:
-    # The KV cache is linear in both, so a big enough value used to leave the byte
-    # count unrepresentable as a float and raise OverflowError.
     with pytest.raises(ValueError, match="seq_len must be at most 16,777,216"):
         estimate_inference_memory(llama, "fp16", 10**310, 1)
     with pytest.raises(ValueError, match="num_concurrent must be at most 1,048,576"):

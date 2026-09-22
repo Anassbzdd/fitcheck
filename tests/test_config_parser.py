@@ -293,8 +293,7 @@ def test_fetch_model_config_rejects_a_non_boolean_tie_word_embeddings(
     llama_31_8b_config: dict[str, Any],
     declared: object,
 ) -> None:
-    # bool("false") is True, which would tie the embeddings and drop a whole (V x h)
-    # LM head from the count -- an under-count, the direction that reports a fit.
+    # Treating "false" as truthy would under-count the untied LM head.
     fake_config_download(dict(llama_31_8b_config, tie_word_embeddings=declared))
 
     with pytest.raises(ValueError, match="'tie_word_embeddings' must be true or false"):
@@ -720,8 +719,8 @@ def test_disagreement_refusal_does_not_average_the_two(
 @pytest.mark.parametrize(
     ("hub_count", "refused"),
     [
-        (int(_LLAMA_31_8B_PARAMS / 1.02) + 1, False),  # just inside the 2% edge
-        (int(_LLAMA_31_8B_PARAMS / 1.021), True),      # just past it
+        (int(_LLAMA_31_8B_PARAMS / 1.02) + 1, False),
+        (int(_LLAMA_31_8B_PARAMS / 1.021), True),
         (int(_LLAMA_31_8B_PARAMS / 0.98) - 1, False),
         (int(_LLAMA_31_8B_PARAMS / 0.979), True),
     ],

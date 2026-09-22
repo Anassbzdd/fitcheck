@@ -1,4 +1,3 @@
-# Interactive REPL (Mode B)
 from __future__ import annotations
 
 import sys
@@ -60,8 +59,7 @@ from fitcheck.gpu_db import GPU_DB, GpuSpec, get_gpu, gpu_key_for
 from fitcheck.validation import double_quant_conflict
 
 with suppress(ImportError):
-    # Imported for its side effect: it gives input() arrow-key editing and history.
-    # Absent on Windows, hence the suppress.
+    # Optional: supplies arrow-key editing and history where available.
     import readline  # noqa: F401
 
 _PROMPT = "[bold cyan]fitcheck[/bold cyan] > "
@@ -163,8 +161,7 @@ _SESSION_COMMANDS: dict[str, click.Command] = {}
 
 
 def _cli_module() -> ModuleType:
-    # Imported lazily: cli.py builds its commands from this module, so importing it at
-    # module scope would close the cycle.
+    # Lazy import avoids the cli/repl import cycle.
     from fitcheck import cli
 
     return cli
@@ -628,7 +625,7 @@ def _cmd_advise(session: _Session, args: list[str]) -> None:
         raise _ReplError(str(error)) from error
 
     if training != session.training:
-        # `memory`'s last report was computed against the flags this line just changed.
+        # The cached report no longer matches the flags changed on this line.
         session.last = None
     session.training = training
     session.sweep = sweep

@@ -82,732 +82,504 @@ This trial-and-error loop wastes 10–30 minutes per attempt and provides **zero
 
 ### 3.1 — The 6 Memory Components and Their Formulas
 
-All formulas are derived from first principles. The master equation:
+All training estimates use the master equation:
 
 $$\boxed{\text{Peak VRAM} = W_{base} + W_{lora} + S_{optim} + G_{grad} + A_{act} + C_{overhead}}$$
+
+Each component below uses the same order: what it counts, formula, why, and limits.
+All results are converted to MiB at the boundary.
 
 ---
 
 #### Component 1: Base Model Weights ($W_{base}$)
 
-**Unquantized base:**
+**What it counts.** The resident base-model weights and quantization scales.
+A quantized base has a packed slice and an unquantized slice. The latter includes
+`embed_tokens`, `lm_head`, and layernorms.
+
+**Formula.**
+
+Unquantized base:
 
 $$W_{base} = P \times \text{bytes\_per\_param}$$
 
-**Quantized base (NF4 / INT8) — it splits into two slices, and only one of them is packed:**
+Quantized base:
 
 $$W_{base} = P_q \times \left(\text{bytes\_per\_param} + \frac{4}{B_q}\right) + P_{skip} \times 4$$
 
-Where:
-- $P$ = total parameter count (read from the Hub's safetensors metadata, cross-checked
-  against a count derived from `config.json`; no weights are loaded either way — §3.3)
-- `bytes_per_param`: FP32→4, FP16/BF16→2, INT8→1, INT4/NF4→0.5
-- $P_{skip}$ = the parameters `bitsandbytes` does **not** quantize — `embed_tokens`, `lm_head` and
-  the layernorms — which peft's `prepare_model_for_kbit_training` then upcasts to **FP32**, hence the
-  flat 4 bytes/param on that slice. Available as `ModelConfig.num_unquantized_params`:
-  $P_{skip} = 2Vh$ (or $Vh$ when tied) $+\ 2Lh + h$
-- $P_q = P - P_{skip}$ = the transformer `nn.Linear` weights, the only slice actually packed
-- $B_q$ = quantization block size (default 64)
+Quantization-scale overhead:
 
-> **A flat $P \times \text{bytes\_per\_param}$ is wrong for a quantized base, and wrong low.** On
-> Llama-3.1-8B $P_{skip}$ is 1.05B parameters — 4,009 MiB at FP32, where a flat 0.5 B/param charges
-> 501. That is most of the gap between the v0.1 figure of 4,068 MiB and the measured 7,753 MiB.
-> Confirmed to the MiB on a Kaggle T4 (Mistral-7B-v0.3): NF4 linears 3,328 + scales 416 +
-> unquantized 1,129, against a prediction of 3,328 + 416 + 1,129.
+$$Q_{overhead} = P_q \times \frac{4}{B_q}\text{ bytes}$$
 
-**QLoRA quantization overhead:**
+Double quantization:
 
-$$Q_{overhead} = P_q \times \frac{4}{B_q} \text{ bytes}$$
+$$\text{Overhead}^{DQ} =
+\frac{8\text{ bits}}{64} + \frac{32\text{ bits}}{64 \times 256}
+= 0.125 + 0.00195
+\approx \mathbf{0.127}\text{ bits/param}
+\approx \mathbf{0.0159}\text{ bytes/param}$$
 
-One **FP32** absmax scale per block of 64 → 4 bytes per 64 weights = 0.0625 bytes/param, charged on
-the **quantized slice only**. This is where the QLoRA paper's 0.5 bits/param figure comes from.
+The factor relative to single quantization is $\mathbf{0.254}$.
+Double quantization removes about three quarters of scale overhead.
 
-Double Quantization **quantizes the quantization constants themselves**:
-
-1. The first-level scales $c_1$ (one per block of 64 weights) are quantized from **FP32 (32 bits)** down to
-   **8-bit integers**. Note: 8-bit *quantized ints*, not FP8 — the format is an int8 codebook, not a float type.
-2. A second-level scale $c_2$ in **FP32 (32 bits)** is added once every **256 blocks**.
-
-$$ \text{Overhead}^{DQ} = \frac{8\text{ bits}}{64} + \frac{32\text{ bits}}{64 \times 256} = 0.125 + 0.00195 \approx \mathbf{0.127}\text{ bits/param} \approx \mathbf{0.0159}\text{ bytes/param} $$
-
-Against the single-quantization $0.0625$ bytes/param (0.5 bits/param, FP32 absmax) that is a factor of
-$\mathbf{0.254}$ — double quantization removes about three quarters of the scale overhead, not half.
-
-> **Settled by measurement, 2026-09-11.** `memory/weights.py` carried
-> `_DOUBLE_QUANT_OVERHEAD_FACTOR = 0.5` for a while, calibrated back when this spec modelled the
-> first-level scales as **FP16**: against a $0.03125$ bytes/param baseline, $0.0159$ really is a
-> factor of $0.508 \approx 0.5$. Correcting the baseline to FP32 moved the ratio without moving the
-> constant, so the two disagreed, and the spec deliberately refused to fix it by arithmetic alone.
->
-> Two T4 runs of SmolLM2-1.7B NF4 (`--quant nf4` with and without `--double-quant`, everything else
-> identical) resolved it. The harness reports resident scale bytes directly: **96 MiB** without,
-> **24 MiB** with. The quantized slice is 1,610,612,736 params, so 96 MiB confirms the $4/64$ FP32
-> baseline exactly, and 24 MiB matches the $0.0159$ bytes/param derivation (24.4 MiB) — not the
-> $0.03125$ the old constant charged (48 MiB). **The derivation was right and the constant was
-> wrong by 2×.** The factor is now $0.25390625$, and measured `W_base + W_lora` on that run moved
-> from $+1.9\%$ to $-0.1\%$.
->
-> The golden number set does not use `--double-quant`, so nothing in the Appendix moves.
-
-**Parameter counting from config** (no weight download):
+Parameter count:
 
 $$P = V h + L \left[P_{attn} + 3h \cdot d_{ff} + 2h\right] + h + V h \cdot \mathbb{1}[\text{untied}]$$
 
-Where $V$ = vocab size, $h$ = hidden size, $L$ = layers, and $d_k$ = head dimension — **read from
-config, never assumed to be $h/n_h$** (§3.3). The $2h$ is the two per-layer RMSNorms; the lone $+h$ is
-the single final norm. Both are rounding error in MiB and neither is optional: they are the difference
-between reproducing $P = 8{,}030{,}261{,}248$ and missing it, and `test_end_to_end.py` asserts that
-integer exactly.
+Attention parameter count:
 
-#### **Attention parameters ($P_{attn}$) depend on the attention type:**
+$$P_{attn} =
+2h \cdot n_h \cdot d_k + 2h \cdot n_{kv} \cdot d_k$$
 
-| Attention Type                    | When               | $P_{attn}$                         |
-| :-------------------------------- | :----------------- | :--------------------------------- |
-| **MHA** (Multi-Head Attention)    | $n_{kv} = n_h$     | $4h^2$                             |
-| **GQA** (Grouped Query Attention) | $1 < n_{kv} < n_h$ | $2h^2 + 2h \cdot n_{kv} \cdot d_k$ |
-| **MQA** (Multi-Query Attention)   | $n_{kv} = 1$       | $2h^2 + 2h \cdot d_k$              |
+| Attention type | Condition | $P_{attn}$ |
+| :--- | :--- | ---: |
+| MHA | $n_{kv}=n_h$ | $4h^2$ |
+| GQA | $1<n_{kv}<n_h$ | $2h^2 + 2h \cdot n_{kv} \cdot d_k$ |
+| MQA | $n_{kv}=1$ | $2h^2 + 2h \cdot d_k$ |
 
-General formula (works for all 3): $P_{attn} = 2h \cdot n_h \cdot d_k + 2h \cdot n_{kv} \cdot d_k$
+Here $P$ is the total parameter count, $P_q=P-P_{skip}$, and $B_q$ is the
+quantization block size. The default $B_q$ is 64. `bytes_per_param` is 4 for
+FP32, 2 for FP16/BF16, 1 for INT8, and 0.5 for INT4/NF4.
 
-> For MHA: $n_{kv} = n_h$ → $n_{kv} \cdot d_k = h$ → $2h^2 + 2h^2 = 4h^2$ ✓
->
-> The `q`/`o` term is written $2h \cdot n_h \cdot d_k$ rather than $2h^2$ because $n_h \cdot d_k = h$ is an
-> *observed regularity of Llama-shaped models*, not an invariant. Gemma-2-9B breaks it:
-> $16 \times 256 = 4096$ against $h = 3584$. The two forms are identical for Llama, Mistral and Qwen;
-> only the general one is also right for Gemma.
+The skipped count is:
 
-**Implementation:** `memory/weights.py` — single function `estimate_weight_memory(num_params, precision, quantization_config)`. It takes the scalar param count, not the whole `ModelConfig`: counting parameters is `config_parser`'s job, and keeping the boundary there makes the function trivially testable with a bare integer.
+$$P_{skip}=2Vh\text{ (or }Vh\text{ when tied)} + 2Lh + h$$
+
+The $2Lh$ term is the two per-layer RMSNorms. The final $+h$ is the final norm.
+The unquantized slice is billed at 4 bytes per parameter during quantized training.
+
+**Why.** A flat $P \times \text{bytes\_per\_param}$ is too low for quantized
+training. For Llama-3.1-8B, $P_{skip}$ is 1.05B parameters. That slice costs
+4,009 MiB at FP32, while a flat 0.5 bytes/param charges 501 MiB. A T4
+Mistral-7B-v0.3 run measured 3,328 MiB of NF4 linears, 416 MiB of scales,
+and 1,129 MiB of unquantized weights. The prediction was identical.
+
+The QLoRA scale is one FP32 absmax per 64 weights. It is charged only on the
+quantized slice. Two SmolLM2-1.7B NF4 T4 runs measured 96 MiB without double
+quantization and 24 MiB with it. The quantized slice had 1,610,612,736
+parameters. The derived double-quantization cost is 24.4 MiB. The old
+0.5 factor was wrong by 2×. The shipped factor is 0.25390625. The golden
+number set does not use double quantization. DQ stores first-level FP32 scales
+as 8-bit integer codes and adds one FP32 second-level scale per 256 blocks.
+
+The general attention formula uses $d_k$ from the model config. Do not replace
+it with $h/n_h$. Gemma-2-9B has $n_h d_k=4096$ and $h=3584$.
+
+**Limits.**
+
+- `config_parser.py` gets the parameter count from Hub metadata and cross-checks
+  the count derived from `config.json`. It never downloads weights.
+- The flat formula is valid only for an unquantized base.
+- The skipped slice is FP32 in the quantized training path because peft's
+  `prepare_model_for_kbit_training` upcasts it.
+- The implementation is `memory/weights.py`:
+  `estimate_weight_memory(num_params, precision, quantization_config)`.
 
 ---
 
 #### Component 2: LoRA Adapter Weights ($W_{lora}$)
-$$W_{lora} = L \times r \times \gamma_{adapter} \times \sum_{t \in \text{targets}} \left(d_{in}^{(t)} + d_{out}^{(t)}\right)$$
 
-$$\gamma_{adapter} = 4 \text{ bytes (FP32), on every LoRA path}$$
+**What it counts.** Trainable LoRA adapter weights.
 
-For GQA targets, $d_{out}^{(k)} = d_{out}^{(v)} = n_{kv} \cdot d_k$, not $h$.
+**Formula.**
 
-> **The adapters are FP32 on every path — quantized base or not — whatever the compute dtype says.**
-> Two separate mechanisms land in the same place. On a quantized base, peft's
-> `prepare_model_for_kbit_training` upcasts every trainable parameter to FP32 — the same call that
-> upcasts $P_{skip}$ in Component 1, and it does not consult `--precision`. On an **unquantized**
-> base, `get_peft_model`'s `autocast_adapter_dtype=True` default does the same thing whenever the
-> base model is FP16 or BF16. An FP32 base gives FP32 adapters anyway. There is no configuration
-> reachable from the CLI where the adapters are half precision.
->
-> **Measured, 2026-09-12.** All 14 LoRA runs across both ground-truth sessions showed
-> $W_{lora}$ at exactly twice the prediction and $G_{grad}$ at exactly $-50.0\%$ — not
-> approximately, exactly, on every row, including nine runs with `--quant none`. The harness's
-> `RESIDENT WEIGHT BYTES BY STORAGE` block places the upcast at **load time**, before the optimizer
-> is built, so it is peft doing it and not the harness. An earlier draft of this rule said "whenever
-> the base is quantized"; measurement widened it to "always", and the unquantized half of that rule
-> was the unsafe direction — $-50\%$ on two components at once.
->
-> This is one axis, used twice: $\gamma_{adapter}$ prices the adapters here **and** the gradients in
-> Component 4, because a `.grad` matches its parameter's dtype. Activations are unaffected — they
-> follow the compute dtype $\gamma$, which is a separate thing.
+$$W_{lora} =
+L \times r \times \gamma_{adapter}
+\times \sum_{t \in \text{targets}}\left(d_{in}^{(t)} + d_{out}^{(t)}\right)$$
 
-**Implementation:** `memory/lora.py` — function
-`estimate_lora_memory(config, rank, targets, precision, adapter_precision=None)`. The orchestrator
-passes `adapter_precision` from `estimator._adapter_precision`, which is where the rule above lives.
+$$\gamma_{adapter}=4\text{ bytes (FP32) on every LoRA path}$$
+
+For GQA, $d_{out}^{(k)}=d_{out}^{(v)}=n_{kv}d_k$, not $h$.
+
+**Why.** peft keeps LoRA adapters in FP32 on every CLI path. On a quantized
+base, `prepare_model_for_kbit_training` upcasts trainable parameters. On an
+unquantized FP16 or BF16 base, `get_peft_model(autocast_adapter_dtype=True)`
+does the same. An FP32 base is already FP32.
+
+All 14 measured LoRA runs showed the same result. Adapter memory was exactly
+twice the lower-precision prediction. A lower-precision calculation under-counted
+gradient memory by exactly 50%. Nine runs used `--quant none`. The resident
+weight breakdown places the upcast at load time, before the optimizer is built.
+
+**Limits.**
+
+- There is no CLI path that produces half-precision adapters.
+- Adapter precision is separate from compute precision. Activations use the
+  compute dtype, not $\gamma_{adapter}$.
+- The implementation is `memory/lora.py`:
+  `estimate_lora_memory(config, rank, targets, precision, adapter_precision=None)`.
+  The orchestrator supplies `adapter_precision` from `estimator._adapter_precision`.
 
 ---
 
 #### Component 3: Optimizer States ($S_{optim}$)
 
-$$S_{optim} = P_{trainable} \times \beta_{optim}$$
+**What it counts.** Optimizer state for trainable parameters only.
+Full fine-tuning may also need an FP32 master-weight copy.
 
-| Optimizer           | $\beta_{optim}$ (bytes/param) |
-| :------------------ | :---------------------------: |
-| AdamW (FP32 states) |               8               |
-| AdamW (BF16 states) |               4               |
-| AdamW 8-bit         |               2               |
-| SGD + momentum      |               4               |
-| SGD (no momentum)   |               0               |
+**Formula.**
 
-**Subtlety — full fine-tuning master copy:** Add $P_{trainable} \times 4$ bytes for the FP32 master weight
-copy **only when full fine-tuning in mixed precision** — that is, when `is_lora` is false *and*
-`precision != "fp32"`:
+$$S_{optim}=P_{trainable}\times\beta_{optim}$$
 
-$$S_{optim} = P_{trainable} \times \left(\beta_{optim} + 4 \cdot \mathbb{1}[\text{not LoRA}] \cdot \mathbb{1}[\text{precision} \ne \text{fp32}]\right)$$
+| Optimizer | $\beta_{optim}$ (bytes/param) |
+| :--- | ---: |
+| AdamW with FP32 states | 8 |
+| AdamW with BF16 states | 4 |
+| AdamW 8-bit | 2 |
+| SGD with momentum | 4 |
+| SGD without momentum | 0 |
 
-A master weight is the FP32 shadow of a parameter stored in lower precision. Under `--precision fp32` the
-parameters *are* FP32, there is nothing to shadow, and $W_{base}$ has already paid those 4 bytes/param —
-adding the copy there double-counts. The two correct paths must agree at **16 bytes/param** for full FT with
-AdamW, which is the invariant to test:
+For full fine-tuning in mixed precision:
 
-| precision | $W_{base}$ | $G_{grad}$ | $\beta_{optim}$ | master copy | total |
-|:---|--:|--:|--:|--:|--:|
-| bf16 / fp16 (mixed) | 2 | 2 | 8 | **+4** | **16** |
-| fp32 | 4 | 4 | 8 | **+0** | **16** |
+$$S_{optim}=P_{trainable}\times
+\left(\beta_{optim}
++4\cdot\mathbb{1}[\text{not LoRA}]
+\cdot\mathbb{1}[\text{precision}\ne\text{fp32}]\right)$$
 
-On Llama-3.1-8B, billing the copy unconditionally over-reports `--no-lora --precision fp32` by
-$8{,}030{,}261{,}248 \times 4$ B = **30,633 MiB**, which is enough to flip a fits/doesn't-fit verdict on any card.
+**Why.** A lower-precision full-fine-tuning parameter needs an FP32 shadow.
+An FP32 parameter does not. Its base-weight term already paid for the FP32
+storage. With AdamW, both correct full-fine-tuning paths total 16 bytes per
+parameter:
 
-The condition is keyed on **precision, not optimizer** — master weights predate Adam and apply to
-mixed-precision SGD too. Do not overload `optimizer_dtype`, which is the state dtype and an independent axis.
+| Precision | $W_{base}$ | $G_{grad}$ | State | Master copy | Total |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| BF16/FP16 mixed | 2 | 2 | 8 | **+4** | **16** |
+| FP32 | 4 | 4 | 8 | **+0** | **16** |
 
-> **Known simplification:** pure-BF16 training with BF16 states and no master copy (stochastic-rounding
-> setups) is over-counted by this rule. Rare, and the error is conservative. Not modeled in v0.1.
+Billing the master copy unconditionally over-reports Llama-3.1-8B FP32
+full fine-tuning by **30,633 MiB**. The condition depends on `precision`, not
+the optimizer. Master weights also apply to mixed-precision SGD.
 
-**Implementation:** `memory/optimizer.py` — function
-`estimate_optimizer_memory(trainable_params, optimizer, is_lora, optimizer_dtype, precision)`.
+**Limits.**
+
+- Optimizer states never apply to frozen base parameters in a LoRA run.
+- Pure BF16 with BF16 states and no master copy is over-counted. Such
+  stochastic-rounding setups are rare and are not modeled in v0.1.
+- The implementation is `memory/optimizer.py`:
+  `estimate_optimizer_memory(trainable_params, optimizer, is_lora, optimizer_dtype, precision)`.
 
 ---
 
 #### Component 4: Gradients ($G_{grad}$)
 
-$$G_{grad} = P_{trainable} \times \gamma_{adapter}$$
+**What it counts.** `.grad` tensors for trainable parameters.
 
-A `.grad` tensor matches its parameter in **shape and dtype**, so this term follows whatever dtype the
-trainable parameters are actually held in — the same $\gamma_{adapter}$ Component 2 defines, not the
-compute dtype:
+**Formula.**
 
-| Trainable params held in | Bytes per param | When |
-| :----------------------- | :-------------: | :--- |
-| FP32                     |        4        | **every LoRA run** (Component 2), and full fine-tuning at `--precision fp32` |
-| FP16 / BF16              |        2        | full fine-tuning at `--precision fp16` / `bf16` |
+$$G_{grad}=P_{trainable}\times\gamma_{adapter}$$
 
-> **LoRA gradients are FP32, not BF16 — and that now includes an unquantized base.** peft holds the
-> adapters in FP32 (Component 2) and the gradients follow them there. The golden config's 208 MiB is
-> $54{,}525{,}952 \times 4$, not $\times 2$. Reading this term off `--precision` alone under-counts
-> by half on **every** LoRA run — measured at exactly $-50.0\%$ on 14 rows out of 14, nine of them
-> with `--quant none`.
+The parameter dtype determines this factor:
 
-> **Full fine-tuning used to split this differently from the harness. Fixed 2026-09-20.**
-> `scripts/measure.py` reached `--optimizer-dtype fp32` by casting every trainable parameter to
-> FP32 in place. Under LoRA that is a no-op — peft already holds the adapters in FP32, and all 69
-> archived rows show `after_load == resident_before_step` to prove it — but under `--no-lora`
-> *every* parameter is trainable, so the cast rewrote the whole model: the FP32 master copy landed
-> in the harness's *weights* reading, and the row also measured FP32 gradients and **FP32
-> activations** while wearing an `fp16` label. The three per-param terms read as weights $+50\%$,
-> $S_{optim}$ $-50\%$, $G_{grad}$ $-50\%$ with a sum exact to the MiB (2,479 vs 2,479 on
-> llama-160m), which is why it went unnoticed: the parameter side comes to 16 bytes/param either
-> way. $A_{act}$ does not cancel, and on that row it was hidden by a vocabulary large enough for
-> $A_{logits}$ — which is FP32 regardless — to win the `max()`.
->
-> The harness now keeps the compute weights at `--precision` and holds the FP32 shadow in
-> `measure.MasterWeightOptimizer`, under the same condition Component 3 bills it on, so every term
-> lines up individually. The cost of doing it properly is a transient FP32 copy of the gradients
-> during the optimizer step (4 bytes/param, freed immediately); fitcheck does not model it, so a
-> full-FT row whose peak falls in the optimizer phase will read as an under-prediction.
->
-> **This does not license "fixing" the individual fitcheck terms.** Each still looks wrong alone
-> against a naive reading of `--precision`, and correcting any one of them breaks a total that is
-> exact. The harness was the unusual one; it is the harness that moved.
+| Trainable parameters | Bytes/param | Applies to |
+| :--- | ---: | :--- |
+| FP32 | 4 | Every LoRA run; full fine-tuning at FP32 |
+| FP16/BF16 | 2 | Full fine-tuning at FP16/BF16 |
 
-> **No `autocast`, deliberately.** The model is loaded at `--precision`, so the forward already
-> runs there and the hooks now prove it. Wrapping it in `torch.amp.autocast` would instead run the
-> softmax, the layer norms and the loss in FP32 on an otherwise half-precision model — a third
-> dtype regime, matching neither $\gamma$ nor the FP32 pins in `memory/activations._PROFILES`, and
-> not the one the 69 scorable archived rows were measured under. Pure half-precision compute is what
-> fitcheck bills; autocast would have to be modelled before it could be measured.
+**Why.** A gradient matches its parameter in shape and dtype. LoRA parameters
+are FP32, so LoRA gradients are FP32 too. The golden configuration uses
+$54{,}525{,}952 \times 4=208$ MiB. Reading this term from `--precision`
+alone under-counts every LoRA run by half. Fourteen measured LoRA rows showed
+exactly this error. Nine used `--quant none`.
 
-> **Rows are rejected when the dtypes do not match the label.** `measure.py` hooks the decoder
-> layers and reads back the parameter, gradient, activation and optimizer-state dtypes of a real
-> step, and refuses to emit a row whose observation contradicts its own flags
-> (`measure.dtype_mismatches`). The base-weight and activation checks are skipped under a
-> quantized base, where peft's `prepare_model_for_kbit_training` upcasts the norms, embeddings and
-> LM head to FP32 on purpose — that upcast is measured and already lives in
-> `memory/activations._PROFILES`.
+The measurement harness now keeps the compute weights at the requested
+precision and stores the FP32 master copy in `measure.MasterWeightOptimizer`.
+This keeps the weight, optimizer, and gradient terms separate. The optimizer
+step can briefly hold a 4-byte-per-parameter gradient copy. FitCheck does not
+model that transient.
 
-Gradient accumulation does **not** increase this — gradients are accumulated in-place into the same
-tensor. `grad_accum_steps` must not appear in this formula.
+**Limits.**
 
-**Implementation:** `memory/gradients.py` — function
-`estimate_gradient_memory(trainable_params, precision, param_precision=None)`. The orchestrator passes
-`param_precision` for LoRA runs and leaves it `None` for full fine-tuning, where the parameters really
-are on the compute dtype.
+- Gradient accumulation reuses the same gradient tensor. It does not increase
+  this term.
+- `grad_accum_steps` must not appear in the formula.
+- The harness uses no `autocast`. It measures the pure compute dtype.
+- Rows are rejected when observed parameter, gradient, activation, or optimizer
+  dtypes contradict their flags. Quantized rows are exempt from base-weight and
+  activation dtype checks because peft intentionally upcasts the skipped slice.
+- The implementation is `memory/gradients.py`:
+  `estimate_gradient_memory(trainable_params, precision, param_precision=None)`.
 
 ---
 
-#### Component 5: Activations ($A_{act}$) — The Hard One
+#### Component 5: Activations ($A_{act}$)
 
-**The saved-tensor table below is the *derivation*. It is no longer the *coefficient*.** It accounts for
-twelve tensors and six hidden-width ones; measurement (11 no-checkpoint rows over 9 models)
-says the real hidden-width count is **fifteen**. The derivation is kept because it is what makes the
-shape of the formula legible — which terms scale with tokens, which with $s^2$, which with $d_{ff}$ —
-and that shape is confirmed exactly. The *count* is measured, and the measurement wins. The nine
-tensors that close the gap between 6 and 15 have not been named one by one; see **What is still
-derived** below.
+**What it counts.** Saved tensors, attention score matrices, checkpoint storage,
+and the LM-head logits hump during training.
 
-Let $\gamma$ = `bytes_per_activation` (2 for BF16/FP16, 4 for FP32 — and 4 under `--quant int8`
-whatever `--precision` says, see §3.7).
+Let $\gamma$ be the compute activation size: 2 bytes for FP16/BF16 and
+4 bytes for FP32. Under `--quant int8`, $\gamma=4$ regardless of
+`--precision`.
 
-| # | Saved tensor | Shape | Size | Why autograd keeps it |
-|:--|:---|:---|:---|:---|
-| 1 | Layer input (pre-attn-norm input) | $(b,s,h)$ | $\gamma bsh$ | RMSNorm backward needs its input |
-| 2 | Attn-norm output | $(b,s,h)$ | $\gamma bsh$ | Input to `q/k/v_proj` — one tensor, three Linears |
-| 3 | Q (post-RoPE) | $(b,n_h,s,d_k)$ | $\gamma bs \cdot n_h d_k$ | Saved by attention backward |
-| 4 | Attention output | $(b,s,n_h d_k)$ | $\gamma bs \cdot n_h d_k$ | Attention's `out` **and** `o_proj`'s input (same storage) |
-| 5 | Post-attn residual sum | $(b,s,h)$ | $\gamma bsh$ | MLP-norm backward needs its input |
-| 6 | MLP-norm output | $(b,s,h)$ | $\gamma bsh$ | Input to `gate_proj` and `up_proj` |
-| | **subtotal** | | $\mathbf{\gamma bs(4h + 2n_h d_k)}$ | $= \gamma bs \cdot 6h$ when $n_h d_k = h$ |
-| 7 | K (post-RoPE) | $(b,n_{kv},s,d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA** |
-| 8 | V | $(b,n_{kv},s,d_k)$ | $\gamma bsh \cdot \frac{n_{kv}}{n_h}$ | **Reduced by GQA** |
-| 9 | Attention score matrix | $(b,n_h,s,s)$ | $9\gamma bn_hs^2$ | **Removed by Flash Attention.** Nine copies, not one — see below |
-| 10 | Gate proj output | $(b,s,d_{ff})$ | $\gamma bs \cdot d_{ff}$ | SiLU backward |
-| 11 | Up proj output | $(b,s,d_{ff})$ | $\gamma bs \cdot d_{ff}$ | Element-wise multiply backward |
-| 12 | Down proj input | $(b,s,d_{ff})$ | $\gamma bs \cdot d_{ff}$ | `down_proj` backward |
+**Formula.**
 
-**Not saved** — and this is the instructive part: pre-RoPE Q/K (RoPE backward needs only `cos`/`sin`, so the
-pre-rotation tensors are freed), `o_proj`'s *output* (a Linear's backward needs its input, not its output),
-and the residual additions themselves (addition's backward is the identity — it stores nothing). Flash
-Attention's `logsumexp` is $(b,n_h,s)$ in FP32 — real, but negligible next to the rest.
+The exact per-layer bracket is:
 
-**Per-layer activation memory:**
+$$\text{bracket}=12h+3\,n_h d_k+1\,n_{kv}d_k+3\,d_{ff}$$
 
-$$A_{layer} = \gamma bs\left[15h + 1 \cdot h \cdot \frac{n_{kv}}{n_h} + 3 \cdot d_{ff}\right] + c\gamma bn_hs^2 \cdot \mathbb{1}[\text{no Flash Attn}]$$
+When $n_h d_k=h$, this becomes:
 
-where $c$ is the score-matrix copy count, which **depends on the checkpointing regime** — 9 with
-checkpointing on, 2.9 with it off. That split is the subject of the next two sections.
+$$15h+1h\frac{n_{kv}}{n_h}+3d_{ff}$$
 
-**Why 15 hidden-width tensors and not 6.** The bracket is fitted to the no-checkpointing rows, where
-every layer's saved set is resident at once and therefore directly visible in the peak — the
-checkpointed branch hides it behind a `max()`. Solving each row for its implied bracket and searching
-only **whole-number tensor counts** (a free least-squares fit returns $-51.5$ tensors on $n_hd_k$,
-which is physically impossible — it overfits, because $h$ and $n_hd_k$ are the same number in 8 of the
-9 models):
+The per-layer transient peak is:
 
-| bracket                                                 | worst error over the 11 rows |
-| :------------------------------------------------------ | ---------------------------: |
-| $12h + 3n_hd_k + 1n_{kv}d_k + 3d_{ff}$                  |                     **5.9%** |
-| $11h + 4n_hd_k + 1n_{kv}d_k + 3d_{ff}$                  |                         6.1% |
-| $10h + 5n_hd_k + 1n_{kv}d_k + 3d_{ff}$                  |                         6.2% |
-| $4h + 2n_hd_k + 2n_{kv}d_k + 3d_{ff}$ (the derived one) |                    **32.6%** |
+$$A_{layer}=
+\gamma bs\left[15h+1h\frac{n_{kv}}{n_h}+3d_{ff}\right]
++c\gamma bn_hs^2\mathbb{1}[\text{no Flash Attn}]$$
 
-Three things are solid and one is not:
+The exact code form uses the bracket above with $n_h d_k$ and $n_{kv}d_k$.
+The score-matrix copy count is $c=9$ with checkpointing for NF4 and INT8,
+$c=7.4$ with checkpointing for `--quant none`, and $c=2.9$ without
+checkpointing.
 
-- **The hidden-width total is 15.** Every candidate within a point of the best sums to 15, and the
-  error curve has a clean minimum there — 14 scores 7.8%, 16 scores 7.2%, 15 scores 6.4%.
-- **$3d_{ff}$ is exactly right.** Every candidate keeps it; the FFN rows of the table were correct.
-- **$n_{kv}d_k$ drops from 2 to 1.**
-- **The split between $h$ and $n_hd_k$ is *not* resolved.** Only Gemma-2 has $n_hd_k \ne h$, so one
-  model decides it, and that same model also has four layer norms per layer instead of two — one
-  model, two effects. Ship $12h + 3n_hd_k$ because it scores best; do not defend the 12 or the 3
-  individually until a second $n_hd_k \ne h$ model has been measured.
+The LM-head hump is:
 
-**The score matrix has two coefficients, not one, because it is two different quantities.**
-Eager attention materializes the $(b,n_h,s,s)$ tensor about nine times at the compute dtype across
-forward and backward — forward: the raw scores, the masked copy, the FP32 softmax (which costs
-$2\gamma$), and the cast back; backward: grad w.r.t. the softmax output, the FP32 softmax backward
-($2\gamma$), and grad w.r.t. the scores. But **all nine are within one layer**, and they are what that
-layer *peaks at* while it is being differentiated. That is not the same as what a layer *keeps*:
+$$A_{logits}=\lambda\times4\text{ bytes}\times bsV$$
 
-| regime | what the coefficient means | value | how it was measured |
-| :--- | :--- | ---: | :--- |
-| checkpointing **on** | one layer is live; this is its transient peak | $9\gamma$ | differencing eager against SDPA at $b{=}2,\ s{=}2048$ on TinyLlama: **2,758 MiB** where $\gamma bn_hs^2$ predicts 512 |
-| checkpointing **off** | every layer is live; this is what each one retains | $2.9\gamma$ | $u = (A_{eager} - A_{sdpa}) / (\gamma bn_hs^2)$ against $L$ over 9 eager/SDPA pairs — a straight line through the origin, slope **2.92**, intercept $\approx 0.4$ |
+Here $\lambda=3.5$ for `--quant none` and $\lambda=4$ for `--quant nf4`
+and `--quant int8`.
+The logits tensor is always FP32. This term is independent of compute dtype,
+gradient checkpointing, and Flash Attention.
 
-Charging the *transient* constant in all $L$ layers at once was the single largest error this project
-has shipped: **+98.3%** on SmolLM2-135M. It cannot physically happen — nine copies in every layer
-simultaneously would require nine full forward passes to be mid-flight.
+With gradient checkpointing:
 
-**Proof the rest of the bracket is per-token, not per-$s^2$.** Three SmolLM2-135M SDPA runs with no
-checkpointing, all with exactly 2,048 tokens but sequence length spanning 4× (so $s^2$ spans **16×**),
-measured $A_{act}$ of **3,001 MiB each, identical to the MiB**. A fourth at 1,024 tokens measured
-1,533. There is no hidden $s^2$ term outside the score matrix, and the implied fixed cost is
-$A_{act} = 1.434 \cdot \text{tokens} + 65$ MiB — the 65 MiB is buffers and the attention mask, too
-small to model and recorded only for honesty.
+$$A_{act}=\kappa L\gamma_{ckpt}bsh+\max(A_{logits},A_{layer})$$
 
-**Exact bracket (implement this one).** Written without the Llama-shaped assumption, so it stays right
-for Gemma-2, where $n_h d_k \ne h$:
+For `--quant none`, $\kappa=1$ and $\gamma_{ckpt}=\gamma$. For `--quant nf4`,
+the checkpoint store is one FP32 tensor per layer. For `--quant int8`, the shipped
+profile pins it to two FP32-equivalent tensors.
 
-$$\text{bracket} = 12h + 3\,n_h d_k + 1\,n_{kv} d_k + 3\,d_{ff}$$
+Without gradient checkpointing:
 
-Substituting $n_h d_k = h$ gives $15h + 1h\frac{n_{kv}}{n_h} + 3d_{ff}$ — the headline form, exactly.
-The two are the same number for every model where $n_h d_k = h$ (Llama, Mistral, Qwen). Keep the $15h$
-form in prose — it is the memorable one — and ship the exact one in code. **The Appendix moves:**
-$A_{layer}$ for the golden Llama-3.1-8B config goes from 1,088 MiB to **1,648 MiB**, and the golden
-$A_{act}$ does **not** move, because 1,648 still loses the $\max$ to a 16,032 MiB LM-head hump.
+$$A_{act}=L\times A_{layer}^{retained}+A_{logits}$$
 
-**Total activation memory.** Under checkpointing the peak is **not** a sum. Only the checkpoints stay
-resident for the whole backward; the LM-head hump $A_{logits}$ and one layer's recompute $A_{layer}$ are
-both transient and never overlap, so the peak takes whichever is larger. Without checkpointing every
-layer's saved set is resident, and the score matrix is charged at the **retained** rate, not the
-transient one:
+The retained eager score-matrix rate is $2.9\gamma$. The transient checkpointed
+rate is $9\gamma$. Flash Attention removes the score-matrix term in both branches.
 
-$$A_{act} = \begin{cases} L \times A_{layer}^{retained} + A_{logits} & \text{no gradient checkpointing} \\ 2L\gamma bsh + \max(A_{logits},\ A_{layer}) & \text{gradient checkpointing (every layer)} \end{cases}$$
-
-| Flash Attn | Grad Checkpoint | $A_{act}$                                                |
-| ---------- | --------------- | -------------------------------------------------------- |
-| off        | off             | `L × A_layer_retained + A_logits` (s² term at 2.9γ)      |
-| off        | on              | `2Lγbsh + max(A_logits, A_layer)` (s² term at 9γ)        |
-| on         | off             | `L × A_layer + A_logits` (s² term zeroed)                |
-| on         | on              | `2Lγbsh + max(A_logits, A_layer)` (s² term zeroed)       |
-
-Under Flash Attention the two forms of $A_{layer}$ are equal, because the only thing that differs
-between them is the score matrix, and Flash removes it.
-
-**Why $2L\gamma bsh$ and not $L\gamma bsh$ — and why that is only true with a quantized base.**
-The $2L$ above, the four $A_{logits}$ copies and the $9\gamma$ score matrix were all measured on QLoRA
-runs and then applied to every run. **That was wrong, and it is corrected as of 2026-09-15.**
-See *Activation profiles* immediately below. Every formula and every golden number in this document is
-stated for the **quantized** profile and is unchanged by the correction.
-
-### Activation profiles — the three constants depend on the base-model storage
-
-`prepare_model_for_kbit_training` upcasts the norms to FP32 once the base is quantized, and the saved
-activations follow. So the checkpoint store is **one** $(b,s,h)$ tensor per layer whose dtype is FP32
-under a quantized base and $\gamma$ otherwise. $L$ tensors at 4 bytes is the same byte count as
-"$2L$ tensors at $\gamma$" whenever $\gamma = 2$, which is why every QLoRA measurement fitcheck has
-ever taken agreed with the old form, and every unquantized one did not.
-
-| constant | `--quant none` | `--quant nf4` | `--quant int8` |
+| Constant | `--quant none` | `--quant nf4` | `--quant int8` |
 | :--- | ---: | ---: | ---: |
-| checkpoint tensors per layer ($\kappa$) | 1 | 1 | 2 (pinned) |
-| checkpoint dtype | $\gamma$ | FP32 | $\gamma$ (already FP32) |
+| Checkpoint tensors/layer ($\kappa$) | 1 | 1 | 2 (pinned) |
+| Checkpoint dtype | $\gamma$ | FP32 | $\gamma$ (already FP32) |
 | $A_{logits}$ FP32 copies | 3.5 | 4 | 4 |
-| score-matrix copies ($c$) | 7.4 | 9 | 9 |
+| Score-matrix copies ($c$) | 7.4 | 9 | 9 |
 
-$$A_{act}^{ckpt} = \kappa L \gamma_{ckpt} bsh + \max(A_{logits},\ A_{layer})$$
+The score-matrix profile therefore uses $c=7.4$ for checkpointed
+`--quant none`, $c=9$ for checkpointed NF4/INT8, and $c=2.9$ in the
+no-checkpointing branch.
 
-**Measured 2026-09-15**, T4 sweep, 32 distinct rows (5 models, seq 512–4096, bs 1/2/4, both kernels),
-`data/measurements/t4-sweep-2026-09-15.json`. Fitting this structure to each half separately returns
-$0.90L$ / 3.56 copies / $c=7.30$ for `none` and $1.93L$ / 4.04 copies / $c=9.15$ for `nf4` — the second
-being the shipped set, unmoved. Against the measured $A_{act}$:
+**Why.** The saved-tensor derivation contains twelve named tensors:
 
-| | worst | mean |
-| :--- | ---: | ---: |
-| `--quant none`, one profile for all (pre-2026-09-15) | +32.1% | 23.3% |
-| `--quant none`, own profile | **−3.3%** | **1.1%** |
-| `--quant nf4`, unchanged | −4.8% | 1.1% |
+| # | Saved tensor | Shape | Size | Reason |
+| :--- | :--- | :--- | :--- | :--- |
+| 1 | Layer input | $(b,s,h)$ | $\gamma bsh$ | RMSNorm backward |
+| 2 | Attention-norm output | $(b,s,h)$ | $\gamma bsh$ | Input to q/k/v projections |
+| 3 | Q after RoPE | $(b,n_h,s,d_k)$ | $\gamma bs\,n_h d_k$ | Attention backward |
+| 4 | Attention output | $(b,s,n_h d_k)$ | $\gamma bs\,n_h d_k$ | Attention and o-projection input |
+| 5 | Post-attention residual | $(b,s,h)$ | $\gamma bsh$ | MLP-norm backward |
+| 6 | MLP-norm output | $(b,s,h)$ | $\gamma bsh$ | Input to gate and up projections |
+| 7 | K after RoPE | $(b,n_{kv},s,d_k)$ | $\gamma bsh\,n_{kv}/n_h$ | GQA reduction |
+| 8 | V after RoPE | $(b,n_{kv},s,d_k)$ | $\gamma bsh\,n_{kv}/n_h$ | GQA reduction |
+| 9 | Attention score matrix | $(b,n_h,s,s)$ | $9\gamma bn_hs^2$ | Removed by Flash Attention |
+| 10 | Gate output | $(b,s,d_{ff})$ | $\gamma bs\,d_{ff}$ | SiLU backward |
+| 11 | Up output | $(b,s,d_{ff})$ | $\gamma bs\,d_{ff}$ | Element-wise product backward |
+| 12 | Down-projection input | $(b,s,d_{ff})$ | $\gamma bs\,d_{ff}$ | Down projection backward |
 
-Two caveats, both recorded rather than resolved:
+The table derives six hidden-width tensors. Measurement of 11 no-checkpoint
+rows across 9 models gives a total of 15 hidden-width tensors. Whole-number
+candidates have a clean minimum there: 14 scores 7.8%, 15 scores 6.4%, and
+16 scores 7.2%. The split between $h$ and $n_h d_k$ is not fully resolved:
+only Gemma-2 has different values, and it also has four layer norms per layer.
+The implementation uses $12h+3n_h d_k$ because it scores best. The $3d_{ff}$
+term is exact. The $n_{kv}d_k$ term is one copy, not two.
 
-- **int8 is pinned to the pre-correction constants.** There is no int8 row in the sweep, and the one
-  archived int8 measurement already under-predicts by 9.3% because LLM.int8()'s FP16 outlier buffers
-  are not modelled. Giving it the nf4 profile would halve its checkpoint store and make an
-  under-prediction worse, which is the direction that costs the user an OOM.
-- **The FP32 checkpoint pin is derived, not measured.** Every row in the sweep is fp16, so "one tensor
-  at FP32" and "two at $\gamma$" are identical in all 32 of them. The first is chosen because it
-  explains both profiles with the same structural constant and matches the upcast already documented
-  for int8. It changes a prediction only for `--quant nf4 --precision fp32`, which is a contradiction
-  in terms — QLoRA is defined here as an nf4 base with bf16 compute.
-- **The no-checkpointing branch inherits the corrected $A_{logits}$ copy count but keeps $2.9\gamma$.**
-  Every row in the sweep has checkpointing on. $A_{logits}$ does not depend on checkpointing, so the
-  copy count carries; the retained score-matrix constant has no unquantized measurement and was left
-  alone rather than scaled by guess.
+In the golden QLoRA/FP16 profile, checkpoint storage is $2L\gamma bsh$.
+It is 4,096 MiB here, or one FP32 $(b,s,h)$ tensor per layer in the quantized
+profile. The checkpointed branch uses a max, not a sum: the logits hump and
+one layer's recompute do not overlap. This is why the golden configuration
+keeps $A_{act}=20{,}128$ MiB even after its layer term changes from 1,088 to
+1,648 MiB.
 
-> **Consequence worth knowing.** For a large-vocabulary model under checkpointing the LM-head hump usually
-> wins the $\max$, and then **Flash Attention does not reduce peak memory at all** — for the golden
-> Llama-3.1-8B config it saves exactly 0 MiB. Measured: SmolLM2 eager vs SDPA differed by 16 MiB out of
-> 5,297. Flash only starts paying once the sequence is long enough for $A_{layer}$ to overtake $A_{logits}$.
+Eager attention has two different measured rates. With checkpointing, nine
+score-matrix copies are the transient peak of one live layer. Without it,
+2.9 copies are what each layer retains. Charging nine copies in every layer
+caused a **98.3%** worst error on SmolLM2-135M. Three equal-token SDPA runs
+with a 4× sequence-length range had the same 3,001 MiB activation result,
+which rules out another hidden $s^2$ term.
 
-> **The no-checkpointing branch is measured as of 2026-09-12, and the 8.3 warning is gone.**
-> It used to charge the derived $4h + 2n_hd_k$ bracket *and* all nine score-matrix copies in every
-> layer at once. Two errors pulling opposite ways, which is exactly why neither was spotted: the
-> 9-copy term over-counted, the bracket under-counted, and the over-count was bigger, so the total
-> looked "safely too high". The SDPA rows, which have no score matrix at all, exposed the bracket
-> error on its own at $-32.6\%$ — squarely in the unsafe direction.
->
-> | branch | before | after |
-> | :--- | ---: | ---: |
-> | no checkpointing (11 rows, 9 models) | **98.3%** worst | **5.9%** worst |
-> | checkpointing on (4 rows) | 19.6% worst | 21.2% worst |
->
-> The checkpointed branch barely moves, because the wider bracket is absorbed by the $\max()$ that
-> the LM-head hump usually wins; only the seq-4096 row shifts, and it shifts *up*, which is the safe
-> direction. Almost every fitted row now lands positive. The exceptions are Gemma-2 ($-5.9\%$ SDPA,
-> $-6.8\%$ eager), which has four layer norms per layer and attention logit softcapping, neither of
-> which the bracket models.
+The 2026-09-15 T4 sweep had 32 distinct rows. Fitting the two checkpoint
+profiles gave 0.90L / 3.56 copies / $c=7.30$ for `none` and
+1.93L / 4.04 copies / $c=9.15$ for `nf4`; the shipped structure is the
+rounded profile above. Against measured $A_{act}$, the `none` profile has
+worst error **−3.3%** and mean **1.1%**. The unchanged `nf4` profile has
+worst error **−4.8%** and mean **1.1%**. The old shared profile had
+**+32.1%** worst and **23.3%** mean on `none`.
 
-**What is still derived, and should be said out loud.** The count of 15 is measured, but it has not
-been re-derived tensor by tensor the way the table above derives 6. Nine hidden-width tensors per
-layer are unaccounted for by name. The number is trustworthy — it is a fit to 11 rows across 9 models
-with a clean minimum — but the *story* is missing, and a reader who wants to know *which* nine tensors
-those are cannot get that from this document yet. That is an honest gap, not a rounding error.
+**Limits.**
 
-**Critical implementation details:**
-
-1. **Flash Attention** removes the $O(s^2)$ -> $\gamma bn_hs²$ attention matrix term — two code paths required.
-2. **$d_{ff}$** must be read from `intermediate_size` in `config.json`. Never assume `4h`. Error range: 10–30%.
-3. **$b$** is the micro-batch size, not effective batch. Gradient accumulation doesn't increase memory.
-4. **Gradient checkpointing** uses the practical default (checkpoint every layer), storing $2L$ hidden-state tensors, plus whichever of $A_{logits}$ and one layer's full activations is larger — a max, not a sum.
-5. **$\gamma$ is derived from the compute precision**, never hardcoded to 2. Under `--precision fp32` every row in the table doubles — and under `--quant int8` it is 4 regardless of `--precision`, because bitsandbytes hands LLM.int8() FP32 inputs (§3.7). The orchestrator resolves this in `estimator._activation_precision`; `$A_{logits}$` is FP32 on every path and is not affected either way.
-6. **$d_k$ comes from `config.json`**, not from $h/n_h$ (§3.3). The $n_h d_k$ and $n_{kv} d_k$ widths equal $h$ and $h\frac{n_{kv}}{n_h}$ only when $n_h d_k = h$.
-7. **The score-matrix copy count depends on the checkpointing regime** — `_EAGER_ATTENTION_COPIES = 9` with checkpointing on, `_EAGER_RETAINED_COPIES = 2.9` with it off. Using one constant for both branches caused a bug; do not collapse them back into one.
-
-**Implementation:** `memory/activations.py` — function `estimate_activation_memory(config, batch_size, seq_len, grad_checkpoint, flash_attn, precision)`. `_ActivationParts` carries `layer_bytes` (the transient peak) and `retained_layer_bytes` (what every layer keeps) separately, and the two branches take one each.
+- $b$ is micro-batch size, not effective batch size. Gradient accumulation does
+  not increase activation memory.
+- Read $d_{ff}$ from `intermediate_size`. Never assume $4h$.
+- Read $d_k$ from `config.json`. Never assume $h/n_h$.
+- Under checkpointing, the LM-head and layer humps use `max`, not sum.
+- The three profile constants depend on base storage. They are not determined by
+  $\gamma$ alone.
+- The INT8 checkpoint pin is derived from an archived row because no INT8 sweep
+  row exists. That row already under-predicts by 9.3% because LLM.int8() outlier
+  buffers are not modeled.
+- The FP32 NF4 checkpoint interpretation is derived, not measured. All 32 sweep
+  rows used FP16.
+- The no-checkpointing retained score constant has no unquantized measurement.
+- The 15-tensor count is measured, not derived tensor by tensor. Nine tensors
+  remain unnamed. Gemma-2 scored −5.9% on SDPA and −6.8% on eager because it
+  has four layer norms and attention-logit softcapping, neither modeled here.
+- All archived measurements are on a Tesla T4. There is no real FlashAttention-2
+  measurement; the flash path uses SDPA's memory-efficient backend.
+- The implementation is `memory/activations.py`:
+  `estimate_activation_memory(config, batch_size, seq_len, grad_checkpoint,
+  flash_attn, precision)`. It keeps transient and retained layer memory
+  separate.
 
 ---
 
 #### Component 6: CUDA Overhead ($C_{overhead}$)
 
-$$\boxed{C_{overhead} = B + F \times \min\!\left(A_{logits},\; A_{layer}\right)}$$
+**What it counts.** CUDA context, library workspace, and PyTorch caching
+allocator over-reservation.
 
-Covers: CUDA context, cuDNN/cuBLAS workspace, PyTorch caching allocator over-reservation.
+**Formula.**
 
-**$B$ is measured, not fitted.** It is `torch.cuda.mem_get_info()` minus
-`torch.cuda.memory_reserved()` — device memory the process holds that the caching allocator does
-not. On 69 archived rows it came back at exactly **140.875 MiB**; the twelve final holdout rows
-report **141.0 MiB**. See the correction note
-below for why fitting it was the single largest defect in the previous model.
+$$\boxed{C_{overhead}=B+F\times\min(A_{logits},A_{layer})}$$
 
-**$S$ (the sequence slope) is measured to be zero** and no shipped profile carries one.
+The profile key is `(GPU, attention kernel, quantization)`.
+`B` is measured. $S$, the sequence slope, is zero.
 
-**Why the smaller hump.** Under gradient checkpointing the activation peak is
-$\text{store} + \max(A_{logits}, A_{layer})$ — see Component 5. Those two humps are *different
-allocation patterns*: $A_{logits}$ is one enormous $(b, s, V)$ block in four FP32 copies,
-$A_{layer}$ is a dozen medium $(b, s, h)$ tensors per layer. The PyTorch caching allocator cannot
-serve one pattern out of the segments cached for the other, so whichever hump **loses** the
-$\max()$ sits in segments that are dead weight when the peak lands. That leftover *is* the
-over-reservation, which is why it scales with $\min(A_{logits}, A_{layer})$ and not with total size.
+**Why.** Under checkpointing, one of the two activation humps loses the
+`max`. Its allocations remain in allocator segments that the winning hump
+cannot reuse. The loser is therefore the right regressor.
 
-$F$ depends on **which** hump wins, because the leftover is a different shape in each case, so a
-profile carries one coefficient for each branch.
+`B` is `torch.cuda.mem_get_info()` minus
+`torch.cuda.memory_reserved()`. It measured **140.875 MiB** on 69 archived rows.
+The twelve final holdout rows report **141.0 MiB**. Fitting `B` caused
+collinearity with the size column. Leave-one-out moved $F$ by up to **172%**
+and produced 697 MiB intercepts for a 141 MiB context. The current model pins `B`.
 
-**The key is `(GPU, attention kernel, quantization)`** — three parts, not two. Quantization belongs
-there on measured physical grounds: `torch.cuda.memory_stats()` shows that on the same card and
-kernel, `--quant none` holds **99–154** large-pool segments (fp16 weight tensors, each fully
-occupied, nothing spare) while `--quant nf4` holds **15–25** (packed weights carved out of a few
-heavily split segments, leaving capacity that absorbs transients). An 8× structural difference, and
-it drives $F$ apart by a factor of 2–3 at the same kernel.
+Quantization belongs in the key. On the same card and kernel, `--quant none`
+held 99–154 large-pool segments. NF4 held 15–25. The resulting $F$ values
+differ by 2–3×.
 
-Profiles live in `fitcheck/overhead_db.py` as `OverheadProfile` rows, exactly the way `gpu_db.py`
-holds card specs, and are produced by `fitcheck/calibrate.py` from archived
-`scripts/measure.py --json` runs. Anything with no fitted row — another card, `--quant int8`, a run
-with checkpointing **off**, or inference — falls back to `DEFAULT_OVERHEAD_PROFILE`, the previous
-**500 MiB and a flat 5%** legacy form. That is also why the golden set did not move: it is a 4090.
+Shipped T4 profiles:
 
-> **The hump form requires gradient checkpointing.** With checkpointing off, $A_{act}$ is
-> $L \cdot A_{layer} + A_{logits}$ — a *sum*, not a $\max()$ — so neither hump is ever a leftover and
-> the mechanism above does not exist. All 49 calibration rows had checkpointing on. `estimator.py`
-> passes the humps only when `grad_checkpoint` is true, and `estimate_overhead` falls back to the
-> **default** profile (not to the card's own, whose proportional coefficient is empty) when they are
-> absent. Silently billing zero fragmentation there would badly under-predict.
+| Kernel | Quant | Hump wins | $F$ | ± se | n | $R^2$ |
+| :--- | :--- | :--- | ---: | ---: | ---: | ---: |
+| Flash | None | Logits | **1.3181** | 0.106 | 10 | 0.75 |
+| Flash | NF4 | Logits | **1.9683** | 0.112 | 15 | 0.88 |
+| Eager | None | Logits | **0.5808** | 0.042 | 6 | 0.93 |
+| Eager | None | Layer | **0.8468** | 0.109 | 4 | 0.78 |
+| Eager | NF4 | Logits | **0.6442** | 0.043 | 6 | 0.93 |
+| Eager | NF4 | Layer | **0.7518** | 0.060 | 8 | 0.88 |
 
-##### Shipped constants (Tesla T4; re-fitted from the manifest 2026-09-21)
-
-| kernel | quant | regime | $F$ | ± se | n | $R^2$ |
-|:---|:---|:---|---:|---:|---:|---:|
-| flash | none | logits wins | **1.3181** | 0.106 | 10 | 0.75 |
-| flash | nf4 | logits wins | **1.9683** | 0.112 | 15 | 0.88 |
-| eager | none | logits wins | **0.5808** | 0.042 | 6 | 0.93 |
-| eager | none | layer wins | **0.8468** | 0.109 | 4 | 0.78 |
-| eager | nf4 | logits wins | **0.6442** | 0.043 | 6 | 0.93 |
-| eager | nf4 | layer wins | **0.7518** | 0.060 | 8 | 0.88 |
-
-**These are generated, not typed.** `data/measurements/manifest.json` declares the role of every
-archived row, and
+The profiles are generated from `data/measurements/manifest.json` by:
 
 ```bash
 python -m fitcheck.calibrate data/measurements/manifest.json --emit-python
 ```
 
-prints the `OVERHEAD_DB` literal in `fitcheck/overhead_db.py` character for character.
-`tests/test_manifest.py` holds it to that, so the shipped numbers cannot drift away from the rows
-they came from. **49 rows are fitted** — the 8 bit-identical repeats in the 2026-09-15 sweep and the
-10 earlier rows in the 2026-09-01 file are declared `repeat` and `excluded` and never enter the fit.
+`tests/test_manifest.py` checks the generated `OVERHEAD_DB` literal.
+Forty-nine rows are fitted. Eight bit-identical repeats and ten pre-9.3 rows
+are declared `repeat` or `excluded`.
 
-Both `flash` profiles leave the layer-win coefficient **empty**, and `fragmentation_for` falls back
-to the logits-win value. That is not an oversight: under Flash Attention the score matrix is gone, so
-$A_{layer}$ loses the $\max()$ in every row this project has ever measured. A layer-win there needs
-roughly $V < 3.75h$, which no measured model is. It is recorded as absent rather than guessed.
+Flash profiles have no measured layer-win coefficient. They fall back to
+the logits-win value. No measured model has the required roughly $V<3.75h$
+condition for a layer win under Flash Attention.
 
-##### Accuracy, and why the two directions get different budgets
+Current fitted accuracy over 57 scored rows is mean absolute process error
+**2.4%**, worst over-prediction **+13.9%**, and worst under-prediction
+**−6.4%**. Zero rows under-predict by more than 8%. The one row beyond ±8%
+is an over-prediction.
 
-Scored against all **57** archived rows that carry the humps — the 49 fitted plus the 8 repeats:
-mean absolute process error **2.4%**, worst over-prediction **+13.9%**, worst under-prediction
-**−6.4%**. **Zero rows under-predict by more than 8%.** Exactly one row exceeds ±8% (SmolLM2-1.7B,
-nf4/eager, bs 1, seq 2048, at +13.9%), and it is an over-prediction. Reproduce with:
+The frozen final holdout has 12 rows. Tensor error is **±1.4%**, process MAE
+is **5.4%**, and worst under-prediction is **−15.3%**. A separate boundary
+file has **12/12** safe/unsafe verdicts matching the 14,000 MiB T4 safety
+budget. The reserve can turn a point-safe case into `uncertain`; that is
+intentional.
 
-```bash
-python -m fitcheck.calibrate data/measurements/manifest.json --check
-```
+**Limits.**
 
-> **Historical, not current.** An earlier fit over a 66-row population reported mean **3.1%**, worst
-> over **+12.7%**, worst under **−7.4%**, and was graded on a 12-row hold-out (models never fitted,
-> predictions registered before measuring) at mean **2.9%**, **0 of 12 outside ±8%**. Neither
-> population can be rebuilt from this repository: that historical hold-out archive lived in a Kaggle
-> `validation.zip` that was never committed, and the 66-row set does not match the archive either.
-> Those figures stand as history. The final v0.3.1 holdout is a separately archived release gate;
-> the current fitted claim is the `--check` line above, and the current holdout claim is the section
-> immediately below it.
-
-The one row that exceeds ±8% is an **over**-prediction, and that asymmetry is deliberate. An
-over-prediction costs a conservative "doesn't fit"; an under-prediction costs an OOM part way
-through a real training run. `tests/test_measured_rows.py` therefore budgets the two directions
-separately, and the tight budget is on the dangerous one.
-
-##### Final holdout and release safety gate (v0.3.1 beta)
-
-The manifest now imports twelve successful accuracy rows with role `holdout`. They are scored only
-after the coefficients are frozen and are never passed to the fit. On those rows, tensor error is
-**±1.4%**, process MAE is **5.4%**, and the worst under-prediction is **−15.3%**. A separate,
-non-fitting validation file preserves twelve boundary outcomes: **12/12** point-estimate safe/unsafe
-verdicts agree with the 14,000 MiB T4 safety budget. The product's conservative reserve may turn a
-point-safe boundary into `uncertain`; that is intentional and is a stricter release guard. This evidence is narrow: one Tesla T4
-(sm_75), NF4, FP16 compute, LoRA r=16, sequence length 1024, and gradient checkpointing.
-
-The boundary runs also show why process error needs a safety envelope: one Qwen2.5-7B configuration
-repeated with nearly identical tensor allocations but a roughly 1.4 GiB process-peak difference.
-The estimator therefore exposes both the point-estimate batch ceiling and a conservative recommended
-batch. Near capacity, or when a near-capacity configuration is outside a measured reserve profile,
-the verdict is `uncertain` rather than calling a potentially unsafe fit safe.
-
-##### What this replaced, and why the old fit failed
-
-The previous form was $B + f(s) \times (W_{base} + A_{act})$ with $B$, $F$ and $S$ all fitted. Three
-compounding defects, largest first:
-
-1. **$B$ was fitted, but it is measured.** The constant column is collinear with the size column, so
-   $B$ and $F$ traded against each other. Leave-one-out moved $F$ by up to **172%**, and the fits
-   returned physically absurd intercepts — 697 and 760 MiB for a 141 MiB context. Pinning $B$ cut
-   every leave-one-out swing by 2–3× on its own.
-2. **Quantizations were pooled** — a 2–3× step change in $F$ fitted as one constant.
-3. **The regressor was wrong.** $R^2$ for `none/eager` on the proportional form was **−0.042** —
-   literally worse than predicting the mean. Against $\min(A_{logits}, A_{layer})$ it is 0.80, and
-   `nf4/eager` goes 0.38 → 0.91.
-
-$S$ was never real. Adding a sequence slope to the corrected model gives $t$ = +0.4, −0.1, +0.5,
-−0.2 under every parameterisation tried, and residuals show no monotone trend across sequence length
-(eager: −3.2%, −0.9%, +2.8%, −3.2%). The apparent sequence dependence in the old fits was
-$A_{logits}$ and $A_{layer}$ both growing with $s$ and swapping which one wins.
-
-Mechanisms tested and **ruled out** for the eager scatter, recorded so nobody repeats them: the
-score matrix alone; allocator churn ($L \times$ score matrix); the transient/resident ratio
-(correlation flips sign between groups, +0.73 vs −0.49); PyTorch's 20 MiB segment band; and dropping
-$S$. `min(A_logits, A_layer)`, a GPU-free predicted quantity, outperformed every *measured* phase
-peak in the archive.
-
-> **On the deliberate overlap with `usable_mib`.** `GpuSpec.usable_mib` already discounts what the driver and
-> display reserve before your process starts (4090: 24,576 → 23,500), while $C_{overhead}$ covers what
-> PyTorch's own runtime adds on top — CUDA context, allocator fragmentation, cuBLAS workspace. The two
-> allowances overlap by a few hundred MiB, so `fitcheck` biases its estimate high **on purpose**: for a tool
-> whose entire job is avoiding OOM, a false "fits" is far more costly to the user than a false "doesn't fit".
-> Do not "fix" this by removing one of them. `calibrate.py --safety-mib` exists so that a fit can keep
-> that bias rather than least-squares it away.
-
-> **Why this component was rebuilt — the diagnosis, as of 2026-09-12 (historical; the block
-> after it is the current state).** This was then the least accurate component, by a wide margin,
-> and the only one that was. With the Component 5 corrections shipped, the tensors tier (which
-> excludes $C_{overhead}$) lands within 3.4% on the original ten rows and within 5.1% on the
-> thirteen new ones — the one exception is the seq-4096 row at +17.4%, and that row's problem is
-> also fragmentation. Everything left is here.
->
-> **The 5% fragmentation fraction is the specific failure.** Measured `reserved / allocated` across
-> 33 runs:
->
-> | run | allocated | reserved | real overhead |
-> |:---|---:|---:|---:|
-> | SmolLM2-360M, seq 4096, ckpt | 4,909 | 7,304 | **+48.8%** |
-> | TinyLlama `--quant int8` | 5,306 | 6,394 | +20.5% |
-> | TinyLlama serve, 16 concurrent | 3,650 | 4,388 | +20.2% |
-> | Qwen2.5-0.5B SDPA | 4,504 | 5,150 | +14.3% |
-> | SmolLM2-360M eager | 7,812 | 8,374 | +7.2% |
->
-> The seq-4096 row is the worst this project has measured: the allocator reserved half again what it
-> handed out. That is why its `allocator` tier reads $-18.5\%$ while its `tensors` tier reads
-> $+15.6\%$ — the same run, opposite signs, one heuristic between them. Fragmentation clearly rises
-> with long sequences and with eager attention, both of which churn large short-lived tensors, so the
-> fit must key on `(kernel, seq_len)` and not be a constant.
->
-> **The 500 MiB context constant is separately wrong**: the T4 measured **133–147 MiB** consistently
-> across all 33 runs, never once near 500. The two errors partly cancel today, which is why the
-> process tier scores better than the allocator tier — so fit them **together**, or fixing one will
-> visibly worsen the other. `calibrate.py` does exactly that: one least-squares over the residual
-> $\text{measured process} - \text{predicted tensors}$, which solves for both at once.
-
-> **What is fitted today, and what is not.** Four T4 profiles ship, covering both kernels × `none`
-> and `nf4`. **Not** covered, all falling back to the 500 MiB + 5% default: any other card;
-> `--quant int8` (no measured row exists at all, so it must not borrow nf4's constants); any run
-> with gradient checkpointing off; and inference. The remaining data gaps are one card (every row is
-> a Tesla T4 sm_75) and the flash layer-win branch described above.
-
-**Implementation:** `memory/overhead.py` — function
-`estimate_overhead(weight_memory, activation_memory, profile=None, seq_len=None, logits_mib=None,
-layer_mib=None)`. Pass both humps to get the measured form; omit them and it falls back to the
-legacy proportional one. The constants are data in `overhead_db.py`; the fit is
-`fitcheck/calibrate.py`; the archive is `data/measurements/`.
+- The hump formula is valid only with gradient checkpointing. Without it,
+  activation memory is $L A_{layer}+A_{logits}$, so the two humps do not
+  represent leftover allocations.
+- The estimator falls back to the default **500 MiB + 5%** profile for other
+  GPUs, INT8, checkpointing off, and inference.
+- The default profile is deliberate. `usable_mib` already includes driver and
+  display reserve. This component covers process runtime overhead. The overlap
+  biases the estimate high to avoid unsafe fits.
+- The fit is narrow: every measurement is a Tesla T4. The final holdout is
+  NF4, FP16 compute, LoRA rank 16, sequence length 1024, and checkpointing on.
+- The one INT8 measurement under-predicts because its FP16 outlier buffers are
+  not modeled.
+- The implementation is `memory/overhead.py`:
+  `estimate_overhead(weight_memory, activation_memory, profile=None,
+  seq_len=None, logits_mib=None, layer_mib=None)`. Passing both humps selects
+  the measured form. Omitting them selects the default proportional form.
 
 ---
 
-#### Component 7: Inference Serving ($M_{infer}$) — v0.2, not part of the training equation
+#### Component 7: Inference Serving ($M_{infer}$) — v0.2
 
-Serving keeps nothing for a backward pass: no optimizer states, no gradients, no saved
-activations. What is left is the resident weights plus one KV cache entry per layer, per
-concurrent request:
+**What it counts.** Resident model weights and KV-cache memory for serving.
+It does not count backward-pass state.
 
-$$M_{infer} = W_{base} + \text{KV} + C_{overhead}, \qquad \text{KV} = 2 \times L \times n_{kv} \times d_k \times s \times n_{concurrent} \times \gamma$$
+**Formula.**
 
-**Critical implementation details:**
+$$M_{infer}=W_{base}+\text{KV}+C_{overhead}$$
 
-1. **The leading 2 is K and V — once each, not twice.** It counts the pair, not a per-tensor factor.
-2. **$n_{concurrent}$ is the batch dimension of the cache** and belongs in the formula, not just in the
-   signature. $s$ is the context one request holds; $n_{concurrent}$ is how many are in flight. The two
-   are interchangeable multipliers: 4 requests × 2048 tokens costs exactly what 1 × 8192 costs.
-3. **$n_{kv} d_k$, never $h$.** Under GQA the cache is $n_{kv}/n_h$ of the MHA size — a quarter for
-   Llama-3.1-8B. Reading $h$ here over-counts by 4×, and $d_k$ comes from `config.json` (§3.3).
-4. **`precision` and `quantization` are two axes here too, exactly as in training.** `precision` is the
-   COMPUTE dtype (fp32/fp16/bf16): it prices the KV cache and the float slice of the weights.
-   `quantization` (none/nf4/int8) is how the base weights are *stored*. One axis would have made
-   `--precision int4` under-count the cache 4×, because a 4-bit deployment still serves an fp16 cache.
-   `estimate_inference_memory` therefore **rejects a storage dtype as `precision`**.
-5. **The unquantized slice is billed at the COMPUTE dtype, not FP32.** `bitsandbytes` (and GPTQ/AWQ)
-   quantize only the transformer `nn.Linear` weights; `embed_tokens`, `lm_head` and the norms stay
-   float. Training then upcasts that slice to FP32 via peft's `prepare_model_for_kbit_training` —
-   **serving does not**, because nothing calls it. Billing 4 bytes/param here would over-count
-   Llama-3.1-8B by 2,004.5 MiB on the embeddings alone. The count itself is
-   `ModelConfig.num_unquantized_params`, shared with Component 1's training path. NF4 absmax scales
-   are charged on the quantized slice only, FP32 per block of 64, `--double-quant` cutting them to
-   ~25% (measured).
-6. **$C_{overhead}$ is in the total, and `estimate_inference_memory` is not where it is added.** The
-   component function returns the two model-side terms separately, as an `InferenceMemory`;
-   `estimator.estimate_inference` adds `estimate_overhead(weights, kv)` on top. Rendering the
-   model-side figure as a verdict would be ~500 MiB optimistic — the one direction of error this tool
-   exists to avoid — so nothing but the orchestrator's total may reach a fits/doesn't-fit line.
-7. **PagedAttention / vLLM block allocation is not modelled.** The formula assumes every request holds
-   its full $s$ tokens of cache. A real vLLM deployment allocates in blocks as generation proceeds, so
-   this is a worst-case ceiling for a serving engine that pre-reserves, and an over-estimate otherwise.
-8. **An fp8 or int8 KV cache is not modelled.** `precision` prices the cache and the float weights
-   together; vLLM's `kv_cache_dtype=fp8` would need a third axis.
-9. **There is no serving activation term, and this is the known unsafe gap.** $M_{infer}$ models
-   *resident* memory only. A decode step also does transient work — attention over the cache, the
-   logits row, and whatever the runtime materializes to get there — and none of it is in the formula.
+$$\text{KV}=2\times L\times n_{kv}\times d_k\times s\times
+n_{concurrent}\times\gamma$$
 
-> **The KV formula is exact; the missing transient is what grows.** Measured across four serving runs
-> the cache term is **+0.0%** on every one, including heavy GQA (Qwen2.5-1.5B, 2 KV heads)
-> and an NF4 base, and weights land within 0.1%. The error is entirely the unmodelled transient, and
-> it scales with concurrency:
->
-> | run | concurrent | tensors error |
-> |:---|---:|---:|
-> | TinyLlama | 1 | −2.8% |
-> | SmolLM2-1.7B nf4 | 4 | −3.4% |
-> | Qwen2.5-1.5B | 8 | −8.9% |
-> | TinyLlama | 16 | **−23.2%** |
->
-> At 16 concurrent sequences the peak during decode was 3,650 MiB against 2,812 MiB resident —
-> **838 MiB of transient work** the formula does not see. The direction is unsafe and the growth is
-> in exactly the regime that matters: nobody serves at concurrency 1.
->
-> **No coefficient is shipped for this, deliberately.** 838 MiB is far too large for the obvious
-> candidates — the logits row is ~2 MiB at this shape, the decode score matrix ~2 MiB, one layer's
-> hidden work under 1 MiB — so the mechanism is not yet identified, and fitting a constant to one
-> data point is precisely the mistake that produced a 36% error earlier in this project. What ships
-> instead is `estimator.inference_warnings`, which attaches a caveat above
-> `_SERVING_CONCURRENCY_WARN_AT` (4) naming the measured numbers. Closing it properly needs a
-> concurrency sweep (1, 4, 8, 16, 32) on one model, with prefill and decode peaks reported
-> separately.
+The leading 2 is one K tensor plus one V tensor.
 
-Reference (Llama-3.1-8B, fp16, $s$ = 2048, 1 request, unquantized, RTX 4090):
-$W_{base}$ = 15,316.51 MiB, KV = 256.00 MiB, $C_{overhead}$ = 1,278.63 MiB,
-$M_{infer}$ = **16,851.13 MiB** — fits, 6,648.87 MiB headroom, max 25 concurrent requests.
-The cache is 0.125 MiB per token. The model-side subtotal alone is 15,572.51 MiB.
+**Why.** The cache has one K/V pair for every layer and every concurrent
+request. Four requests at 2,048 tokens cost the same cache bytes as one
+request at 8,192 tokens. GQA uses $n_{kv}d_k$, not $h$.
 
-Same model at `--quant nf4 --precision fp16`: $W_{base}$ = 5,748.51 MiB
-(3,328 packed + 416 scales + 2,004.5 fp16 embeddings/norms), cache unchanged at 256.00 MiB.
+`precision` is the compute dtype. It prices the KV cache and the float slice
+of the weights. `quantization` is the base storage dtype. Keeping these axes
+separate prevents a 4-bit deployment from incorrectly using 4-bit KV cache
+bytes.
 
-**Implementation:** `memory/inference.py` — function
-`estimate_inference_memory(config, precision, seq_len, num_concurrent, quantization, double_quant)`,
-returning `InferenceMemory(weight_mib, kv_cache_mib)`.
+In serving, the unquantized weight slice is billed at the compute dtype.
+Serving does not call `prepare_model_for_kbit_training`, so the slice is not
+upcast to FP32. NF4 scales remain FP32 per 64 quantized weights. Double
+quantization reduces them to about 25%, as measured.
 
-> **Not derived from Components 1–6 and not folded into them.** The master equation is the TRAINING
-> equation: `estimate()` does not call Component 7 and `MemoryReport` does not carry it. Serving gets
-> its own orchestrator instead — `estimator.estimate_inference(config, ServingConfig, GpuSpec)
-> -> InferenceReport` — which composes Component 7 with Component 6 and checks it against a GPU. The
-> two paths share `estimator.py` and its bisection helper; they share no equation.
+The component function returns weights and KV cache separately. The serving
+orchestrator adds `estimate_overhead(weights, kv)` before checking a GPU.
+The model-side subtotal must not be rendered as the final verdict.
+
+**Limits.**
+
+- PagedAttention and block allocation are not modeled. The formula assumes
+  every request holds all $s$ tokens.
+- FP8 or INT8 KV cache is not modeled. It needs a third dtype axis.
+- Decode-time transient memory is not modeled. It includes cache attention,
+  logits, and runtime buffers.
+- Four measured serving runs had exact cache error 0.0% and weight error
+  within 0.1%. Total tensor error was −2.8% at concurrency 1, −3.4% at 4,
+  −8.9% at 8, and **−23.2%** at 16. At 16, the peak was 3,650 MiB versus
+  2,812 MiB resident, leaving 838 MiB of transient work.
+- No transient coefficient is shipped. Its mechanism is not identified.
+  The warning threshold is `_SERVING_CONCURRENCY_WARN_AT` = 4. A proper fix
+  needs a 1/4/8/16/32 concurrency sweep with prefill and decode peaks.
+- Reference: Llama-3.1-8B, FP16, $s=2048$, one request, unquantized, RTX 4090:
+  weights 15,316.51 MiB, KV 256.00 MiB, overhead 1,278.63 MiB, total
+  **16,851.13 MiB**, and 6,648.87 MiB headroom. The model-side subtotal is
+  15,572.51 MiB. The maximum is 25 concurrent requests. The cache is 0.125
+  MiB/token. NF4 changes weights to 5,748.51 MiB and leaves the cache at
+  256.00 MiB.
+- The implementation is `memory/inference.py`:
+  `estimate_inference_memory(config, precision, seq_len, num_concurrent,
+  quantization, double_quant)`. It returns
+  `InferenceMemory(weight_mib, kv_cache_mib)`. Serving has its own
+  `InferenceReport`; it is not part of the training master equation.
 
 ---
 
@@ -1585,7 +1357,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Static estimation (no GPU required)** | The whole point — predict before you spend money/time. Pure math from `config.json`. |
 | **One formula per file** | Each `memory/*.py` module has one formula. Testable, debuggable, swappable independently. |
 | **Read `config.json` not weights** | Downloads ~2KB vs. ~4–140GB. Works offline after first fetch. No GPU needed. |
-| **Practical grad checkpointing** (every layer) | This is what HuggingFace `transformers` actually does, and it stores $2L\gamma bsh$ = 4,096 MiB for the golden config. The academic $\sqrt{L}$ formula models a *different* algorithm, so it does not describe the memory profile this tool predicts. Derivation: Blueprint Component 5. |
+| **Practical grad checkpointing** (every layer) | This is what HuggingFace `transformers` actually does, and it stores $2L\gamma bsh$ = 4,096 MiB for the golden config. The academic $\sqrt{L}$ formula models a *different* algorithm, so it does not describe the memory profile this tool predicts. See Component 5 above. |
 | **GQA-aware by default** | Most modern models use GQA. Ignoring it gives 20–25% error on LoRA and activation estimates. |
 | **`click` not `argparse`** | Better UX: auto-generated help, option groups, composable commands. Standard for Python CLIs. |
 | **`rich` for display** | Screenshot-worthy terminal output drives organic sharing. Tables, colors, panels, emojis. |
@@ -1602,7 +1374,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **Flat multimodal configs** (Qwen2.5-VL) | **Refused, exit 2 — by the parameter cross-check, not the key gate.** Text dimensions sit at the top level next to `vision_config`, so `_reject_unsupported` sees nothing wrong. The Hub reports 8,292,166,656 params against the formula's 7,615,487,488, a −8.2% gap past the 2% tolerance, and the omitted vision tower is refused there — see §3.3. Offline, with no Hub count to grade against, it is estimated 8% low instead. | ❌ refused (online) |
 | **Non-SwiGLU MLPs** (phi-2 `fc1`/`fc2`, models with biases) | **Refused, exit 2.** `_count_params` assumes a 3-matrix gated MLP and no biases; phi-2 comes out +30.1%. The Hub cross-check (§3.3) catches the gap, and refuses rather than adopting the Hub count, because $A_{act}$'s $3d_{ff}$ and the LoRA target dimensions assume that same shape. Bias-only gaps (Qwen2.5's q/k/v biases, −0.004%) sit far inside the tolerance and are unaffected. | ❌ refused (online) |
 | **Models with tied embeddings** | Detected via `tie_word_embeddings` in config. Count embedding params once. | ✅ MVP |
-| **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Blueprint.md's note on `intermediate_size`). | ✅ MVP |
+| **Gated vs. non-gated FFN** | Detect `mlp_type` or presence of `gate_proj` in config. If `intermediate_size` is missing, fall back to `4h` and print a warning to the user that this is an approximation (can be 10–30% off — see Component 5 above). | ✅ MVP |
 | **Non-standard `head_dim`** (Gemma-2/3) | `head_dim` read from config when present, $h/n_h$ only as fallback; the divisibility rule applies only when the value is derived. $P$, LoRA dims **and** the activation bracket all use the exact $n_hd_k$ / $n_{kv}d_k$ form. Sliding-window attention is still not modelled — see the row below. | ✅ MVP |
 | **`tie_word_embeddings` absent from config** | Architecture default table (Gemma family ties), `False` for unknown `model_type`. | ✅ MVP |
 | **Custom attention patterns** (sliding window, local) | Not modeled. Treated as standard attention. Note Gemma-2 alternates sliding/full layers, so its non-Flash path is approximate even once the two rows above are fixed. | ❌ v0.3 |

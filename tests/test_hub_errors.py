@@ -55,7 +55,6 @@ def _crashed(result: Result) -> bool:
     return result.exception is not None and not isinstance(result.exception, SystemExit)
 
 
-# --- The translation itself ---
 
 
 @pytest.mark.parametrize("failure", _TRANSPORT_FAILURES, ids=lambda e: type(e).__name__)
@@ -107,7 +106,6 @@ def test_programmer_errors_are_left_alone(monkeypatch: pytest.MonkeyPatch) -> No
         fetch_model_config(_MODEL_ID)
 
 
-# --- Mode A / C / D: the CLI boundary ---
 
 
 @pytest.mark.parametrize(
@@ -174,7 +172,6 @@ def test_malformed_input_still_fails_as_a_usage_error() -> None:
     assert "is not one of" in result.output
 
 
-# --- Mode B: the REPL boundary ---
 
 
 @_needs_httpx_transport

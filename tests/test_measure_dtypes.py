@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 if TYPE_CHECKING:
-    # Pylance/mypy resolve the real module here; at runtime the same name is bound
-    # by importorskip, so `torch.Tensor` stays a usable annotation either way.
     import torch
 else:
     torch = pytest.importorskip("torch")
@@ -21,7 +19,6 @@ def _load_measure() -> Any:
     spec = importlib.util.spec_from_file_location("measure", _MEASURE_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    # Registered before exec: @dataclass resolves annotations through sys.modules.
     sys.modules["measure"] = module
     spec.loader.exec_module(module)
     return module
@@ -38,7 +35,6 @@ class _DecoderLayer(torch.nn.Module):
         self.proj = torch.nn.Linear(width, width)
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        # Module.__call__ is typed Any, so name the result to keep the hint honest.
         out: torch.Tensor = self.proj(hidden)
         return out
 
@@ -71,11 +67,6 @@ def _args(*argv: str) -> Any:
     return measure.parse_args(["fake/model", *argv])
 
 
-# ---------------------------------------------------------------------------------
-# The defect itself: full fine-tuning must not be silently rewritten to FP32
-# ---------------------------------------------------------------------------------
-
-
 def test_full_finetune_keeps_the_requested_compute_dtype() -> None:
     model = _full_ft_model()
     optimizer = measure.build_optimizer(model, _args("--no-lora", "--precision", "fp16"))
@@ -97,11 +88,7 @@ def test_full_finetune_holds_the_master_copy_in_fp32() -> None:
 
 
 def test_full_finetune_at_fp32_keeps_no_master_copy() -> None:
-    """The parameters already are FP32, so there is nothing to shadow.
-
-    Same condition fitcheck bills on (SPEC Component 3): billing the copy here would
-    double-count the 4 bytes/param that W_base has already paid.
-    """
+    """FP32 parameters need no master-weight copy."""
     model = _full_ft_model(torch.float32)
     optimizer = measure.build_optimizer(model, _args("--no-lora", "--precision", "fp32"))
 
@@ -110,7 +97,7 @@ def test_full_finetune_at_fp32_keeps_no_master_copy() -> None:
 
 
 def test_lora_path_is_unchanged() -> None:
-    """The old in-place cast was harmless here, and every archived row is LoRA."""
+    """LoRA adapters remain FP32 while the base follows compute precision."""
     model = _lora_like_model()
     optimizer = measure.build_optimizer(model, _args("--precision", "fp16"))
 
@@ -135,11 +122,6 @@ def test_master_step_trains_the_fp16_weights_with_fp32_state() -> None:
     assert model.layer.proj.weight.dtype == torch.float16
     assert not torch.equal(model.layer.proj.weight, before)
     assert measure.observed_optimizer_state_bytes(optimizer)[1] == "fp32"
-
-
-# ---------------------------------------------------------------------------------
-# Observation and rejection
-# ---------------------------------------------------------------------------------
 
 
 def test_parameter_dtypes_separate_base_from_adapters() -> None:
@@ -192,7 +174,7 @@ def test_a_matching_row_is_accepted() -> None:
 
 
 def test_an_fp32_run_wearing_an_fp16_label_is_rejected() -> None:
-    """Exactly what the old in-place cast produced under --no-lora."""
+    """Reject a row whose observed dtypes contradict its label."""
     args = _args("--no-lora", "--precision", "fp16")
     upcast = _measurement(
         base_param_dtype="fp32",
@@ -217,12 +199,7 @@ def test_an_fp32_run_wearing_an_fp16_label_is_rejected() -> None:
 
 
 def test_a_quantized_base_is_not_called_mislabelled_for_its_fp32_upcast() -> None:
-    """peft's kbit prep upcasts norms, embeddings and the LM head on purpose.
-
-    That upcast is measured and already lives in `memory/activations._PROFILES`, so
-    checking the base and activation families against --precision here would reject
-    every QLoRA row in the archive.
-    """
+    """QLoRA's intentional FP32 upcast is not a mislabeled run."""
     args = _args("--qlora", "--precision", "fp16")
     qlora = _measurement(
         base_param_dtype="fp32",
@@ -237,11 +214,6 @@ def test_lora_gradients_must_be_fp32() -> None:
     args = _args("--precision", "fp16")
     half = _measurement(trainable_param_dtype="fp32", gradient_dtype="fp16")
     assert "gradient_dtype" in "".join(measure.dtype_mismatches(args, half))
-
-
-# ---------------------------------------------------------------------------------
-# The harness and fitcheck must split full fine-tuning the same way
-# ---------------------------------------------------------------------------------
 
 
 def _bytes_per_param(

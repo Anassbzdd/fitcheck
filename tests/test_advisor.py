@@ -21,7 +21,6 @@ from fitcheck.gpu_db import GpuSpec, get_gpu
 
 _RTX_4090_USABLE = 23_500
 
-# From docs/ADVISOR.md §5, all produced by the shipped estimator on the golden shape.
 _ANCHOR_TOTAL_MIB = 20_039.87
 _RANK_DOUBLE_COST_MIB = 832.0
 _RANK_HALVE_SAVING_MIB = -416.0
@@ -83,7 +82,6 @@ def _ceiling(ceilings: list[AxisCeiling], axis: str) -> AxisCeiling:
     return next(ceiling for ceiling in ceilings if ceiling.axis == axis)
 
 
-# --- the dominance comparator ------------------------------------------------------
 
 
 def test_dominates_when_both_objectives_are_better() -> None:
@@ -117,7 +115,6 @@ def test_memory_is_not_an_objective() -> None:
     assert not _dominates(expensive, cheap)
 
 
-# --- the frontier ------------------------------------------------------------------
 
 
 def test_frontier_is_far_smaller_than_the_fitting_set(
@@ -182,7 +179,6 @@ def test_recommended_is_none_when_nothing_fits(
     assert report.recommended is None
 
 
-# --- ties --------------------------------------------------------------------------
 
 
 def test_equal_cost_splits_are_grouped_into_one_row(
@@ -221,7 +217,6 @@ def test_eager_attention_breaks_the_tie(
     assert (8, 512) in at_4096.equivalent_splits
 
 
-# --- prices ------------------------------------------------------------------------
 
 
 def test_axis_prices_match_the_documented_deltas(
@@ -264,7 +259,6 @@ def test_prices_omit_a_halving_that_does_not_exist(
     assert not any(price.to_value < price.from_value for price in report.prices)
 
 
-# --- ceilings ----------------------------------------------------------------------
 
 
 def test_rank_ceiling_is_bisected_past_the_grid(
@@ -340,7 +334,6 @@ def test_ceilings_are_zero_when_nothing_fits(
     assert _ceiling(report.ceilings, "batch_size").total_mib_at_max > 14_000
 
 
-# --- the anchor and the report -----------------------------------------------------
 
 
 def test_anchor_follows_the_recommendation(
@@ -386,7 +379,6 @@ def test_the_report_carries_the_fixed_axes_unchanged(
     assert report.gpu == get_gpu("4090")
 
 
-# --- the pasteable command ----------------------------------------------------------
 
 
 def test_command_is_runnable_and_names_the_swept_axes(
@@ -451,7 +443,6 @@ def test_command_falls_back_to_vram_mib_for_an_unlisted_card(
     assert "--gpu" not in report.recommended.command
 
 
-# --- validation ---------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

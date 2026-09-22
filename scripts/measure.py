@@ -35,7 +35,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "The markdown row this prints is meant to be pasted straight into the\n"
-            "validation matrix in README.md (task 6.2)."
+            "validation matrix in README.md."
         ),
     )
     parser.add_argument(
@@ -208,11 +208,6 @@ def parse_lora_targets(value: str) -> list[str]:
     return targets
 
 
-# ---------------------------------------------------------------------------------
-# Model construction
-# ---------------------------------------------------------------------------------
-
-
 def _torch_dtype(precision: str):
     import torch
 
@@ -369,9 +364,7 @@ def build_optimizer(model, args: argparse.Namespace):
         return MasterWeightOptimizer(params, factory)
 
     if args.optimizer == "adamw" and args.optimizer_dtype == "fp32":
-        # LoRA only, and a no-op in practice: peft's autocast_adapter_dtype already
-        # holds the adapters in FP32. Kept so a stack that ever stops doing that
-        # still measures the FP32 states the row is labelled with.
+        # Keep adapters in FP32 to match peft's default and the recorded row.
         for p in params:
             if p.dtype != torch.float32:
                 p.data = p.data.float()
@@ -489,11 +482,6 @@ class ActivationDtypeProbe:
             handle.remove()
         self.handles = []
         return _joined(self.dtypes)
-
-
-# ---------------------------------------------------------------------------------
-# Measurement
-# ---------------------------------------------------------------------------------
 
 
 @dataclass
@@ -667,8 +655,7 @@ def _preflight_device(args: argparse.Namespace) -> None:
                 f"score matrix, so it measures the same thing fitcheck's flash_attn "
                 f"branch predicts, and it runs on sm_75."
             )
-        # stderr, not stdout: --json writes one parseable document to stdout and
-        # a notice mixed into it would make the row unreadable by calibrate.py.
+        # Keep notices on stderr so --json remains parseable by calibrate.py.
         print(
             f"measure.py: {name} is sm_{capability}, so Flash Attention 2 is "
             f"unavailable. --flash-attn is being applied to the PREDICTION only; "
@@ -836,14 +823,11 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
         torch.cuda.synchronize()
         step_seconds = (time.perf_counter() - started) / args.measure_steps
 
-        # Read the headline peaks before the extra instrumented step, so these stay
-        # exactly what they were before phase splitting was added.
+        # Read headline peaks before instrumentation so the probe cannot change them.
         peak_allocated = torch.cuda.max_memory_allocated() / MIB
         peak_reserved = torch.cuda.max_memory_reserved() / MIB
 
-        # Installed only for the extra instrumented step, which runs after the
-        # headline peaks have been read: the hooks keep nothing but a set of strings,
-        # and this way they provably cannot move peak_allocated or peak_reserved.
+        # Install hooks only after headline peaks are recorded; they retain names only.
         probe = ActivationDtypeProbe(model)
         (
             forward_peak,
@@ -887,11 +871,6 @@ def measure(args: argparse.Namespace, targets: list[str]) -> Measurement:
     )
 
 
-# ---------------------------------------------------------------------------------
-# Prediction (imports fitcheck, which never imports torch -- the dependency is one-way)
-# ---------------------------------------------------------------------------------
-
-
 def training_config(args: argparse.Namespace, targets: list[str]):
     """The one place the CLI flags become a fitcheck TrainingConfig."""
     from fitcheck.estimator import TrainingConfig
@@ -919,11 +898,6 @@ def predict(args: argparse.Namespace, targets: list[str]):
     training = training_config(args, targets)
     model_config = fetch_model_config(args.model_id)
     return model_config, estimate(model_config, training, get_gpu(args.gpu))
-
-
-# ---------------------------------------------------------------------------------
-# Reporting
-# ---------------------------------------------------------------------------------
 
 
 def _error_pct(predicted: float, actual: float) -> float:
@@ -969,8 +943,7 @@ def config_label(args: argparse.Namespace, targets: list[str]) -> str:
     if args.grad_checkpoint:
         bits.append("ckpt")
     if args.attn_impl:
-        # The kernel was overridden, so name it rather than claiming FA2. A row
-        # labelled "FA2" that actually ran under SDPA would be a mislabelled result.
+        # Report an overridden kernel accurately; SDPA is not necessarily FA2.
         bits.append(f"attn={args.attn_impl}")
     else:
         bits.append("FA2" if args.flash_attn else "no FA")
@@ -1217,9 +1190,7 @@ def main(argv: list[str] | None = None) -> int:
                 "overhead_mib": report.overhead_mib,
                 "total_mib": report.total_mib,
             }
-            # The two humps that compete for the checkpointed peak. C_overhead is
-            # calibrated against min(A_logits, A_layer), so a row without these cannot
-            # be fitted with the measured form -- only with the legacy fallback.
+            # C_overhead uses min(A_logits, A_layer); keep both humps in each row.
             if model_config is not None:
                 from fitcheck.estimator import activation_breakdown
 
@@ -1228,7 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 payload["predicted"]["activation_logits_mib"] = breakdown["logits_mib"]
                 payload["predicted"]["activation_layer_mib"] = breakdown["layer_mib"]
-            # Embedded so the archive can be re-scored and re-fitted with no network.
+            # Store the config so archived rows can be re-scored offline.
             payload["model_config"] = asdict(model_config)
             payload["measured"]["activation_mib"] = _measured_activation_mib(m)
             payload["error_pct"] = {

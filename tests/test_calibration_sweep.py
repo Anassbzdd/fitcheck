@@ -135,11 +135,6 @@ def _sweep_argv(out: Path, **extra: str) -> list[str]:
     return argv
 
 
-# ---------------------------------------------------------------------------------
-# Filenames
-# ---------------------------------------------------------------------------------
-
-
 def test_the_identity_carries_every_field_that_changes_a_measurement() -> None:
     row = sweep.identity("TinyLlama/TinyLlama-1.1B-Chat-v1.0", 2, 1024, "eager", _args())
     assert set(row) == set(sweep.IDENTITY_FIELDS)
@@ -201,11 +196,6 @@ def test_a_filename_is_stable_and_has_no_path_separators() -> None:
     assert name.endswith(sweep.fingerprint(row))
 
 
-# ---------------------------------------------------------------------------------
-# What lands in the file
-# ---------------------------------------------------------------------------------
-
-
 def test_each_row_stores_the_identity_it_was_measured_under(
     tmp_path: Path, fake_run: Any
 ) -> None:
@@ -235,11 +225,6 @@ def test_the_sweep_asks_for_the_knobs_its_identity_claims(
     assert options["--lora-targets"] == sweep.LORA_TARGETS_PRESET
     assert ("--grad-checkpoint" in flags) is sweep.GRAD_CHECKPOINT
     assert ("--double-quant" in flags) is sweep.DOUBLE_QUANT
-
-
-# ---------------------------------------------------------------------------------
-# Skipping
-# ---------------------------------------------------------------------------------
 
 
 def test_a_matching_file_is_skipped_and_not_re_measured(
@@ -286,7 +271,7 @@ def test_a_file_whose_identity_does_not_match_is_never_silently_skipped(
     output = capsys.readouterr().out
     assert "STALE FILE" in output
     assert "seq_len" in output
-    assert runner.rows == []  # and it was not re-measured over the top of it
+    assert runner.rows == []
     assert json.loads(victim.read_text(encoding="utf-8")) == stale
 
 
@@ -302,11 +287,6 @@ def test_an_unreadable_file_is_reported_rather_than_skipped(
     fake_run()
     assert sweep.main(_sweep_argv(tmp_path)) == 1
     assert "STALE FILE" in capsys.readouterr().out
-
-
-# ---------------------------------------------------------------------------------
-# Failure is failure
-# ---------------------------------------------------------------------------------
 
 
 def test_one_failed_row_fails_the_sweep(

@@ -116,7 +116,6 @@ def _report(**overrides: Any) -> MemoryReport:
     return MemoryReport(**base)
 
 
-# ------------------------------------------------------------------- header labels
 
 
 def test_attention_label_names_each_family(
@@ -169,7 +168,6 @@ def test_activation_and_batch_and_optimizer_labels(
     assert _optimizer_label(replace(qlora_training, optimizer="sgd")) == "sgd"
 
 
-# ------------------------------------------------------------------- render_report
 
 
 def test_report_renders_without_a_training_config(
@@ -179,7 +177,6 @@ def test_report_renders_without_a_training_config(
 
     assert "Base model weights" in output
     assert "Max micro-batch size at this sequence length: 4." in output
-    # No Config row when nothing was passed.
     assert "Config" not in output
 
 
@@ -263,7 +260,6 @@ def test_a_zero_capacity_card_does_not_divide_by_zero(llama_model: ModelConfig) 
     assert "DOES NOT FIT" in _text(render_report(report, llama_model, empty))
 
 
-# ------------------------------------------------------------------- explanation
 
 
 @pytest.mark.parametrize(
@@ -361,7 +357,6 @@ def test_explanation_carries_the_warnings_through(
     assert "int8 activations are modelled on one measured row" in output
 
 
-# ------------------------------------------------------------------- verbose detail
 
 
 def test_verbose_detail_shows_the_checkpointed_arithmetic(
@@ -398,7 +393,6 @@ def test_verbose_detail_in_ascii_spells_the_symbols_out(
     assert "activation dtype" in output
 
 
-# ------------------------------------------------------------------- inference
 
 
 def test_inference_report_names_the_cache_and_the_weights(
@@ -474,7 +468,6 @@ def test_inference_report_prints_its_warnings(llama_model: ModelConfig) -> None:
     assert "a paged engine allocates less" in output
 
 
-# ------------------------------------------------------------------- gpu table
 
 
 def test_gpu_table_lists_every_card_with_its_usable_share() -> None:
@@ -486,7 +479,6 @@ def test_gpu_table_lists_every_card_with_its_usable_share() -> None:
     assert "Usable %" in output
 
 
-# ------------------------------------------------------------------- advisor
 
 
 @pytest.fixture
@@ -550,7 +542,6 @@ def test_advisor_report_surfaces_the_sweeps_own_warnings(
     assert "unquantized base" not in output
 
 
-# ------------------------------------------------------------------- console
 
 
 def test_ascii_glyphs_are_chosen_by_the_console_encoding() -> None:

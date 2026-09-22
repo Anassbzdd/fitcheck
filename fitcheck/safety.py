@@ -4,10 +4,7 @@ from collections.abc import Iterable
 
 from fitcheck.overhead_db import KERNEL_EAGER, KERNEL_FLASH
 
-# Rounded upward from the largest observed (process - predicted) residual in the
-# final T4 NF4 validation archive, including the boundary runs.  The archive is
-# deliberately narrow: no other GPU, quantization mode, or training axis inherits
-# these buffers.
+# Conservative buffers are based only on the final T4 NF4 validation archive.
 _FINAL_VALIDATION_RESERVE_MIB: dict[tuple[str, str, str], float] = {
     ("t4", KERNEL_EAGER, "nf4"): 701.0,
     ("t4", KERNEL_FLASH, "nf4"): 2_264.0,

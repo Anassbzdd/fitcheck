@@ -64,8 +64,6 @@ def test_every_shipped_profile_is_keyed_by_a_real_gpu_kernel_and_quant() -> None
         assert kernel in (KERNEL_EAGER, KERNEL_FLASH)
         assert quantization in QUANTIZATIONS
         assert isinstance(profile, OverheadProfile)
-        # The key must agree with what the profile says about itself, or a lookup
-        # returns a profile describing a different configuration.
         assert profile.kernel == kernel
         assert profile.quantization == quantization
 
@@ -80,13 +78,7 @@ def test_every_shipped_profile_is_physical_and_says_what_it_came_from() -> None:
 
 
 def test_the_shipped_profiles_are_the_t4_calibration_of_task_9_3() -> None:
-    """Replaces `test_the_db_is_empty_until_the_sweep_lands`.
-
-    Four profiles landed on 2026-09-16 from 66 measured T4 rows. Quantization is part
-    of the key because F differs by 2-3x between `none` and `nf4` at the same kernel,
-    which `torch.cuda.memory_stats()` traced to an 8x difference in large-pool segment
-    count. Changing any of these silently would move every T4 estimate.
-    """
+    """Quantization is part of the profile key because fragmentation differs by storage format."""
     assert set(OVERHEAD_DB) == {
         ("t4", "flash", "none"),
         ("t4", "flash", "nf4"),
@@ -95,10 +87,7 @@ def test_the_shipped_profiles_are_the_t4_calibration_of_task_9_3() -> None:
     }
     for profile in OVERHEAD_DB.values():
         assert profile.uses_hump_form
-        # Measured, not fitted: mem_get_info minus memory_reserved, on all 66 rows.
         assert profile.base_context_mib == 140.875
-        # S was measured to be zero (t = +0.4, -0.1, +0.5, -0.2), so no profile
-        # carries a sequence slope.
         assert profile.fragmentation_per_octave == 0.0
 
 
@@ -133,17 +122,10 @@ def test_an_unmeasured_quantization_falls_back_to_the_default() -> None:
     assert get_overhead_profile("t4", False, "int8") is DEFAULT_OVERHEAD_PROFILE
 
 
-# ---------------------------------------------------------------------------------
-# gpu_key_for: the reverse lookup the estimator needs
-# ---------------------------------------------------------------------------------
-
-
 def test_gpu_key_for_finds_the_key_of_every_database_card() -> None:
     for spec in GPU_DB.values():
         found = gpu_key_for(spec)
         assert found is not None
-        # `h100` and `h100-80` are the same card under two names, so the reverse
-        # lookup can only return one of them -- and either is correct.
         assert GPU_DB[found] == spec
 
 

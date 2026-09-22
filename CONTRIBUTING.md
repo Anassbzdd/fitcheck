@@ -128,7 +128,7 @@ than the card physically has.
 
 ## Where things live
 
-`docs/SPEC.md` is the source of truth for formulas and the golden numbers. `docs/Blueprint.md`
-carries the derivations and the educational walkthrough. `docs/SPEC.md` §3.8 explains what
+`docs/SPEC.md` is the source of truth for formulas, derivations, and the golden numbers. Its
+Component 5 contains the activation derivation. Section 3.8 explains what
 `scripts/measure.py` does and why each part of it matters — read it before trusting a measurement,
 including your own.

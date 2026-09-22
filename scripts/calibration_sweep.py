@@ -462,9 +462,7 @@ def main(argv: list[str] | None = None) -> int:
 
         consecutive_failures = 0
 
-        # The row has to say it measured what was asked for. A flag measure.py ignored,
-        # or a default that moved under it, would otherwise be archived under a name
-        # that describes a run nobody performed.
+        # Reject rows whose recorded identity differs from the requested run.
         recorded = recorded_identity(payload)
         diffs = (
             ["the row carries no 'run' block to check"]
@@ -499,8 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(failed)} failed: {', '.join(failed)}")
     if unrun:
         print(f"{unrun} rows were never attempted -- the sweep stopped early.")
-    # A partial sweep is a failed sweep. Returning 0 with rows missing is how a grid
-    # gets called done and fitted with holes in it.
+    # Missing rows make the sweep incomplete and unsafe to fit.
     return 0 if done == len(plan) else 1
 
 

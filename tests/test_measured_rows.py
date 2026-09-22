@@ -21,9 +21,7 @@ from fitcheck.gpu_db import get_gpu
 _ARCHIVE = Path(__file__).resolve().parents[1] / "data" / "measurements"
 _SWEEP = _ARCHIVE / "t4-sweep-2026-09-15.json"
 
-# The worst single row of the 2026-09-15 sweep is SmolLM2-360M nf4 eager seq 4096 at
-# -4.8%. 8% leaves room for a row that is added later without loosening the guard to
-# the point where a real regression slips through -- the pre-correction worst was +32%.
+# Leave headroom for future rows without allowing under-prediction to pass unnoticed.
 _MAX_ABS_ACTIVATION_ERROR_PCT = 8.0
 _MAX_MEAN_ACTIVATION_ERROR_PCT = 2.0
 
@@ -95,12 +93,7 @@ def test_quantized_rows_did_not_move_when_the_profiles_landed() -> None:
 
 
 def test_unquantized_rows_are_the_half_that_moved() -> None:
-    """Guards the direction of the correction, not just its size.
-
-    Billing the `none` rows with the nf4 profile is what fitcheck used to do. Every one
-    of them must come out HIGHER that way -- if this ever passes with the two profiles
-    swapped, the table in _PROFILES has been transposed.
-    """
+    """The unquantized profile must produce lower activation estimates than nf4."""
     from dataclasses import replace
 
     for row in _rows():
@@ -116,15 +109,9 @@ def test_unquantized_rows_are_the_half_that_moved() -> None:
         ).activation_mib
 
 
-# ---------------------------------------------------------------------------------
-# C_overhead: the shipped T4 profiles, held against the rows that produced them
-# ---------------------------------------------------------------------------------
-
 _PHASE3 = _ARCHIVE / "t4-phase3-2026-09-16.json"
 
-# The calibration is asymmetric on purpose. Over-predicting costs a conservative
-# "doesn't fit"; under-predicting costs an OOM in a real training run. So the two
-# directions get different budgets, and the tight one is the dangerous one.
+# Under-prediction is the tighter budget because it risks a real OOM.
 _MAX_UNDER_PREDICTION_PCT = 8.0
 _MAX_OVER_PREDICTION_PCT = 14.0
 _MAX_MEAN_PROCESS_ERROR_PCT = 5.0

@@ -41,7 +41,6 @@ def llama_model(
     return fetch_model_config("meta-llama/Llama-3.1-8B")
 
 
-# --- The shared layer itself ---
 
 
 @pytest.mark.parametrize("precision", COMPUTE_PRECISIONS)
@@ -99,9 +98,7 @@ def test_validate_double_quant_off_is_always_fine(quantization: str) -> None:
     assert validate_double_quant(False, quantization) is False
 
 
-# --- Parity: the same config is accepted, or refused, by every interface ---
 
-# (cli flags, TrainingConfig overrides, accepted)
 _TRAINING_CASES: tuple[tuple[list[str], dict[str, Any], bool], ...] = (
     (["--quant", "nf4", "--double-quant"], {"quantization": "nf4", "double_quant": True}, True),
     (["--quant", "nf4"], {"quantization": "nf4"}, True),
@@ -229,7 +226,6 @@ def test_low_level_inference_helper_refuses_it_too(llama_model: ModelConfig) -> 
         estimate_inference_memory(llama_model, "fp16", 2048, 1, "int8", True)
 
 
-# --- REPL stickiness: a flag set three lines ago must not become an error ---
 
 
 @pytest.mark.parametrize("quantization", ["none", "int8"])

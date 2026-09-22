@@ -1,4 +1,3 @@
-# Phase 3: fit the C_overhead constants from measured runs
 from __future__ import annotations
 
 import argparse
@@ -144,11 +143,6 @@ class CalibrationResult:
         return max((fit.worst_abs_pct for fit in self.fits.values()), default=0.0)
 
 
-# ---------------------------------------------------------------------------------
-# Reading measure.py output
-# ---------------------------------------------------------------------------------
-
-
 def _require(payload: dict[str, Any], *path: str) -> Any:
     node: Any = payload
     for step in path:
@@ -263,11 +257,6 @@ def parse_runs(payload: Any, source: str = "<memory>") -> list[CalibrationRun]:
     if isinstance(payload, list):
         return [parse_run(item, f"{source}[{i}]") for i, item in enumerate(payload)]
     raise CalibrationError(f"{source}: expected a JSON object or array of objects")
-
-
-# ---------------------------------------------------------------------------------
-# The manifest: which archived rows are allowed to be fitted
-# ---------------------------------------------------------------------------------
 
 
 def is_manifest(payload: Any) -> bool:
@@ -499,11 +488,6 @@ def load_runs(
     return runs
 
 
-# ---------------------------------------------------------------------------------
-# The fit
-# ---------------------------------------------------------------------------------
-
-
 def _solve(matrix: list[list[float]], target: list[float]) -> list[float] | None:
     columns = len(matrix[0])
     system = [
@@ -568,13 +552,7 @@ def _fit_coefficients(
 
 
 def _origin_slope(runs: Sequence[CalibrationRun]) -> float | None:
-    """Least squares through the origin: over_reserve = F * min(A_logits, A_layer).
-
-    No intercept, because the intercept is the CUDA context and that is measured on
-    every row rather than fitted. Letting it float was the pre-9.3 defect: the
-    constant column is collinear with the size column, so the two traded against each
-    other and a single dropped row could move F by 172%.
-    """
+    """Fit over-reservation from the measured activation hump only."""
     denominator = sum(run.hump_mib**2 for run in runs)
     if denominator <= 0.0:
         return None
@@ -585,15 +563,7 @@ def _origin_slope(runs: Sequence[CalibrationRun]) -> float | None:
 def _fit_hump(
     runs: Sequence[CalibrationRun],
 ) -> tuple[float, float | None] | None:
-    """Fit the hump form, splitting by which hump wins the checkpointed peak.
-
-    The leftover is a different shape depending on which one wins -- the LM-head
-    logits are one enormous block, a layer's activations are many medium ones -- so
-    they get separate coefficients whenever both branches have enough rows. With only
-    one branch populated (every `flash` group, where the score matrix is gone and
-    `A_layer` always loses) a single pooled coefficient is fitted and the layer-win
-    slot is left empty for `fragmentation_for` to fall back on.
-    """
+    """Fit separate coefficients for the logits-win and layer-win branches."""
     logits_win = [run for run in runs if not run.layer_wins]
     layer_win = [run for run in runs if run.layer_wins]
 
@@ -742,9 +712,7 @@ def _hump_group_fit(
 ) -> GroupFit:
     logits_win_f, layer_win_f = hump
 
-    # The CUDA context is measured on every row, not fitted. Taking the largest keeps
-    # the profile on the conservative side if rows from two sessions ever disagree;
-    # on the 66 T4 rows behind the shipped profiles they are identical at 140.875.
+    # Context is measured, not fitted; use the largest value to stay conservative.
     context_mib = max(run.context_mib for run in ordered)
 
     profile = OverheadProfile(
@@ -834,11 +802,6 @@ def score(
             profile = get_overhead_profile(key[0], key[1] == "flash", key[2])
         scored[key] = _errors_pct(group, profile)
     return scored
-
-
-# ---------------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------------
 
 
 def render_report(result: CalibrationResult) -> str:
@@ -963,11 +926,6 @@ def render_check(scored: dict[tuple[str, str, str], tuple[float, ...]]) -> str:
     lines.append("")
     lines.append(f"worst process-tier error with the shipped constants: {worst_overall:.1f}%")
     return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------------
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -50,7 +50,7 @@ def test_get_gpu_vram_override_returns_custom_spec() -> None:
 
     assert gpu.name == "Custom GPU"
     assert gpu.vram_mib == 24_000
-    assert gpu.usable_mib == 22_800  # 24_000 * 95 // 100
+    assert gpu.usable_mib == 22_800
 
 
 def test_get_gpu_vram_override_with_custom_name() -> None:

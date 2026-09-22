@@ -1,4 +1,3 @@
-# Orchestrator: calls all 6 components, returns MemoryReport
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -482,8 +481,7 @@ def estimate(
         uncertain = not safe_fits
         verdict = "safe" if safe_fits else "uncertain"
     else:
-        # A generous point-estimate headroom is useful, but a near-capacity
-        # estimate without an exact holdout envelope must not be called safe.
+        # Without a holdout envelope, near-capacity estimates are not safe.
         uncertain = (capacity_mib - total_mib) <= 0.20 * capacity_mib
         safe_fits = not uncertain
         verdict = "uncertain" if uncertain else "safe"

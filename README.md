@@ -38,6 +38,33 @@ fitcheck NousResearch/Meta-Llama-3.1-8B --qlora --lora-r 64 --batch-size 4 --seq
 
 The runtime uses Click, Rich, and `huggingface-hub`; it does not require `torch` or CUDA. Gated Hugging Face models still need normal Hub access, for example `hf auth login`.
 
+## What you can do
+
+FitCheck supports four related workflows:
+
+| Workflow | How to use it | What it gives you |
+|:---|:---|:---|
+| **Training estimate** | `fitcheck MODEL_ID [OPTIONS]` | Peak VRAM, component breakdown, fit/safety verdict, and the largest fitting micro-batch. |
+| **Serving estimate** | `fitcheck infer MODEL_ID` | Resident weights, KV-cache cost per request/token, total serving memory, and the largest fitting concurrency. |
+| **Config advisor** | `fitcheck advise MODEL_ID --seq-lens 1024,2048` | A sweep over batch size, sequence length, and LoRA rank: frontier configs, axis ceilings, memory prices, and runnable commands. |
+| **Interactive session** | Run `fitcheck` without a model ID | Keep a model, GPU, and flags loaded while trying several estimates. |
+
+The training, inference, and advisor commands support `--json` for CI/CD. Training also supports `--explain` for a plain-English breakdown and savings hints, `--verbose` for the per-layer activation detail, `--list-gpus` to inspect the GPU database, and `--vram-mib` for a custom usable-memory budget.
+
+Inside the interactive session, the available tasks are:
+
+| Command | Purpose |
+|:---|:---|
+| `model <id>` / `gpu <name>` | Load a model config or select the target GPU. |
+| `memory [flags]` | Run or update the training estimate; flags persist between commands. |
+| `infer [flags]` | Run a serving estimate with its own persistent serving flags. |
+| `advise [flags]` / `sweep` | Sweep the training axes; `--seq-lens` is required the first time. |
+| `explain` | Name the largest memory component and price each available toggle. |
+| `optimize` | Recommend a practical batch/config, not only the theoretical ceiling. |
+| `compare <gpu> ... [--infer]` | Compare the current training or serving config across GPUs. |
+| `show` / `reset` / `gpus` | Inspect state, restore defaults, or print the GPU database. |
+| `help` / `exit` | Show the command list or leave the session. |
+
 ## What the output means
 
 ```text
@@ -48,6 +75,7 @@ Peak VRAM = weights + LoRA + optimizer + gradients + activations + overhead
 - The verdict compares the estimate with the selected GPU's usable MiB.
 - `max micro-batch` is found by running the full estimator at different batch sizes, not by dividing free memory by one component.
 - `UNCERTAIN` means the point estimate fits, but the measured safety reserve is not large enough to call it safe.
+- In CLI mode, exit code `0` means the request fits, `1` means it does not fit or is uncertain, and `2` means the estimate could not run. For `advise`, `0` means at least one swept configuration fits. The REPL keeps verdicts inside the session and exits `0`.
 
 `--precision` is the compute dtype. `--quant` is the base-model storage format. They are separate settings: QLoRA, for example, uses an NF4 base with BF16 compute.
 

@@ -7,6 +7,7 @@ combinations are refused before any config.json is fetched.
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -33,6 +34,8 @@ _FITTING = (
 
 @pytest.fixture
 def runner() -> CliRunner:
+    if "mix_stderr" in inspect.signature(CliRunner).parameters:
+        return CliRunner(env=_ENV, mix_stderr=False)
     return CliRunner(env=_ENV)
 
 
@@ -58,7 +61,7 @@ def no_repl(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, Any]]]:
 
 
 def _flat(result: Result) -> str:
-    return " ".join(result.output.split())
+    return " ".join((result.stdout + result.stderr).split())
 
 
 

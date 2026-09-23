@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "fitcheck-llm"
 version = "0.3.1"
-description = "Predict GPU VRAM requirements for LLM training before you start — model weights, LoRA/QLoRA, optimizer states, gradients, activations, and Flash Attention, checked against real GPUs."
+description = "Estimate LLM training and serving memory from model configs; measured training evidence covers one Tesla T4."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

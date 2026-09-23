@@ -8,9 +8,10 @@ argued about in isolation.
 
 **A measured row on hardware that is not a Tesla T4.**
 
-Every number in the validation matrix comes from one T4 (sm_75), which means BF16 and real
-FlashAttention-2 — both need sm_80 or newer — have never been exercised, and the 500 MiB
-CUDA-context constant has been checked exactly once. If you have an Ampere or newer GPU, one run of
+Every archived measurement comes from one T4 (sm_75), which means BF16 and real FlashAttention-2
+— both need sm_80 or newer — have never been exercised. The CUDA context was measured at 140.875
+MiB on 69 archived rows and 141.0 MiB on the other 10, all on that same card; there is still no
+measured profile for another GPU. If you have an Ampere or newer GPU, one run of
 `scripts/measure.py` is worth more to this project than any feature:
 
 ```bash
@@ -27,7 +28,7 @@ row ready to paste. Open it with the
 
 `C_overhead` — the CUDA context plus the caching allocator's fragmentation — is the one component
 that cannot be derived from a `config.json`, because it belongs to a driver and a card rather than
-to a model. It is fitted per (GPU, attention kernel) and shipped as data in
+to a model. The shipped fit is keyed by (GPU, attention kernel, quantization) and shipped as data in
 `fitcheck/overhead_db.py`, so adding your card is a one-line source change:
 
 ```bash
@@ -73,8 +74,9 @@ sweep.
 
 ## The bar for a merge
 
-- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. Currently 851
-  offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the floor.
+- `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. The standard suite
+  has 838 offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the floor.
+  Another 13 measurement-harness tests run when optional `torch` is installed.
   The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`, which hit
   the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails without an
   `HF_TOKEN`. The offline tests cover the same parsing against a fixture.

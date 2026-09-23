@@ -1392,7 +1392,7 @@ sweep could not be run. Same contract as Modes A and C, and the same add-only ke
 | **`--quant int8` activations** | Billed at **$\gamma = 4$** whatever `--precision` says: `prepare_model_for_kbit_training` upcasts the layer norms to FP32 and LLM.int8() takes that FP32 input at every linear — the run prints `MatMul8bitLt: inputs will be cast from torch.float32` hundreds of times. On the one measured int8 row (TinyLlama, bs=2, seq=1024) that takes $A_{act}$ from **1,620 predicted against 3,729 measured ($-56.6\%$)** to **3,382 ($-9.3\%$)**, and the tensors tier from $-38.9\%$ to $-5.7\%$. The residual is LLM.int8()'s own FP16 outlier buffers, which are not modelled, so `estimate_warnings` attaches a caveat calling the figure a lower bound. **One model, one run** — a second int8 row on a different model is owed before the mechanism can be called general. | ⚠️ Partly measured, warned |
 | **Serving activations (`fitcheck infer`)** | Not modelled at all: $M_{infer}$ is resident memory only. Measured $-2.8\%$ at 1 concurrent request and $-23.2\%$ at 16, the unsafe direction, growing with concurrency. `inference_warnings` attaches a caveat above 4 concurrent naming both numbers. No coefficient is fitted, because 838 MiB of transient at 16 concurrent is far larger than any identified mechanism and one data point cannot settle it — see Component 7. | ⚠️ Unmeasured, warned |
 | **Full fine-tuning term split** | fitcheck keeps the FP32 master copy in $S_{optim}$ (12 B/param). `measure.py` used to upcast in place so it landed in *weights* — +50% / −50% / −50% across three terms with a **sum exact to the MiB** (2,479 vs 2,479) — and that cast also made an `fp16` row measure FP32 activations. Harness fixed 2026-09-20 (Component 4); the fitcheck terms are unchanged. | ⚠️ harness fixed, full-FT row not re-measured |
-| **Non-T4 hardware, BF16, real Flash Attention** | All thirty-three measurements are one Tesla T4 (sm_75) in FP16, on torch 2.10.0+cu128 / transformers 5.0.0 / peft 0.19.1. BF16 and FA2 need sm_80+; the flash path is validated only via SDPA's memory-efficient backend as a stand-in. | ⚠️ Unmeasured |
+| **Non-T4 hardware, BF16, real Flash Attention** | All 79 archived measurement rows are from one Tesla T4 (sm_75) in FP16. BF16 and FA2 need sm_80+; the flash-like path is validated only via SDPA's memory-efficient backend as a stand-in. | ⚠️ Unmeasured |
 | **Unknown GPU** | Error message listing available GPUs. Flag to pass custom VRAM: `--vram-mib 24000`. | ✅ MVP |
 
 ---
@@ -1813,10 +1813,10 @@ construction.
       `tests/test_advisor.py` (`advisor.py` at 100% coverage); the rendered screen is verified by
       hand in both modes, the way 4.5/4.6 verify `cli.py` and `display.py`.
 
-> **The accuracy gate did not move in v0.3.** `advise` re-runs the same estimator on a grid, so it
-> inherits the v0.2 numbers exactly — 3.4% on the tensors tier, 14.7% on the full total, all of the
-> gap in $C_{overhead}$, all twenty measurements still one Tesla T4. A sweep of an unvalidated
-> heuristic is still unvalidated; `advise` adds reach, not confidence.
+> **Historical v0.3 accuracy note.** When the advisor gate shipped, `advise` re-ran the same
+> estimator on a grid and inherited the v0.2 evidence — 3.4% on the tensors tier, 14.7% on the
+> full total, and twenty measurements from one Tesla T4. A sweep of an unvalidated heuristic did
+> not add accuracy evidence. The current beta evidence is reported in §3.8.
 
 ---
 

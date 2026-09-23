@@ -114,7 +114,7 @@ For the 57 calibration/repeat rows:
 | **tensors** — the five physical formulas | **4.6%** | 0.7% |
 | **process** — the full total, what the verdict uses | **13.9%** | 2.4% |
 
-The separate final holdout has **12 rows**: tensor error is **±1.4%**, process MAE is **5.4%**, and the worst under-prediction is **−15.3%**. Boundary verdicts were **12/12 correct** against the 14,000 MiB T4 safety budget. It covers one Tesla T4 (sm_75), NF4, FP16 compute, LoRA r=16, AdamW FP32, gradient checkpointing, and sequence length 1024.
+The separate final holdout has **12 rows**: tensor error is **±1.4%**, process MAE is **5.4%**, and the worst under-prediction is **−15.3%**. Boundary verdicts were **12/12 correct** against the 14,000 MiB T4 safety budget. The accuracy holdout covers one Tesla T4 (sm_75), NF4, FP16 compute, LoRA r=16 on `[q,k,v,o]` (without double quantization), batch size 1, AdamW with FP32 states, gradient checkpointing, and sequence length 1024. It has six eager rows and six rows using SDPA's memory-efficient backend as a flash-like path. The six models are Qwen/Qwen2.5-7B-Instruct, Qwen/Qwen2.5-Coder-1.5B-Instruct, deepseek-ai/deepseek-coder-1.3b-instruct, meta-llama/Llama-3.2-1B-Instruct, meta-llama/Llama-3.2-3B-Instruct, and mistralai/Mistral-7B-Instruct-v0.3. This is not validation on a second GPU or real FlashAttention-2.
 
 <details>
 <summary>Measurement provenance</summary>
@@ -144,7 +144,7 @@ All 79 archived rows are one Tesla T4 (sm_75). The measured CUDA context is `140
 - [Measurement archive](data/measurements/README.md) — row format, roles, and reproducibility.
 - [Contributing](CONTRIBUTING.md) — how to add measurements and regenerate fitted profiles.
 
-The repository currently has **851 offline tests**, **7 tests marked `network`**, and **100% line coverage on all seven `memory/` modules**.
+The repository currently has **838 offline tests** in the standard suite, **7 tests marked `network`**, and **100% line coverage on all seven `memory/` modules**. An additional 13 measurement-harness tests run when `torch` is installed.
 
 ## License
 

@@ -32,10 +32,14 @@ dependencies = [
 ]
  
 [project.optional-dependencies]
+web = [
+    "gradio==6.28.0",
+]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "httpx>=0.27",
+    "gradio==6.28.0",
     # Floors are the versions the rule set and the strict run were verified against;
     # a lint tool that drifts below them reports a different set of findings.
     "ruff>=0.16",

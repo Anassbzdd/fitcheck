@@ -1,17 +1,3 @@
----
-title: FitCheck
-emoji: 📊
-colorFrom: blue
-colorTo: indigo
-sdk: gradio
-sdk_version: 6.28.0
-python_version: "3.12.12"
-app_file: app.py
-suggested_hardware: zero-a10g
-fullWidth: true
-short_description: Estimate LLM training and serving VRAM from model metadata.
----
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/Anassbzdd/fitcheck/main/docs/images/logo.jpg" alt="fitcheck" width="150">
 </p>

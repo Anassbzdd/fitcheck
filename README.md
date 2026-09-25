@@ -5,9 +5,9 @@ colorFrom: blue
 colorTo: indigo
 sdk: gradio
 sdk_version: 6.28.0
-python_version: "3.11"
+python_version: "3.12.12"
 app_file: app.py
-suggested_hardware: cpu-basic
+suggested_hardware: zero-a10g
 fullWidth: true
 short_description: Estimate LLM training and serving VRAM from model metadata.
 ---
@@ -62,7 +62,9 @@ The runtime uses Click, Rich, and `huggingface-hub`; it does not require `torch`
 
 ## Web app
 
-The root `app.py` is ready to run as a CPU Hugging Face Gradio Space. To run it locally, install the web extra and start the app:
+Try the [live FitCheck Space](https://huggingface.co/spaces/mlanvvs/fitcheck).
+
+The root `app.py` is ready to run as a Hugging Face Gradio Space. It runs estimates on the CPU, including when hosted on ZeroGPU. To run it locally, install the web extra and start the app:
 
 ```bash
 pip install -e ".[web]"
@@ -70,6 +72,7 @@ python app.py
 ```
 
 The web app uses the same training, serving, and advisor calculations as the CLI. It reads model metadata and does not download weights or require a GPU.
+Choose a GPU preset to use its saved capacity, or choose **Custom GPU** and enter the card's total VRAM in MiB. A custom card uses 95% of that total as usable capacity.
 
 ## What you can do
 
@@ -169,7 +172,7 @@ All 79 archived rows are one Tesla T4 (sm_75). The measured CUDA context is `140
 - [Measurement archive](data/measurements/README.md) — row format, roles, and reproducibility.
 - [Contributing](CONTRIBUTING.md) — how to add measurements and regenerate fitted profiles.
 
-The repository currently has **874 offline tests** in the standard suite, **7 tests marked `network`**, and **100% line coverage on all seven `memory/` modules**. An additional 13 measurement-harness tests run when `torch` is installed.
+The repository currently has **877 offline tests** in the standard suite, **7 tests marked `network`**, and **100% line coverage on all seven `memory/` modules**. An additional 13 measurement-harness tests run when `torch` is installed.
 
 ## License
 

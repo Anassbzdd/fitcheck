@@ -1,11 +1,19 @@
 """Gradio web interface for the FitCheck estimators."""
 
+# ZeroGPU's shim must load before Gradio, so the conditional import splits imports.
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 from html import escape
 from typing import Any
+
+_ON_ZERO_GPU = os.environ.get("SPACES_ZERO_GPU") == "1"
+if _ON_ZERO_GPU:
+    import spaces
 
 import gradio as gr
 from fitcheck.advisor import DEFAULT_BATCH_SIZES, DEFAULT_LORA_RANKS
@@ -25,8 +33,17 @@ _LOGGER = logging.getLogger("fitcheck.web")
 _REPOSITORY_URL = "https://github.com/Anassbzdd/fitcheck"
 _SPEC_URL = f"{_REPOSITORY_URL}/blob/main/docs/SPEC.md"
 _MODEL_DEFAULT = "Qwen/Qwen2.5-1.5B-Instruct"
+_CUSTOM_GPU = "custom"
 
-_GPU_CHOICES = [(spec.name, key) for key, spec in GPU_DB.items()]
+if _ON_ZERO_GPU:
+    @spaces.GPU(duration=1)
+    def _zero_gpu_registration() -> None:
+        """Register the hosted Space; FitCheck estimates stay on the CPU."""
+        return None
+
+_GPU_CHOICES = [(spec.name, key) for key, spec in GPU_DB.items()] + [
+    ("Custom GPU", _CUSTOM_GPU)
+]
 _STATUS_STYLE = {
     "SAFE": ("safe", "The estimate passes FitCheck's safety policy."),
     "UNCERTAIN": (
@@ -46,6 +63,17 @@ _EMPTY_STATUS = (
     "<span>Run an estimate to see results.</span></div>"
 )
 _CSS = """
+@import url("https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,400..700&display=swap");
+
+:root, body, .gradio-container {
+  font-family: "Google Sans Flex", "Segoe UI", sans-serif !important;
+  font-optical-sizing: auto;
+}
+.gr-accordion > .label-wrap > span:first-child {
+  background: #e0e7ff;
+  border-radius: .35rem;
+  color: #5b5bd6;
+}
 .fc-status { display:flex; gap:1rem; align-items:center; padding:1rem 1.2rem;
   border-radius:14px; border:1px solid; font-size:1.05rem; }
 .fc-status strong { font-size:1.15rem; letter-spacing:.04em; }
@@ -126,6 +154,27 @@ def _summary(report: Any) -> str:
     )
 
 
+def _selected_vram(gpu_name: str, custom_vram_mib: object | None) -> object | None:
+    """Use custom capacity only when the user selected Custom GPU."""
+    if gpu_name != _CUSTOM_GPU:
+        return None
+    if custom_vram_mib is None or custom_vram_mib == "":
+        raise ValueError("Enter total VRAM in MiB for Custom GPU.")
+    if isinstance(custom_vram_mib, str):
+        digits = custom_vram_mib.strip()
+        if not digits:
+            raise ValueError("Enter total VRAM in MiB for Custom GPU.")
+        if not digits.isascii() or not digits.isdigit():
+            raise ValueError("Custom GPU total VRAM must be a positive whole number of MiB.")
+        return int(digits)
+    return custom_vram_mib
+
+
+def _custom_vram_visibility(gpu_name: str) -> dict[str, Any]:
+    """Show the VRAM field only for Custom GPU."""
+    return gr.update(visible=gpu_name == _CUSTOM_GPU)
+
+
 def training_callback(
     model_id: str,
     gpu_name: str,
@@ -161,7 +210,7 @@ def training_callback(
             grad_checkpoint=grad_checkpoint,
             flash_attn=flash_attn,
             grad_accum_steps=grad_accum_steps,
-            custom_vram_mib=custom_vram_mib,
+            custom_vram_mib=_selected_vram(gpu_name, custom_vram_mib),
         )
     except Exception as error:
         return _empty_outputs(_error_text(error, "training"), 7, (2, 5))
@@ -228,7 +277,7 @@ def serving_callback(
             quantization=quantization,
             double_quant=double_quant,
             precision=precision,
-            custom_vram_mib=custom_vram_mib,
+            custom_vram_mib=_selected_vram(gpu_name, custom_vram_mib),
         )
     except Exception as error:
         return _empty_outputs(_error_text(error, "serving"), 5, (2,))
@@ -288,7 +337,7 @@ def advisor_callback(
             optimizer_dtype=optimizer_dtype,
             grad_checkpoint=grad_checkpoint,
             flash_attn=flash_attn,
-            custom_vram_mib=custom_vram_mib,
+            custom_vram_mib=_selected_vram(gpu_name, custom_vram_mib),
         )
     except Exception as error:
         return _empty_outputs(_error_text(error, "advisor"), 7, (2, 3, 4))
@@ -339,12 +388,7 @@ def advisor_callback(
 
 def create_demo() -> gr.Blocks:
     """Create the FitCheck Gradio app without starting a server."""
-    with gr.Blocks(
-        theme=gr.themes.Soft(primary_hue="indigo", secondary_hue="blue"),
-        css=_CSS,
-        title="FitCheck",
-        analytics_enabled=False,
-    ) as demo:
+    with gr.Blocks(title="FitCheck", analytics_enabled=False) as demo:
         gr.Markdown(
             "# FitCheck\n"
             "Estimate LLM training and serving VRAM from Hugging Face model metadata — "
@@ -365,6 +409,20 @@ def create_demo() -> gr.Blocks:
                         value="4090",
                         allow_custom_value=False,
                     )
+                training_vram = gr.Textbox(
+                    label="Custom GPU total VRAM (MiB)",
+                    value="",
+                    placeholder="For example, 24576",
+                    visible=False,
+                    info="Required for Custom GPU; usable capacity is 95% of this total.",
+                )
+                training_gpu.change(
+                    fn=_custom_vram_visibility,
+                    inputs=training_gpu,
+                    outputs=training_vram,
+                    api_name=False,
+                    queue=False,
+                )
                 with gr.Row():
                     training_batch = gr.Number(
                         label="Micro-batch size", value=1, precision=0, minimum=1
@@ -426,16 +484,6 @@ def create_demo() -> gr.Blocks:
                             precision=0,
                             minimum=1,
                         )
-                    training_vram = gr.Number(
-                        label="Custom total VRAM (MiB), optional",
-                        value=None,
-                        precision=0,
-                        minimum=1,
-                        info=(
-                            "Overrides the selected GPU preset; usable capacity is 95% "
-                            "of this total."
-                        ),
-                    )
                 training_run = gr.Button("Estimate training memory", variant="primary")
                 training_status = gr.HTML(value=_EMPTY_STATUS)
                 training_summary = gr.Markdown()
@@ -501,6 +549,20 @@ def create_demo() -> gr.Blocks:
                         value="4090",
                         allow_custom_value=False,
                     )
+                serving_vram = gr.Textbox(
+                    label="Custom GPU total VRAM (MiB)",
+                    value="",
+                    placeholder="For example, 24576",
+                    visible=False,
+                    info="Required for Custom GPU; usable capacity is 95% of this total.",
+                )
+                serving_gpu.change(
+                    fn=_custom_vram_visibility,
+                    inputs=serving_gpu,
+                    outputs=serving_vram,
+                    api_name=False,
+                    queue=False,
+                )
                 with gr.Row():
                     serving_seq = gr.Number(
                         label="Sequence length (tokens)",
@@ -511,30 +573,19 @@ def create_demo() -> gr.Blocks:
                     serving_concurrency = gr.Number(
                         label="Concurrent requests", value=1, precision=0, minimum=1
                     )
-                with gr.Accordion("Advanced serving settings", open=False):
-                    with gr.Row():
-                        serving_quant = gr.Dropdown(
-                            ["none", "nf4", "int8"],
-                            value="none",
-                            label="Base storage format",
-                        )
-                        serving_double = gr.Checkbox(
-                            label="NF4 double quantization", value=False
-                        )
-                        serving_precision = gr.Dropdown(
-                            ["fp32", "fp16", "bf16"],
-                            value="fp16",
-                            label="Weight precision",
-                        )
-                    serving_vram = gr.Number(
-                        label="Custom total VRAM (MiB), optional",
-                        value=None,
-                        precision=0,
-                        minimum=1,
-                        info=(
-                            "Overrides the selected GPU preset; usable capacity is 95% "
-                            "of this total."
-                        ),
+                with gr.Accordion("Advanced serving settings", open=False), gr.Row():
+                    serving_quant = gr.Dropdown(
+                        ["none", "nf4", "int8"],
+                        value="none",
+                        label="Base storage format",
+                    )
+                    serving_double = gr.Checkbox(
+                        label="NF4 double quantization", value=False
+                    )
+                    serving_precision = gr.Dropdown(
+                        ["fp32", "fp16", "bf16"],
+                        value="fp16",
+                        label="Weight precision",
                     )
                 serving_run = gr.Button("Estimate serving memory", variant="primary")
                 serving_status = gr.HTML(value=_EMPTY_STATUS)
@@ -583,6 +634,20 @@ def create_demo() -> gr.Blocks:
                         value="4090",
                         allow_custom_value=False,
                     )
+                advisor_vram = gr.Textbox(
+                    label="Custom GPU total VRAM (MiB)",
+                    value="",
+                    placeholder="For example, 24576",
+                    visible=False,
+                    info="Required for Custom GPU; usable capacity is 95% of this total.",
+                )
+                advisor_gpu.change(
+                    fn=_custom_vram_visibility,
+                    inputs=advisor_gpu,
+                    outputs=advisor_vram,
+                    api_name=False,
+                    queue=False,
+                )
                 with gr.Row():
                     advisor_batches = gr.CheckboxGroup(
                         choices=list(DEFAULT_BATCH_SIZES),
@@ -605,7 +670,7 @@ def create_demo() -> gr.Blocks:
                     precision=0,
                     minimum=1,
                 )
-                with gr.Accordion("Advanced sweep settings", open=False):
+                with gr.Accordion("Advanced advisor settings", open=False):
                     with gr.Row():
                         advisor_quant = gr.Dropdown(
                             ["none", "nf4", "int8"],
@@ -643,16 +708,6 @@ def create_demo() -> gr.Blocks:
                         advisor_flash = gr.Checkbox(
                             label="Flash Attention", value=False
                         )
-                    advisor_vram = gr.Number(
-                        label="Custom total VRAM (MiB), optional",
-                        value=None,
-                        precision=0,
-                        minimum=1,
-                        info=(
-                            "Overrides the selected GPU preset; usable capacity is 95% "
-                            "of this total."
-                        ),
-                    )
                 advisor_run = gr.Button("Run advisor sweep", variant="primary")
                 advisor_status = gr.HTML(value=_EMPTY_STATUS)
                 advisor_summary = gr.Markdown()
@@ -718,6 +773,14 @@ def create_demo() -> gr.Blocks:
                     concurrency_limit=4,
                 )
 
+        if _ON_ZERO_GPU:
+            gr.Button(visible=False).click(
+                fn=_zero_gpu_registration,
+                inputs=[],
+                outputs=[],
+                api_name=False,
+            )
+
     demo.queue(default_concurrency_limit=4)
     return demo
 
@@ -726,4 +789,7 @@ demo = create_demo()
 
 
 if __name__ == "__main__":
-    demo.launch(analytics_enabled=False)
+    demo.launch(
+        theme=gr.themes.Soft(primary_hue="indigo", secondary_hue="blue"),
+        css=_CSS,
+    )

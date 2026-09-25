@@ -75,7 +75,7 @@ sweep.
 ## The bar for a merge
 
 - `pytest --cov=fitcheck --cov-report=term-missing -m "not network"` is green. The standard suite
-  has 874 offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the floor.
+  has 877 offline tests, with 100% line coverage on all seven `memory/` modules; ≥80% there is the floor.
   Another 13 measurement-harness tests run when optional `torch` is installed.
   The `-m "not network"` filter is not optional: it skips the 7 tests marked `network`, which hit
   the Hub for real — two of them the gated `meta-llama/Llama-3.1-8B`, which fails without an
